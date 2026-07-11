@@ -1,0 +1,1 @@
+blockstead ALL=(root) NOPASSWD: /usr/lib/blockstead/blockstead-power poweroff, /usr/lib/blockstead/blockstead-power poweroff --wake *

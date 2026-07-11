@@ -11,6 +11,7 @@ export interface PlayerFile { present: boolean; readable: boolean; players: Play
 export interface PlayersView { allowlist: PlayerFile; operators: PlayerFile; bans: PlayerFile }
 export type PlayerAction = "whitelist_add" | "whitelist_remove" | "op" | "deop" | "ban" | "pardon"
 export interface SystemMetrics { cpu_percent: number; memory: { total_bytes: number; used_bytes: number; percent: number }; disk: { total_bytes: number; used_bytes: number; percent: number }; process: { uptime_seconds: number | null; memory_bytes: number | null } }
+export interface Schedule { id: string; profile_id: string; enabled: boolean; start_time: string | null; stop_time: string | null; backup_before_stop: boolean; power_off_after_stop: boolean; wake_time: string | null }
 
 let csrfToken = sessionStorage.getItem("blockstead_csrf") ?? "";
 export const setCsrf = (value: string) => { csrfToken = value; sessionStorage.setItem("blockstead_csrf", value); };

@@ -1,40 +1,85 @@
 # Blockstead
 
-> A friendly, local-first management dashboard for self-hosted Minecraft: Java Edition servers.
+> A friendly, local dashboard for running a Minecraft: Java Edition server at home.
 
-**Status:** Planning and initial implementation  
-**Working name:** Blockstead  
-**Primary deployment target:** Linux Mint 22.3 and compatible Ubuntu-based systems  
-**Development hosts:** Windows, macOS, and Linux
+Blockstead is for the person who wants a reliable server for friends or family,
+not a second career in Linux administration. It runs beside the server on a
+Linux Mint computer and gives you one clear place to start it, stop it safely,
+read its log, manage players, and set a daily routine.
 
-## Current implemented milestone
+The dashboard is local-first: it listens on the computer itself by default and
+does not expose a shell in the browser. You keep control of the server files;
+Blockstead manages the process around them.
 
-The repository now contains the first safe, fixture-backed vertical slice:
+## What it does today
 
-- first-run administrator creation, Argon2id passwords, opaque server-side
-  sessions, logout, strict same-site cookies, exact-origin checks, CSRF checks,
-  and bounded login attempts
-- read-only server-folder scanning inside one canonical allowed root and a
-  confirmed profile-record plan that does not alter imported files
-- an owned Minecraft process for imported vanilla `server.jar` profiles (plus a
-  safe fixture for development), explicit lifecycle state machine, readiness
-  detection, duplicate-start protection, bounded live logs over an authenticated
-  WebSocket, full one-line vanilla console command input, graceful stop,
-  explicit forced fallback, restart, and abnormal-exit detection
-- first management views: guided player actions (allowlist, operators, bans)
-  validated against Minecraft naming rules and sent only as console commands,
-  read-only player lists parsed defensively from the server folder, a read-only
-  typed view of `server.properties` that redacts secret-like keys, guided quick
-  commands, and live host/process metrics (CPU, memory, disk, uptime)
-- a responsive light/dark dashboard and automated backend, component, API,
-  process-integration, browser, lint, typing, build, and dependency-audit gates
+- imports an existing vanilla `server.jar` folder without moving or rewriting it
+- starts, stops, restarts, and watches the managed server process
+- streams live server logs and sends one-line Minecraft console commands
+- reads server settings and player lists, with guided allowlist/operator/ban actions
+- shows host CPU, memory, disk use, and server uptime
+- saves a daily start/stop schedule; scheduled stops flush Minecraft saves and
+  create compressed world archives before stopping the server
+- can optionally shut down the Linux computer after a safe stop and set an RTC
+  wake alarm for the next day when the computer hardware supports it
+- installs as a `systemd` service, so the Blockstead dashboard starts with Linux
 
-This milestone does **not** create or restore backups, or install a production
-Linux service yet. The Linux scripts are
-clearly marked safety previews until the remaining milestone work and the Linux
-Mint checklist are complete.
+## Linux Mint: install in five steps
 
-### Run the development milestone
+Use a fresh or dedicated Linux Mint 22.x computer where you have an account
+that can use `sudo`. Keep this computer powered on while players should be able
+to join.
+
+1. Open **Terminal** and install the basics:
+
+   ```bash
+   sudo apt update
+   sudo apt install -y git curl python3 python3-venv nodejs npm openjdk-21-jre-headless
+   ```
+
+2. Download Blockstead and enter its folder. Replace the example URL with the
+   repository you are installing from if needed:
+
+   ```bash
+   git clone https://github.com/YOUR-ACCOUNT/blockstead.git
+   cd blockstead
+   ```
+
+3. Run the installer. It will ask before changing anything:
+
+   ```bash
+   sudo ./scripts/install-linux.sh
+   ```
+
+4. When it says it is ready, open this on the Linux Mint computer:
+
+   ```text
+   http://127.0.0.1:8765
+   ```
+
+   Create your Blockstead administrator account.
+
+5. Put your legal Minecraft server folder inside `/srv/minecraft/`, make sure
+   its `eula.txt` says `eula=true`, then use **Import** in the dashboard and
+   choose **Start server**.
+
+That is it. Blockstead will start automatically whenever Linux starts. Use the
+dashboard’s **Schedule** card to choose daily server start and stop times.
+
+### If something goes wrong
+
+These two commands answer most setup questions:
+
+```bash
+sudo systemctl status blockstead
+sudo journalctl -u blockstead -n 100 --no-pager
+```
+
+To follow live application messages, use `sudo journalctl -u blockstead -f`.
+Your Minecraft folders live in `/srv/minecraft`; Blockstead’s private data and
+scheduled backup archives live in `/var/lib/blockstead`.
+
+### Development setup
 
 Use the pinned Python 3.12 and Node 22 runtimes:
 
@@ -1248,8 +1293,12 @@ Windows:
 
 ## 19. Linux Mint installation experience
 
-Deploy on a supported Linux host with Python 3.12+, Node.js, npm, Java, and
-systemd available:
+The quick-start above is the supported installation path for Linux Mint 22.x
+and compatible Ubuntu-based systems. The installer needs `python3` 3.12 or
+newer, Node.js with npm, `curl`, and `systemd`; Java 21 is needed to run a
+modern vanilla Minecraft server.
+
+From a checked-out Blockstead folder, the installation command is:
 
 ```bash
 sudo ./scripts/install-linux.sh
@@ -1266,12 +1315,14 @@ The installer:
 After opening `http://127.0.0.1:8765`, create the first administrator account.
 Put a legitimately obtained vanilla `server.jar` folder under `/srv/minecraft`,
 review and accept Minecraft's EULA in that folder yourself, import it from the
-dashboard, select the profile, and choose **Start server**.
+dashboard, select the profile, and choose **Start server**. The service is
+enabled during installation and starts automatically after a reboot.
 
 Installation fails safely: if the service does not become healthy, it is stopped
 and disabled rather than being left in a restart loop.
 
-A later release should provide a signed `.deb` package, but the scripted installer remains useful for contributors and development builds.
+A signed `.deb` package may be added later; the scripted installer is the
+recommended path for now.
 
 ---
 

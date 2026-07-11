@@ -31,6 +31,16 @@ class StartRequest(BaseModel):
     mode: str = Field(default="normal", pattern=r"^(normal|slow|ignore-stop|crash)$")
 
 
+class ScheduleRequest(BaseModel):
+    profile_id: str = Field(max_length=36)
+    enabled: bool = True
+    start_time: str | None = Field(default=None, pattern=r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+    stop_time: str | None = Field(default=None, pattern=r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+    backup_before_stop: bool = True
+    power_off_after_stop: bool = False
+    wake_time: str | None = Field(default=None, pattern=r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+
+
 PLAYER_ACTIONS: dict[str, str] = {
     "whitelist_add": "whitelist add",
     "whitelist_remove": "whitelist remove",

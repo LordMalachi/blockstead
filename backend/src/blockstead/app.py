@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from .config import Settings
 from .db import Base, create_session_factory
 from .import_scan import canonical_child, scan_server
-from .models import Administrator, AuditEvent, LoginSession, Profile
+from .models import Administrator, AuditEvent, LoginSession, Profile, Schedule
 from .process import InvalidTransition, ProcessManager
 from .schemas import (
     CommandRequest,
@@ -34,7 +34,9 @@ from .schemas import (
     PlayerActionRequest,
     ProfileCreate,
     StartRequest,
+    ScheduleRequest,
 )
+from .scheduler import Scheduler
 from .security import (
     SESSION_COOKIE,
     LoginLimiter,
@@ -69,7 +71,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         engine = factory.kw["bind"]
         Base.metadata.create_all(engine)
+        scheduler.begin()
         yield
+        await scheduler.close()
         await manager.close()
 
     app = FastAPI(title="Blockstead API", version="0.1.0", lifespan=lifespan)
@@ -83,6 +87,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield db
 
     Db = Annotated[Session, Depends(get_db)]
+
+    async def scheduled_start(profile: Profile) -> None:
+        arguments, cwd, label = launch_spec(profile, "normal")
+        await manager.start(arguments, cwd=cwd, label=label)
+        app.state.active_profile_id = profile.id
+
+    scheduler = Scheduler(factory, manager, scheduled_start, config.data_dir)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: object) -> Response:
@@ -345,6 +356,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def process_logs(request: Request, db: Db) -> list[dict[str, object]]:
         current(request, db)
         return [event.__dict__ for event in manager.logs()]
+
+    @app.get("/api/v1/schedules")
+    def list_schedules(request: Request, db: Db) -> list[dict[str, object]]:
+        current(request, db)
+        return [{"id": s.id, "profile_id": s.profile_id, "enabled": s.enabled, "start_time": s.start_time, "stop_time": s.stop_time, "backup_before_stop": s.backup_before_stop, "power_off_after_stop": s.power_off_after_stop, "wake_time": s.wake_time} for s in db.scalars(select(Schedule)).all()]
+
+    @app.put("/api/v1/schedules/{profile_id}")
+    def save_schedule(profile_id: str, payload: ScheduleRequest, request: Request, db: Db) -> dict[str, object]:
+        admin = mutation(request, db)
+        if payload.profile_id != profile_id or db.get(Profile, profile_id) is None:
+            raise HTTPException(404, "That profile was not found.")
+        if payload.power_off_after_stop and not payload.stop_time:
+            raise HTTPException(422, "A computer shutdown needs a server stop time.")
+        schedule = db.scalar(select(Schedule).where(Schedule.profile_id == profile_id))
+        if schedule is None:
+            schedule = Schedule(profile_id=profile_id)
+            db.add(schedule)
+        for name, value in payload.model_dump().items():
+            setattr(schedule, name, value)
+        db.add(AuditEvent(admin_id=admin.id, category="schedule_update", result="success", safe_detail=f"Updated schedule for profile {profile_id}"))
+        db.commit()
+        return {"id": schedule.id, **payload.model_dump()}
 
     @app.post("/api/v1/server/start", status_code=202)
     async def process_start(payload: StartRequest, request: Request, db: Db) -> dict[str, object]:

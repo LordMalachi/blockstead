@@ -50,6 +50,9 @@ if systemctl is-active --quiet "$SERVICE"; then
 fi
 
 install -d -o root -g root -m 0755 "$APP_DIR"
+install -d -o root -g root -m 0755 /usr/lib/blockstead
+install -o root -g root -m 0755 "$ROOT/packaging/blockstead-power" /usr/lib/blockstead/blockstead-power
+install -o root -g root -m 0440 "$ROOT/packaging/sudoers/blockstead-power" /etc/sudoers.d/blockstead-power
 rm -rf "$APP_DIR/backend" "$APP_DIR/frontend"
 cp -a "$ROOT/backend" "$APP_DIR/backend"
 install -d -o root -g root -m 0755 "$APP_DIR/frontend"

@@ -48,3 +48,18 @@ class AuditEvent(Base):
     result: Mapped[str] = mapped_column(String(24))
     safe_detail: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Schedule(Base):
+    __tablename__ = "schedules"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    start_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    stop_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    backup_before_stop: Mapped[bool] = mapped_column(Boolean, default=True)
+    power_off_after_stop: Mapped[bool] = mapped_column(Boolean, default=False)
+    wake_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    last_start_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    last_stop_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

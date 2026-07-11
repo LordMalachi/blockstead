@@ -159,3 +159,23 @@ def test_system_metrics(client: TestClient, auth: dict[str, str]) -> None:
     assert running["process"]["memory_bytes"] is None or running["process"]["memory_bytes"] > 0
     assert client.post("/api/v1/server/stop", headers=auth).status_code == 202
     wait_for_state(client, "STOPPED")
+
+
+def test_schedule_is_saved_per_profile(client: TestClient, auth: dict[str, str]) -> None:
+    profile_id = import_fixture(client, auth)
+    response = client.put(
+        f"/api/v1/schedules/{profile_id}",
+        headers=auth,
+        json={
+            "profile_id": profile_id,
+            "start_time": "09:00",
+            "stop_time": "22:30",
+            "backup_before_stop": True,
+            "power_off_after_stop": True,
+            "wake_time": "08:45",
+        },
+    )
+    assert response.status_code == 200
+    schedules = client.get("/api/v1/schedules").json()
+    assert schedules[0]["start_time"] == "09:00"
+    assert schedules[0]["power_off_after_stop"] is True
