@@ -1,0 +1,24 @@
+[Unit]
+Description=Blockstead Minecraft server manager
+After=network.target
+
+[Service]
+Type=simple
+User=blockstead
+Group=blockstead
+WorkingDirectory=/opt/blockstead
+ExecStart=/opt/blockstead/venv/bin/uvicorn blockstead.app:app --host 127.0.0.1 --port 8765
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/blockstead /var/log/blockstead /srv/minecraft
+
+[Install]
+WantedBy=multi-user.target

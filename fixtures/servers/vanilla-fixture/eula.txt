@@ -1,0 +1,2 @@
+# Fixture only. No real Minecraft server is bundled.
+eula=false
