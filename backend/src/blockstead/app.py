@@ -14,6 +14,7 @@ from fastapi import (
     HTTPException,
     Request,
     Response,
+    UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -31,28 +32,43 @@ from .distributions import (
     launch_arguments,
     required_java_major,
 )
+from .extension_ops import (
+    MAX_UPLOAD_BYTES,
+    ExtensionOpsError,
+    place_upload,
+    set_enabled,
+)
+from .extension_ops import (
+    remove as remove_extension,
+)
+from .extensions import read_extensions
 from .import_scan import canonical_child, scan_server
 from .java_runtime import discover_java_runtimes, find_java
 from .models import Administrator, AuditEvent, LoginSession, Profile, Schedule
+from .modrinth import ModrinthError, plan_install
+from .modrinth import search as modrinth_search
 from .process import InvalidTransition, ProcessManager
 from .provisioning import (
     USER_AGENT,
     ProvisionError,
+    download_verified_file,
     list_versions,
     provision_profile,
 )
+from .scheduler import Scheduler
 from .schemas import (
     CommandRequest,
     Credentials,
     EulaRequest,
     ImportRequest,
+    InstallRequest,
     PlayerActionRequest,
     ProfileCreate,
     ProvisionRequest,
     ScheduleRequest,
     StartRequest,
+    ToggleRequest,
 )
-from .scheduler import Scheduler
 from .security import (
     SESSION_COOKIE,
     LoginLimiter,
@@ -401,6 +417,183 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def profile_players(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
         return read_players(profile_directory(profile_id, db)).model_dump()
+
+    @app.get("/api/v1/profiles/{profile_id}/extensions")
+    def profile_extensions(profile_id: str, request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        return read_extensions(directory, profile.distribution).model_dump()
+
+    def extension_context(profile_id: str, db: Session) -> tuple[Profile, Path]:
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        info = DISTRIBUTIONS.get(profile.distribution, DISTRIBUTIONS["unknown"])
+        if info.extension_directory is None:
+            raise HTTPException(409, "This server distribution does not load plugins or mods.")
+        return profile, directory / info.extension_directory
+
+    @app.get("/api/v1/profiles/{profile_id}/modrinth/search")
+    async def extension_search(
+        profile_id: str, query: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        current(request, db)
+        profile, _ = extension_context(profile_id, db)
+        if not query.strip() or len(query) > 100:
+            raise HTTPException(422, "Enter a search of at most 100 characters.")
+        try:
+            projects = await modrinth_search(
+                http_client, profile.distribution, profile.minecraft_version, query.strip()
+            )
+        except ModrinthError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {
+            "minecraft_version": profile.minecraft_version,
+            "projects": [project.model_dump() for project in projects],
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/extensions/install", status_code=201)
+    async def extension_install(
+        profile_id: str, payload: InstallRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        profile, extension_dir = extension_context(profile_id, db)
+        try:
+            planned = await plan_install(
+                http_client,
+                profile.distribution,
+                profile.minecraft_version,
+                payload.project_id,
+                payload.version_id,
+            )
+        except ModrinthError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        extension_dir.mkdir(mode=0o755, exist_ok=True)
+        installed: list[dict[str, object]] = []
+        skipped: list[str] = []
+        try:
+            for planned_file in planned:
+                if (extension_dir / planned_file.file_name).exists():
+                    skipped.append(planned_file.file_name)
+                    continue
+                sha256 = await download_verified_file(
+                    http_client,
+                    planned_file.url,
+                    extension_dir,
+                    planned_file.file_name,
+                    planned_file.checksum_algorithm,
+                    planned_file.checksum,
+                )
+                installed.append(
+                    {
+                        "file_name": planned_file.file_name,
+                        "version_number": planned_file.version_number,
+                        "required_by": planned_file.required_by,
+                        "sha256": sha256,
+                    }
+                )
+        except ProvisionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="extension_install",
+                result="success",
+                safe_detail=(
+                    f"Installed {len(installed)} file(s) from Modrinth project {payload.project_id}"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "installed": installed,
+            "skipped": skipped,
+            "restart_required": True,
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/extensions/toggle")
+    def extension_toggle(
+        profile_id: str, payload: ToggleRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        _, extension_dir = extension_context(profile_id, db)
+        try:
+            set_enabled(extension_dir, payload.file_name, payload.enabled)
+        except ExtensionOpsError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        state = "enabled" if payload.enabled else "disabled"
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="extension_toggle",
+                result="success",
+                safe_detail=f"Marked {payload.file_name} as {state}",
+            )
+        )
+        db.commit()
+        return {
+            "file_name": payload.file_name,
+            "enabled": payload.enabled,
+            "restart_required": True,
+        }
+
+    @app.delete("/api/v1/profiles/{profile_id}/extensions/{file_name}")
+    def extension_remove(
+        profile_id: str,
+        file_name: str,
+        request: Request,
+        db: Db,
+        disabled: bool = False,
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        _, extension_dir = extension_context(profile_id, db)
+        try:
+            remove_extension(extension_dir, file_name, disabled)
+        except ExtensionOpsError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="extension_remove",
+                result="success",
+                safe_detail=f"Removed {file_name}",
+            )
+        )
+        db.commit()
+        return {"file_name": file_name, "removed": True, "restart_required": True}
+
+    @app.post("/api/v1/profiles/{profile_id}/extensions/upload", status_code=201)
+    async def extension_upload(
+        profile_id: str, file: UploadFile, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        profile, extension_dir = extension_context(profile_id, db)
+        content = await file.read(MAX_UPLOAD_BYTES + 1)
+        try:
+            target = place_upload(extension_dir, file.filename or "", content)
+        except ExtensionOpsError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        view = read_extensions(profile_directory(profile_id, db), profile.distribution)
+        entry = next((item for item in view.entries if item.file_name == target.name), None)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="extension_upload",
+                result="success",
+                safe_detail=f"Uploaded {target.name} "
+                f"(sha256 {entry.sha256 if entry else 'unknown'})",
+            )
+        )
+        db.commit()
+        return {
+            "entry": entry.model_dump() if entry else None,
+            "warnings": [warning.model_dump() for warning in view.warnings],
+            "restart_required": True,
+        }
 
     @app.get("/api/v1/profiles/{profile_id}/prerequisites")
     def profile_prerequisites(profile_id: str, request: Request, db: Db) -> dict[str, object]:

@@ -203,15 +203,24 @@ async def resolve_plan(client: httpx.AsyncClient, distribution: str, version: st
     raise ProvisionError("Blockstead cannot provision this distribution.")
 
 
-async def _download_verified(
-    client: httpx.AsyncClient, plan: ProvisionPlan, directory: Path
+async def download_verified_file(
+    client: httpx.AsyncClient,
+    url: str,
+    directory: Path,
+    file_name: str,
+    checksum_algorithm: str | None,
+    checksum: str | None,
 ) -> str:
-    staging = directory / f".{plan.file_name}.part"
-    published = hashlib.new(plan.checksum_algorithm) if plan.checksum_algorithm else None
+    """Stream a download to a staging file, verify it, and place it atomically.
+
+    Returns the SHA-256 of the received bytes for audit records.
+    """
+    staging = directory / f".{file_name}.part"
+    published = hashlib.new(checksum_algorithm) if checksum_algorithm else None
     recorded = hashlib.sha256()
     received = 0
     try:
-        async with client.stream("GET", plan.url) as response:
+        async with client.stream("GET", url) as response:
             response.raise_for_status()
             with staging.open("wb") as handle:
                 async for chunk in response.aiter_bytes():
@@ -230,13 +239,21 @@ async def _download_verified(
     except ProvisionError:
         staging.unlink(missing_ok=True)
         raise
-    if published is not None and plan.checksum and published.hexdigest() != plan.checksum:
+    if published is not None and checksum and published.hexdigest() != checksum:
         staging.unlink(missing_ok=True)
         raise ProvisionError(
             "The downloaded file did not match its published checksum and was discarded."
         )
-    staging.replace(directory / plan.file_name)
+    staging.replace(directory / file_name)
     return recorded.hexdigest()
+
+
+async def _download_verified(
+    client: httpx.AsyncClient, plan: ProvisionPlan, directory: Path
+) -> str:
+    return await download_verified_file(
+        client, plan.url, directory, plan.file_name, plan.checksum_algorithm, plan.checksum
+    )
 
 
 async def provision_profile(
