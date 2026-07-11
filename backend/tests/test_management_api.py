@@ -91,8 +91,13 @@ def test_player_action_rejects_invalid_names(client: TestClient, auth: dict[str,
 
 
 def test_player_action_lifecycle(client: TestClient, auth: dict[str, str]) -> None:
-    import_fixture(client, auth)
-    assert client.post("/api/v1/server/start", headers=auth, json={}).status_code == 202
+    profile_id = import_fixture(client, auth)
+    assert (
+        client.post(
+            "/api/v1/server/start", headers=auth, json={"profile_id": profile_id}
+        ).status_code
+        == 202
+    )
     wait_for_state(client, "RUNNING")
     response = client.post(
         "/api/v1/server/players",
@@ -107,10 +112,15 @@ def test_player_action_lifecycle(client: TestClient, auth: dict[str, str]) -> No
 
 
 def test_restart_reaches_running_with_new_pid(client: TestClient, auth: dict[str, str]) -> None:
-    import_fixture(client, auth)
-    assert client.post("/api/v1/server/start", headers=auth, json={}).status_code == 202
+    profile_id = import_fixture(client, auth)
+    assert (
+        client.post(
+            "/api/v1/server/start", headers=auth, json={"profile_id": profile_id}
+        ).status_code
+        == 202
+    )
     first = wait_for_state(client, "RUNNING")
-    response = client.post("/api/v1/server/restart", headers=auth, json={})
+    response = client.post("/api/v1/server/restart", headers=auth, json={"profile_id": profile_id})
     assert response.status_code == 202
     second = wait_for_state(client, "RUNNING")
     assert second["pid"] != first["pid"]
@@ -119,12 +129,17 @@ def test_restart_reaches_running_with_new_pid(client: TestClient, auth: dict[str
 
 
 def test_restart_requires_running_server(client: TestClient, auth: dict[str, str]) -> None:
-    import_fixture(client, auth)
-    assert client.post("/api/v1/server/restart", headers=auth, json={}).status_code == 409
+    profile_id = import_fixture(client, auth)
+    assert (
+        client.post(
+            "/api/v1/server/restart", headers=auth, json={"profile_id": profile_id}
+        ).status_code
+        == 409
+    )
 
 
 def test_system_metrics(client: TestClient, auth: dict[str, str]) -> None:
-    import_fixture(client, auth)
+    profile_id = import_fixture(client, auth)
     response = client.get("/api/v1/system/metrics")
     assert response.status_code == 200
     body = response.json()
@@ -132,7 +147,12 @@ def test_system_metrics(client: TestClient, auth: dict[str, str]) -> None:
     assert 0 <= body["disk"]["percent"] <= 100
     assert body["process"]["uptime_seconds"] is None
 
-    assert client.post("/api/v1/server/start", headers=auth, json={}).status_code == 202
+    assert (
+        client.post(
+            "/api/v1/server/start", headers=auth, json={"profile_id": profile_id}
+        ).status_code
+        == 202
+    )
     wait_for_state(client, "RUNNING")
     running = client.get("/api/v1/system/metrics").json()
     assert running["process"]["uptime_seconds"] is not None

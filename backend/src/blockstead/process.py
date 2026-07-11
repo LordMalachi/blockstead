@@ -49,7 +49,7 @@ class InvalidTransition(RuntimeError):
 
 
 class ProcessManager:
-    def __init__(self, fake_script: Path, log_limit: int = 1000) -> None:
+    def __init__(self, fake_script: Path | None = None, log_limit: int = 1000) -> None:
         self.fake_script = fake_script
         self.state = ProcessState.STOPPED
         self.exit_code: int | None = None
@@ -81,7 +81,14 @@ class ProcessManager:
             raise InvalidTransition(f"Invalid process transition {self.state} -> {target}")
         self.state, self.reason = target, reason
 
-    async def start(self, *, mode: str = "normal") -> None:
+    async def start(
+        self,
+        arguments: tuple[str, ...] | None = None,
+        *,
+        cwd: Path | None = None,
+        label: str = "Server",
+        mode: str = "normal",
+    ) -> None:
         async with self._lock:
             if self.state not in {
                 ProcessState.STOPPED,
@@ -93,7 +100,10 @@ class ProcessManager:
             self.exit_code = None
             self._force_requested = False
             try:
-                arguments = (sys.executable, str(self.fake_script), "--mode", mode)
+                if arguments is None:
+                    if self.fake_script is None:
+                        raise ValueError("No server launch command was provided.")
+                    arguments = (sys.executable, str(self.fake_script), "--mode", mode)
                 if os.name == "posix":
                     self._process = await asyncio.create_subprocess_exec(
                         *arguments,
@@ -101,6 +111,7 @@ class ProcessManager:
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.STDOUT,
                         start_new_session=True,
+                        cwd=cwd,
                     )
                 else:
                     self._process = await asyncio.create_subprocess_exec(
@@ -108,10 +119,11 @@ class ProcessManager:
                         stdin=asyncio.subprocess.PIPE,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.STDOUT,
+                        cwd=cwd,
                     )
             except (OSError, ValueError) as exc:
                 self.transition(
-                    ProcessState.CRASHED, f"Fixture process could not start: {type(exc).__name__}"
+                    ProcessState.CRASHED, f"{label} process could not start: {type(exc).__name__}"
                 )
                 raise
             self.started_at = datetime.now(timezone.utc)  # noqa: UP017
@@ -125,7 +137,7 @@ class ProcessManager:
             clean = line.decode("utf-8", errors="replace").rstrip("\r\n")
             self._publish(clean)
             if "Done (" in clean and self.state == ProcessState.STARTING:
-                self.transition(ProcessState.RUNNING, "Fixture reported ready")
+                self.transition(ProcessState.RUNNING, "Server reported ready")
         code = await process.wait()
         self.exit_code = code
         if self.state == ProcessState.STOPPING and (code == 0 or self._force_requested):
@@ -160,9 +172,9 @@ class ProcessManager:
         if (
             any(character in command for character in "\r\n\x00")
             or not command.strip()
-            or len(command) > 500
+            or len(command) > 32767
         ):
-            raise ValueError("Command must be one non-empty line of at most 500 characters.")
+            raise ValueError("Command must be one non-empty line of at most 32,767 characters.")
         self._process.stdin.write((command + "\n").encode())
         await self._process.stdin.drain()
 

@@ -27,7 +27,9 @@ def test_authenticated_fixture_lifecycle(client: TestClient, auth: dict[str, str
     assert profile.status_code == 201
     assert profile.json()["is_fixture"] is True
 
-    assert client.post("/api/v1/server/start", headers=auth, json={}).status_code == 202
+    assert client.post(
+        "/api/v1/server/start", headers=auth, json={"profile_id": profile.json()["id"]}
+    ).status_code == 202
     wait_for_state(client, "RUNNING")
     command = client.post(
         "/api/v1/server/command",

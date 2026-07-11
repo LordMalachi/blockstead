@@ -14,7 +14,7 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
   await page.getByRole("button", { name: "Confirm profile record" }).click();
   await expect(page.getByText("Profiles").locator("..").getByText("1")).toBeVisible();
 
-  await page.getByRole("button", { name: "Start fixture" }).click();
+  await page.getByRole("button", { name: "Start server" }).click();
   await expect(page.getByText("Running", { exact: true })).toBeVisible({ timeout: 5_000 });
   await page.getByLabel("Minecraft console command").fill("say hello from browser test");
   await page.getByRole("button", { name: "Send command" }).click();

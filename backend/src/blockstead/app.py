@@ -1,4 +1,5 @@
 import logging
+import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -60,7 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or Settings()
     config.prepare()
     factory = create_session_factory(config.data_dir / "blockstead.db")
-    manager = ProcessManager(Path(__file__).with_name("fake_server.py"))
+    manager = ProcessManager()
     limiter = LoginLimiter()
     psutil.cpu_percent(interval=None)  # prime so later non-blocking samples are meaningful
 
@@ -75,6 +76,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = config
     app.state.session_factory = factory
     app.state.process_manager = manager
+    app.state.active_profile_id = None
 
     def get_db() -> Iterator[Session]:
         with factory() as db:
@@ -307,7 +309,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/server/state")
     def process_state(request: Request, db: Db) -> dict[str, object]:
         current(request, db)
-        return manager.snapshot()
+        return {**manager.snapshot(), "profile_id": app.state.active_profile_id}
+
+    def launch_spec(profile: Profile, mode: str) -> tuple[tuple[str, ...], Path, str]:
+        try:
+            directory = canonical_child(Path(profile.server_directory), config.server_root)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(
+                409, "The profile folder is no longer inside the allowed server root."
+            ) from exc
+        if profile.is_fixture:
+            return (
+                (sys.executable, str(Path(__file__).with_name("fake_server.py")), "--mode", mode),
+                directory,
+                "Fixture",
+            )
+        if profile.distribution != "vanilla":
+            raise HTTPException(
+                409, "Only vanilla server.jar profiles can be launched in this milestone."
+            )
+        jar = directory / "server.jar"
+        eula = directory / "eula.txt"
+        if not jar.is_file():
+            raise HTTPException(409, "This vanilla profile does not contain server.jar.")
+        if (
+            not eula.is_file()
+            or "eula=true" not in eula.read_text(encoding="utf-8", errors="replace").lower()
+        ):
+            raise HTTPException(
+                409, "Accept the Minecraft EULA in eula.txt before starting this server."
+            )
+        return (("java", "-jar", str(jar), "nogui"), directory, "Vanilla Minecraft")
 
     @app.get("/api/v1/server/logs")
     def process_logs(request: Request, db: Db) -> list[dict[str, object]]:
@@ -317,11 +349,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/v1/server/start", status_code=202)
     async def process_start(payload: StartRequest, request: Request, db: Db) -> dict[str, object]:
         admin = mutation(request, db)
-        fixture = db.scalar(select(Profile).where(Profile.is_fixture.is_(True)))
-        if fixture is None:
-            raise HTTPException(409, "Import the fixture profile before starting it.")
+        profile = db.get(Profile, payload.profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
         try:
-            await manager.start(mode=payload.mode)
+            arguments, cwd, label = launch_spec(profile, payload.mode)
+            await manager.start(arguments, cwd=cwd, label=label)
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
         db.add(
@@ -329,11 +362,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 admin_id=admin.id,
                 category="server_start",
                 result="accepted",
-                safe_detail=f"Started owned fixture in {payload.mode} mode",
+                safe_detail=f"Started {profile.distribution} profile {profile.name}",
             )
         )
         db.commit()
-        return manager.snapshot()
+        app.state.active_profile_id = profile.id
+        return {**manager.snapshot(), "profile_id": profile.id}
 
     @app.post("/api/v1/server/command", status_code=202)
     async def process_command(payload: CommandRequest, request: Request, db: Db) -> dict[str, str]:
@@ -354,17 +388,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "accepted"}
 
     @app.post("/api/v1/server/restart", status_code=202)
-    async def process_restart(
-        payload: StartRequest, request: Request, db: Db
-    ) -> dict[str, object]:
+    async def process_restart(payload: StartRequest, request: Request, db: Db) -> dict[str, object]:
         admin = mutation(request, db)
         try:
+            if app.state.active_profile_id != payload.profile_id:
+                raise InvalidTransition("Restart the profile that is currently running.")
             if not await manager.stop():
                 raise InvalidTransition(
                     "The server did not stop before the timeout. "
                     "Force stop it, then start it again."
                 )
-            await manager.start(mode=payload.mode)
+            profile = db.get(Profile, payload.profile_id)
+            if profile is None:
+                raise HTTPException(404, "That profile was not found.")
+            arguments, cwd, label = launch_spec(profile, payload.mode)
+            await manager.start(arguments, cwd=cwd, label=label)
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
         db.add(
@@ -372,7 +410,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 admin_id=admin.id,
                 category="server_restart",
                 result="accepted",
-                safe_detail=f"Restarted owned fixture in {payload.mode} mode",
+                safe_detail=f"Restarted profile {profile.name}",
             )
         )
         db.commit()
@@ -405,7 +443,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             graceful = await manager.stop()
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
-        return {**manager.snapshot(), "graceful": graceful}
+        if graceful:
+            app.state.active_profile_id = None
+        return {
+            **manager.snapshot(),
+            "graceful": graceful,
+            "profile_id": app.state.active_profile_id,
+        }
 
     @app.post("/api/v1/server/force-stop", status_code=202)
     async def process_force_stop(request: Request, db: Db) -> dict[str, object]:
@@ -414,7 +458,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await manager.force_stop()
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
-        return manager.snapshot()
+        app.state.active_profile_id = None
+        return {**manager.snapshot(), "profile_id": None}
 
     @app.websocket("/api/v1/server/logs/ws")
     async def logs_socket(websocket: WebSocket) -> None:

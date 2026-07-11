@@ -7,8 +7,10 @@ Type=simple
 User=blockstead
 Group=blockstead
 WorkingDirectory=/opt/blockstead
+EnvironmentFile=/etc/blockstead/blockstead.env
 ExecStart=/opt/blockstead/venv/bin/uvicorn blockstead.app:app --host 127.0.0.1 --port 8765
 Restart=on-failure
+UMask=0027
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -18,6 +20,7 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
+ProtectProc=invisible
 ReadWritePaths=/var/lib/blockstead /var/log/blockstead /srv/minecraft
 
 [Install]

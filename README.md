@@ -16,10 +16,11 @@ The repository now contains the first safe, fixture-backed vertical slice:
   and bounded login attempts
 - read-only server-folder scanning inside one canonical allowed root and a
   confirmed profile-record plan that does not alter imported files
-- an owned fake Minecraft process, explicit lifecycle state machine, readiness
+- an owned Minecraft process for imported vanilla `server.jar` profiles (plus a
+  safe fixture for development), explicit lifecycle state machine, readiness
   detection, duplicate-start protection, bounded live logs over an authenticated
-  WebSocket, Minecraft console input, graceful stop, explicit forced fallback,
-  restart, and abnormal-exit detection
+  WebSocket, full one-line vanilla console command input, graceful stop,
+  explicit forced fallback, restart, and abnormal-exit detection
 - first management views: guided player actions (allowlist, operators, bans)
   validated against Minecraft naming rules and sent only as console commands,
   read-only player lists parsed defensively from the server folder, a read-only
@@ -28,8 +29,8 @@ The repository now contains the first safe, fixture-backed vertical slice:
 - a responsive light/dark dashboard and automated backend, component, API,
   process-integration, browser, lint, typing, build, and dependency-audit gates
 
-This milestone does **not** launch a real Minecraft jar, create or restore
-backups, or install a production Linux service yet. The Linux scripts are
+This milestone does **not** create or restore backups, or install a production
+Linux service yet. The Linux scripts are
 clearly marked safety previews until the remaining milestone work and the Linux
 Mint checklist are complete.
 
@@ -43,8 +44,9 @@ Use the pinned Python 3.12 and Node 22 runtimes:
 ```
 
 Open <http://127.0.0.1:5173>. The first dashboard flow imports the sanitized
-`fixtures/servers/vanilla-fixture` folder and launches only Blockstead's owned
-Python fixture process. Run all checks with `./scripts/test.sh`. Regenerate the
+`fixtures/servers/vanilla-fixture` folder and launches its safe Python fixture
+process. Imported vanilla profiles with `server.jar` and an accepted `eula.txt`
+can also be started from the dashboard. Run all checks with `./scripts/test.sh`. Regenerate the
 documentation screenshots below with `npm --prefix frontend run screenshots`.
 
 ### Screenshots
@@ -1246,33 +1248,28 @@ Windows:
 
 ## 19. Linux Mint installation experience
 
-The intended installation command during development is:
+Deploy on a supported Linux host with Python 3.12+, Node.js, npm, Java, and
+systemd available:
 
 ```bash
 sudo ./scripts/install-linux.sh
 ```
 
-The installer should:
+The installer:
 
-1. verify Linux and identify the distribution
-2. verify architecture
-3. check required system packages
-4. check Java availability without changing it unexpectedly
-5. display every path it will create
-6. create the dedicated service account
-7. install application files
-8. build or install the Python environment
-9. install compiled frontend assets
-10. create configuration and state directories
-11. set ownership and permissions
-12. install and verify the `systemd` unit
-13. start the service
-14. verify the health endpoint
-15. print the local setup URL
-16. explain how to view service logs
-17. explain how to uninstall without deleting Minecraft data
+1. clearly displays the paths and changes it will make and requires confirmation
+2. creates the dedicated unprivileged `blockstead` account and private data folders
+3. builds the frontend, creates the application virtual environment, and installs the service
+4. binds the dashboard to localhost, starts it, and checks its health endpoint
+5. prints the exact dashboard URL, first-run steps, and journal command
 
-Installation must fail safely. It must not leave a partially enabled service that repeatedly restarts.
+After opening `http://127.0.0.1:8765`, create the first administrator account.
+Put a legitimately obtained vanilla `server.jar` folder under `/srv/minecraft`,
+review and accept Minecraft's EULA in that folder yourself, import it from the
+dashboard, select the profile, and choose **Start server**.
+
+Installation fails safely: if the service does not become healthy, it is stopped
+and disabled rather than being left in a restart loop.
 
 A later release should provide a signed `.deb` package, but the scripted installer remains useful for contributors and development builds.
 

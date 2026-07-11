@@ -19,7 +19,7 @@ test("captures documentation screenshots @docs", async ({ page }) => {
   await page.screenshot({ path: out("02-import-plan"), fullPage: true });
   await page.getByRole("button", { name: "Confirm profile record" }).click();
 
-  await page.getByRole("button", { name: "Start fixture" }).click();
+  await page.getByRole("button", { name: "Start server" }).click();
   await expect(page.getByText("Running", { exact: true })).toBeVisible({ timeout: 5_000 });
   await page.getByRole("button", { name: "Who is online?" }).click();
   await expect(page.getByRole("log")).toContainText("players online");

@@ -16,7 +16,7 @@ class ProfileCreate(BaseModel):
 
 
 class CommandRequest(BaseModel):
-    command: str = Field(min_length=1, max_length=500)
+    command: str = Field(min_length=1, max_length=32767)
 
     @field_validator("command")
     @classmethod
@@ -27,6 +27,7 @@ class CommandRequest(BaseModel):
 
 
 class StartRequest(BaseModel):
+    profile_id: str = Field(default="", max_length=36)
     mode: str = Field(default="normal", pattern=r"^(normal|slow|ignore-stop|crash)$")
 
 
