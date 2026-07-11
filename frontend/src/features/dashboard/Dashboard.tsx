@@ -40,7 +40,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
   function send(event: FormEvent) { event.preventDefault(); if (!command.trim()) return; action.mutate({ endpoint: "/server/command", body: { command } }); setCommand(""); }
   async function logout() { await api("/auth/logout", { method: "POST" }); clearCsrf(); onLogout(); }
   const current = state.data ?? { state: "UNKNOWN" as const, pid: null, exit_code: null, reason: "Checking server state" };
-  const fixtureProfile = profiles.data?.find(profile => profile.is_fixture);
+
   const selectedProfile = profiles.data?.find(profile => profile.id === selectedProfileId) ?? profiles.data?.[0];
   const selectedId = selectedProfile?.id ?? "";
   const running = current.state === "RUNNING";
