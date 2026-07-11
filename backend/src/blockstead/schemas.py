@@ -26,6 +26,17 @@ class CommandRequest(BaseModel):
         return value
 
 
+class ProvisionRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    directory_name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    distribution: str = Field(pattern=r"^(vanilla|paper|fabric|neoforge)$")
+    minecraft_version: str = Field(min_length=1, max_length=32, pattern=r"^[0-9][0-9A-Za-z._-]*$")
+
+
+class EulaRequest(BaseModel):
+    accept: bool
+
+
 class StartRequest(BaseModel):
     profile_id: str = Field(default="", max_length=36)
     mode: str = Field(default="normal", pattern=r"^(normal|slow|ignore-stop|crash)$")

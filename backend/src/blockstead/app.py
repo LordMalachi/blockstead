@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 import psutil
 from fastapi import (
     Depends,
@@ -34,12 +35,20 @@ from .import_scan import canonical_child, scan_server
 from .java_runtime import discover_java_runtimes, find_java
 from .models import Administrator, AuditEvent, LoginSession, Profile, Schedule
 from .process import InvalidTransition, ProcessManager
+from .provisioning import (
+    USER_AGENT,
+    ProvisionError,
+    list_versions,
+    provision_profile,
+)
 from .schemas import (
     CommandRequest,
     Credentials,
+    EulaRequest,
     ImportRequest,
     PlayerActionRequest,
     ProfileCreate,
+    ProvisionRequest,
     ScheduleRequest,
     StartRequest,
 )
@@ -74,6 +83,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     limiter = LoginLimiter()
     psutil.cpu_percent(interval=None)  # prime so later non-blocking samples are meaningful
 
+    http_client = httpx.AsyncClient(
+        headers={"User-Agent": USER_AGENT},
+        timeout=httpx.Timeout(30.0),
+        follow_redirects=True,
+    )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         engine = factory.kw["bind"]
@@ -82,6 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         yield
         await scheduler.close()
         await manager.close()
+        await http_client.aclose()
 
     app = FastAPI(title="Blockstead API", version="0.1.0", lifespan=lifespan)
     app.state.settings = config
@@ -277,6 +293,94 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "is_fixture": profile.is_fixture,
         }
 
+    @app.get("/api/v1/provision/versions/{distribution}")
+    async def provision_versions(distribution: str, request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        try:
+            versions = await list_versions(http_client, distribution)
+        except ProvisionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"distribution": distribution, "versions": versions}
+
+    @app.post("/api/v1/provision", status_code=201)
+    async def provision(payload: ProvisionRequest, request: Request, db: Db) -> dict[str, object]:
+        admin = mutation(request, db)
+        try:
+            result = await provision_profile(
+                http_client,
+                config.server_root,
+                payload.directory_name,
+                payload.distribution,
+                payload.minecraft_version,
+            )
+        except ProvisionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(409, "The new server folder could not be created.") from exc
+        profile = Profile(
+            name=payload.name.strip(),
+            server_directory=result.directory,
+            distribution=payload.distribution,
+            minecraft_version=payload.minecraft_version,
+            is_fixture=False,
+        )
+        db.add(profile)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="profile_provision",
+                result="success",
+                safe_detail=(
+                    f"Downloaded {payload.distribution} {payload.minecraft_version} "
+                    f"(sha256 {result.sha256})"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            "distribution": profile.distribution,
+            "minecraft_version": profile.minecraft_version,
+            "directory": result.directory,
+            "sha256": result.sha256,
+            "notes": result.plan.notes,
+            "eula_accepted": False,
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/eula")
+    def accept_eula(
+        profile_id: str, payload: EulaRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        if not payload.accept:
+            raise HTTPException(422, "The EULA can only be recorded as explicitly accepted.")
+        directory = profile_directory(profile_id, db)
+        eula_path = directory / "eula.txt"
+        staging = directory / ".eula.txt.tmp"
+        try:
+            staging.write_text(
+                "# Accepted through the Blockstead dashboard.\n"
+                "# By changing this you agree to the Minecraft EULA "
+                "(https://aka.ms/MinecraftEULA).\neula=true\n",
+                encoding="utf-8",
+            )
+            staging.replace(eula_path)
+        except OSError as exc:
+            raise HTTPException(
+                409, "Blockstead could not write eula.txt in the profile folder."
+            ) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="eula_accept",
+                result="success",
+                safe_detail=f"Recorded EULA acceptance for profile {profile_id}",
+            )
+        )
+        db.commit()
+        return {"profile_id": profile_id, "eula_accepted": True}
+
     def profile_directory(profile_id: str, db: Session) -> Path:
         profile = db.get(Profile, profile_id)
         if profile is None:
@@ -422,10 +526,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/schedules")
     def list_schedules(request: Request, db: Db) -> list[dict[str, object]]:
         current(request, db)
-        return [{"id": s.id, "profile_id": s.profile_id, "enabled": s.enabled, "start_time": s.start_time, "stop_time": s.stop_time, "backup_before_stop": s.backup_before_stop, "power_off_after_stop": s.power_off_after_stop, "wake_time": s.wake_time} for s in db.scalars(select(Schedule)).all()]
+        return [
+            {
+                "id": s.id,
+                "profile_id": s.profile_id,
+                "enabled": s.enabled,
+                "start_time": s.start_time,
+                "stop_time": s.stop_time,
+                "backup_before_stop": s.backup_before_stop,
+                "power_off_after_stop": s.power_off_after_stop,
+                "wake_time": s.wake_time,
+            }
+            for s in db.scalars(select(Schedule)).all()
+        ]
 
     @app.put("/api/v1/schedules/{profile_id}")
-    def save_schedule(profile_id: str, payload: ScheduleRequest, request: Request, db: Db) -> dict[str, object]:
+    def save_schedule(
+        profile_id: str, payload: ScheduleRequest, request: Request, db: Db
+    ) -> dict[str, object]:
         admin = mutation(request, db)
         if payload.profile_id != profile_id or db.get(Profile, profile_id) is None:
             raise HTTPException(404, "That profile was not found.")
@@ -437,7 +555,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.add(schedule)
         for name, value in payload.model_dump().items():
             setattr(schedule, name, value)
-        db.add(AuditEvent(admin_id=admin.id, category="schedule_update", result="success", safe_detail=f"Updated schedule for profile {profile_id}"))
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="schedule_update",
+                result="success",
+                safe_detail=f"Updated schedule for profile {profile_id}",
+            )
+        )
         db.commit()
         return {"id": schedule.id, **payload.model_dump()}
 
