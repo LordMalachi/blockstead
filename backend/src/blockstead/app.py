@@ -24,7 +24,14 @@ from sqlalchemy.orm import Session
 
 from .config import Settings
 from .db import Base, create_session_factory
+from .distributions import (
+    DISTRIBUTIONS,
+    LaunchPlanError,
+    launch_arguments,
+    required_java_major,
+)
 from .import_scan import canonical_child, scan_server
+from .java_runtime import discover_java_runtimes, find_java
 from .models import Administrator, AuditEvent, LoginSession, Profile, Schedule
 from .process import InvalidTransition, ProcessManager
 from .schemas import (
@@ -33,8 +40,8 @@ from .schemas import (
     ImportRequest,
     PlayerActionRequest,
     ProfileCreate,
-    StartRequest,
     ScheduleRequest,
+    StartRequest,
 )
 from .scheduler import Scheduler
 from .security import (
@@ -291,6 +298,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         current(request, db)
         return read_players(profile_directory(profile_id, db)).model_dump()
 
+    @app.get("/api/v1/profiles/{profile_id}/prerequisites")
+    def profile_prerequisites(profile_id: str, request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        info = DISTRIBUTIONS.get(profile.distribution, DISTRIBUTIONS["unknown"])
+        required = None if profile.is_fixture else required_java_major(profile.minecraft_version)
+        runtimes = [] if profile.is_fixture else discover_java_runtimes()
+        selected = find_java(required, runtimes)
+        launch_problem: str | None = None
+        if not profile.is_fixture:
+            if profile.distribution == "unknown":
+                launch_problem = "The distribution of this server folder was not recognized."
+            else:
+                try:
+                    launch_arguments(profile.distribution, directory)
+                except LaunchPlanError as exc:
+                    launch_problem = str(exc)
+        extension = info.extension_directory
+        return {
+            "distribution": profile.distribution,
+            "label": info.label,
+            "minecraft_version": profile.minecraft_version,
+            "is_fixture": profile.is_fixture,
+            "eula_accepted": profile.is_fixture or eula_accepted(directory),
+            "required_java_major": required,
+            "java_runtimes": [runtime.model_dump() for runtime in runtimes],
+            "selected_java": selected.model_dump() if selected else None,
+            "java_satisfied": profile.is_fixture or selected is not None,
+            "launch_files_ready": launch_problem is None,
+            "launch_problem": launch_problem,
+            "extension_directory": extension,
+            "extension_directory_present": bool(extension)
+            and (directory / str(extension)).is_dir(),
+        }
+
     @app.get("/api/v1/system/metrics")
     def system_metrics(request: Request, db: Db) -> dict[str, object]:
         current(request, db)
@@ -322,6 +367,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         current(request, db)
         return {**manager.snapshot(), "profile_id": app.state.active_profile_id}
 
+    def eula_accepted(directory: Path) -> bool:
+        eula = directory / "eula.txt"
+        try:
+            if not eula.is_file():
+                return False
+            with eula.open(encoding="utf-8", errors="replace") as handle:
+                return "eula=true" in handle.read(4096).lower()
+        except OSError:
+            return False
+
     def launch_spec(profile: Profile, mode: str) -> tuple[tuple[str, ...], Path, str]:
         try:
             directory = canonical_child(Path(profile.server_directory), config.server_root)
@@ -335,22 +390,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 directory,
                 "Fixture",
             )
-        if profile.distribution != "vanilla":
+        info = DISTRIBUTIONS.get(profile.distribution)
+        if info is None or profile.distribution == "unknown":
             raise HTTPException(
-                409, "Only vanilla server.jar profiles can be launched in this milestone."
+                409, "Blockstead cannot launch this profile because its distribution is unknown."
             )
-        jar = directory / "server.jar"
-        eula = directory / "eula.txt"
-        if not jar.is_file():
-            raise HTTPException(409, "This vanilla profile does not contain server.jar.")
-        if (
-            not eula.is_file()
-            or "eula=true" not in eula.read_text(encoding="utf-8", errors="replace").lower()
-        ):
+        if not eula_accepted(directory):
             raise HTTPException(
                 409, "Accept the Minecraft EULA in eula.txt before starting this server."
             )
-        return (("java", "-jar", str(jar), "nogui"), directory, "Vanilla Minecraft")
+        required = required_java_major(profile.minecraft_version)
+        runtime = find_java(required, discover_java_runtimes())
+        if runtime is None:
+            needed = f"Java {required} or newer" if required else "a Java runtime"
+            raise HTTPException(
+                409,
+                f"Starting this server needs {needed}, but none was found on this computer. "
+                "Install it and try again.",
+            )
+        try:
+            arguments = launch_arguments(profile.distribution, directory, runtime.path)
+        except LaunchPlanError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return arguments, directory, info.label
 
     @app.get("/api/v1/server/logs")
     def process_logs(request: Request, db: Db) -> list[dict[str, object]]:
