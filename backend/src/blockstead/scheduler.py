@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import shutil
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
@@ -10,11 +11,19 @@ from sqlalchemy.orm import Session, sessionmaker
 from .models import AuditEvent, Profile, Schedule
 from .process import ProcessManager
 
+logger = logging.getLogger(__name__)
+
 
 class Scheduler:
     """Small persistent daily scheduler. All server operations remain in the API process."""
 
-    def __init__(self, factory: sessionmaker[Session], manager: ProcessManager, start: Callable[[Profile], Awaitable[None]], data_dir: Path) -> None:
+    def __init__(
+        self,
+        factory: sessionmaker[Session],
+        manager: ProcessManager,
+        start: Callable[[Profile], Awaitable[None]],
+        data_dir: Path,
+    ) -> None:
         self.factory, self.manager, self.start, self.data_dir = factory, manager, start, data_dir
         self._task: asyncio.Task[None] | None = None
 
@@ -22,9 +31,11 @@ class Scheduler:
         self._task = asyncio.create_task(self._run())
 
     async def close(self) -> None:
-        if self._task:
-            self._task.cancel()
-            await asyncio.gather(self._task, return_exceptions=True)
+        task, self._task = self._task, None
+        if task is None or task.get_loop().is_closed():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     async def _run(self) -> None:
         while True:
@@ -32,7 +43,7 @@ class Scheduler:
                 await self.tick()
             except Exception:
                 # A bad profile or unavailable disk must not stop future schedules.
-                pass
+                logger.exception("Scheduled server operation failed")
             await asyncio.sleep(30)
 
     async def tick(self, now: datetime | None = None) -> None:
@@ -50,13 +61,29 @@ class Scheduler:
                     await self._stop(db, schedule, profile, date, now)
             db.commit()
 
-    async def _start(self, db: Session, schedule: Schedule, profile: Profile, date: str) -> None:
+    async def _start(
+        self, db: Session, schedule: Schedule, profile: Profile, date: str
+    ) -> None:
         if self.manager.snapshot()["state"] == "STOPPED":
             await self.start(profile)
-            db.add(AuditEvent(admin_id=self._admin_id(db), category="scheduled_start", result="success", safe_detail=f"Started {profile.name} on schedule"))
+            db.add(
+                AuditEvent(
+                    admin_id=self._admin_id(db),
+                    category="scheduled_start",
+                    result="success",
+                    safe_detail=f"Started {profile.name} on schedule",
+                )
+            )
         schedule.last_start_date = date
 
-    async def _stop(self, db: Session, schedule: Schedule, profile: Profile, date: str, now: datetime) -> None:
+    async def _stop(
+        self,
+        db: Session,
+        schedule: Schedule,
+        profile: Profile,
+        date: str,
+        now: datetime,
+    ) -> None:
         if self.manager.snapshot()["state"] in {"RUNNING", "STARTING", "DEGRADED"}:
             if schedule.backup_before_stop:
                 await self.manager.command("save-all flush")
@@ -64,7 +91,14 @@ class Scheduler:
             graceful = await self.manager.stop(timeout=60.0)
             if not graceful:
                 raise RuntimeError("scheduled graceful stop timed out")
-            db.add(AuditEvent(admin_id=self._admin_id(db), category="scheduled_stop", result="success", safe_detail=f"Backed up and stopped {profile.name} on schedule"))
+            db.add(
+                AuditEvent(
+                    admin_id=self._admin_id(db),
+                    category="scheduled_stop",
+                    result="success",
+                    safe_detail=f"Backed up and stopped {profile.name} on schedule",
+                )
+            )
         schedule.last_stop_date = date
         # The installer grants this exact helper passwordless access. It sets the RTC
         # wake alarm before requesting shutdown; failures leave the machine on.
@@ -86,11 +120,17 @@ class Scheduler:
         if not roots:
             raise RuntimeError("No world directory was found for backup")
         for root in roots:
-            shutil.make_archive(str(archive) + f"-{root.name}", "gztar", root_dir=root.parent, base_dir=root.name)
+            shutil.make_archive(
+                str(archive) + f"-{root.name}",
+                "gztar",
+                root_dir=root.parent,
+                base_dir=root.name,
+            )
         return archive
 
     @staticmethod
     def _admin_id(db: Session) -> str:
         # Schedules have no interactive actor. Attribute execution to the first owner.
         from .models import Administrator
+
         return db.scalars(select(Administrator.id)).first() or "system"

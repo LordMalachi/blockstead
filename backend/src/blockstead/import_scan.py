@@ -3,6 +3,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from .distributions import detect_distribution
+
 
 class ImportScan(BaseModel):
     canonical_path: str
@@ -26,15 +28,7 @@ def canonical_child(path: Path, allowed_root: Path) -> Path:
 def scan_server(path: Path, allowed_root: Path) -> ImportScan:
     folder = canonical_child(path, allowed_root)
     names = {entry.name for entry in folder.iterdir()}
-    distribution = "unknown"
-    if "paper.yml" in names or "paper-global.yml" in names:
-        distribution = "paper"
-    elif "fabric-server-launch.jar" in names:
-        distribution = "fabric"
-    elif any(name.startswith("neoforge-") and name.endswith(".jar") for name in names):
-        distribution = "neoforge"
-    elif "server.properties" in names and ("server.jar" in names or "fake-server.json" in names):
-        distribution = "vanilla"
+    distribution = detect_distribution(folder)
     version = None
     marker = folder / "fake-server.json"
     if marker.is_file():

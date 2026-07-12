@@ -179,3 +179,28 @@ def test_schedule_is_saved_per_profile(client: TestClient, auth: dict[str, str])
     schedules = client.get("/api/v1/schedules").json()
     assert schedules[0]["start_time"] == "09:00"
     assert schedules[0]["power_off_after_stop"] is True
+
+
+def test_fixture_prerequisites_view(client: TestClient, auth: dict[str, str]) -> None:
+    profile_id = import_fixture(client, auth)
+    response = client.get(f"/api/v1/profiles/{profile_id}/prerequisites")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_fixture"] is True
+    assert body["java_satisfied"] is True
+    assert body["required_java_major"] is None
+    assert body["launch_files_ready"] is True
+    assert body["eula_accepted"] is True
+
+
+def test_prerequisites_requires_authentication(client: TestClient) -> None:
+    assert client.get("/api/v1/profiles/none/prerequisites").status_code == 401
+
+
+def test_fixture_extensions_view(client: TestClient, auth: dict[str, str]) -> None:
+    profile_id = import_fixture(client, auth)
+    response = client.get(f"/api/v1/profiles/{profile_id}/extensions")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["directory"] is None and body["present"] is False
+    assert body["entries"] == [] and body["warnings"] == []

@@ -6,13 +6,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 import psutil
 from fastapi import (
     Depends,
     FastAPI,
+    Form,
     HTTPException,
     Request,
     Response,
+    UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -24,18 +27,56 @@ from sqlalchemy.orm import Session
 
 from .config import Settings
 from .db import Base, create_session_factory
+from .distributions import (
+    DISTRIBUTIONS,
+    LaunchPlanError,
+    launch_arguments,
+    required_java_major,
+)
+from .extension_ops import (
+    MAX_UPLOAD_BYTES,
+    ExtensionOpsError,
+    place_upload,
+    set_enabled,
+)
+from .extension_ops import (
+    remove as remove_extension,
+)
+from .extensions import read_extensions
 from .import_scan import canonical_child, scan_server
+from .java_runtime import discover_java_runtimes, find_java
 from .models import Administrator, AuditEvent, LoginSession, Profile, Schedule
+from .modpacks import (
+    MAX_MRPACK_BYTES,
+    ModpackError,
+    fetch_mrpack,
+    install_modpack,
+    search_modpacks,
+)
+from .modrinth import ModrinthError, plan_install
+from .modrinth import search as modrinth_search
 from .process import InvalidTransition, ProcessManager
+from .provisioning import (
+    USER_AGENT,
+    ProvisionError,
+    download_verified_file,
+    list_versions,
+    provision_profile,
+)
 from .scheduler import Scheduler
 from .schemas import (
     CommandRequest,
     Credentials,
+    EulaRequest,
     ImportRequest,
+    InstallRequest,
+    ModpackInstallRequest,
     PlayerActionRequest,
     ProfileCreate,
+    ProvisionRequest,
     ScheduleRequest,
     StartRequest,
+    ToggleRequest,
 )
 from .security import (
     SESSION_COOKIE,
@@ -67,6 +108,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     limiter = LoginLimiter()
     psutil.cpu_percent(interval=None)  # prime so later non-blocking samples are meaningful
 
+    http_client = httpx.AsyncClient(
+        headers={"User-Agent": USER_AGENT},
+        timeout=httpx.Timeout(30.0),
+        follow_redirects=True,
+    )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         engine = factory.kw["bind"]
@@ -75,6 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         yield
         await scheduler.close()
         await manager.close()
+        await http_client.aclose()
 
     app = FastAPI(title="Blockstead API", version="0.1.0", lifespan=lifespan)
     app.state.settings = config
@@ -96,7 +144,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     scheduler = Scheduler(factory, manager, scheduled_start, config.data_dir)
 
     @app.middleware("http")
-    async def security_headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    async def security_headers(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -270,6 +320,94 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "is_fixture": profile.is_fixture,
         }
 
+    @app.get("/api/v1/provision/versions/{distribution}")
+    async def provision_versions(distribution: str, request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        try:
+            versions = await list_versions(http_client, distribution)
+        except ProvisionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"distribution": distribution, "versions": versions}
+
+    @app.post("/api/v1/provision", status_code=201)
+    async def provision(payload: ProvisionRequest, request: Request, db: Db) -> dict[str, object]:
+        admin = mutation(request, db)
+        try:
+            result = await provision_profile(
+                http_client,
+                config.server_root,
+                payload.directory_name,
+                payload.distribution,
+                payload.minecraft_version,
+            )
+        except ProvisionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(409, "The new server folder could not be created.") from exc
+        profile = Profile(
+            name=payload.name.strip(),
+            server_directory=result.directory,
+            distribution=payload.distribution,
+            minecraft_version=payload.minecraft_version,
+            is_fixture=False,
+        )
+        db.add(profile)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="profile_provision",
+                result="success",
+                safe_detail=(
+                    f"Downloaded {payload.distribution} {payload.minecraft_version} "
+                    f"(sha256 {result.sha256})"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            "distribution": profile.distribution,
+            "minecraft_version": profile.minecraft_version,
+            "directory": result.directory,
+            "sha256": result.sha256,
+            "notes": result.plan.notes,
+            "eula_accepted": False,
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/eula")
+    def accept_eula(
+        profile_id: str, payload: EulaRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        if not payload.accept:
+            raise HTTPException(422, "The EULA can only be recorded as explicitly accepted.")
+        directory = profile_directory(profile_id, db)
+        eula_path = directory / "eula.txt"
+        staging = directory / ".eula.txt.tmp"
+        try:
+            staging.write_text(
+                "# Accepted through the Blockstead dashboard.\n"
+                "# By changing this you agree to the Minecraft EULA "
+                "(https://aka.ms/MinecraftEULA).\neula=true\n",
+                encoding="utf-8",
+            )
+            staging.replace(eula_path)
+        except OSError as exc:
+            raise HTTPException(
+                409, "Blockstead could not write eula.txt in the profile folder."
+            ) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="eula_accept",
+                result="success",
+                safe_detail=f"Recorded EULA acceptance for profile {profile_id}",
+            )
+        )
+        db.commit()
+        return {"profile_id": profile_id, "eula_accepted": True}
+
     def profile_directory(profile_id: str, db: Session) -> Path:
         profile = db.get(Profile, profile_id)
         if profile is None:
@@ -290,6 +428,304 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def profile_players(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
         return read_players(profile_directory(profile_id, db)).model_dump()
+
+    @app.get("/api/v1/profiles/{profile_id}/extensions")
+    def profile_extensions(profile_id: str, request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        return read_extensions(directory, profile.distribution).model_dump()
+
+    def extension_context(profile_id: str, db: Session) -> tuple[Profile, Path]:
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        info = DISTRIBUTIONS.get(profile.distribution, DISTRIBUTIONS["unknown"])
+        if info.extension_directory is None:
+            raise HTTPException(409, "This server distribution does not load plugins or mods.")
+        return profile, directory / info.extension_directory
+
+    @app.get("/api/v1/profiles/{profile_id}/modrinth/search")
+    async def extension_search(
+        profile_id: str, query: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        current(request, db)
+        profile, _ = extension_context(profile_id, db)
+        if not query.strip() or len(query) > 100:
+            raise HTTPException(422, "Enter a search of at most 100 characters.")
+        try:
+            projects = await modrinth_search(
+                http_client, profile.distribution, profile.minecraft_version, query.strip()
+            )
+        except ModrinthError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {
+            "minecraft_version": profile.minecraft_version,
+            "projects": [project.model_dump() for project in projects],
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/extensions/install", status_code=201)
+    async def extension_install(
+        profile_id: str, payload: InstallRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        profile, extension_dir = extension_context(profile_id, db)
+        try:
+            planned = await plan_install(
+                http_client,
+                profile.distribution,
+                profile.minecraft_version,
+                payload.project_id,
+                payload.version_id,
+            )
+        except ModrinthError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        extension_dir.mkdir(mode=0o755, exist_ok=True)
+        installed: list[dict[str, object]] = []
+        skipped: list[str] = []
+        try:
+            for planned_file in planned:
+                if (extension_dir / planned_file.file_name).exists():
+                    skipped.append(planned_file.file_name)
+                    continue
+                sha256 = await download_verified_file(
+                    http_client,
+                    planned_file.url,
+                    extension_dir,
+                    planned_file.file_name,
+                    planned_file.checksum_algorithm,
+                    planned_file.checksum,
+                )
+                installed.append(
+                    {
+                        "file_name": planned_file.file_name,
+                        "version_number": planned_file.version_number,
+                        "required_by": planned_file.required_by,
+                        "sha256": sha256,
+                    }
+                )
+        except ProvisionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="extension_install",
+                result="success",
+                safe_detail=(
+                    f"Installed {len(installed)} file(s) from Modrinth project {payload.project_id}"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "installed": installed,
+            "skipped": skipped,
+            "restart_required": True,
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/extensions/toggle")
+    def extension_toggle(
+        profile_id: str, payload: ToggleRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        _, extension_dir = extension_context(profile_id, db)
+        try:
+            set_enabled(extension_dir, payload.file_name, payload.enabled)
+        except ExtensionOpsError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        state = "enabled" if payload.enabled else "disabled"
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="extension_toggle",
+                result="success",
+                safe_detail=f"Marked {payload.file_name} as {state}",
+            )
+        )
+        db.commit()
+        return {
+            "file_name": payload.file_name,
+            "enabled": payload.enabled,
+            "restart_required": True,
+        }
+
+    @app.delete("/api/v1/profiles/{profile_id}/extensions/{file_name}")
+    def extension_remove(
+        profile_id: str,
+        file_name: str,
+        request: Request,
+        db: Db,
+        disabled: bool = False,
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        _, extension_dir = extension_context(profile_id, db)
+        try:
+            remove_extension(extension_dir, file_name, disabled)
+        except ExtensionOpsError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="extension_remove",
+                result="success",
+                safe_detail=f"Removed {file_name}",
+            )
+        )
+        db.commit()
+        return {"file_name": file_name, "removed": True, "restart_required": True}
+
+    @app.post("/api/v1/profiles/{profile_id}/extensions/upload", status_code=201)
+    async def extension_upload(
+        profile_id: str, file: UploadFile, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        profile, extension_dir = extension_context(profile_id, db)
+        content = await file.read(MAX_UPLOAD_BYTES + 1)
+        try:
+            target = place_upload(extension_dir, file.filename or "", content)
+        except ExtensionOpsError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        view = read_extensions(profile_directory(profile_id, db), profile.distribution)
+        entry = next((item for item in view.entries if item.file_name == target.name), None)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="extension_upload",
+                result="success",
+                safe_detail=f"Uploaded {target.name} "
+                f"(sha256 {entry.sha256 if entry else 'unknown'})",
+            )
+        )
+        db.commit()
+        return {
+            "entry": entry.model_dump() if entry else None,
+            "warnings": [warning.model_dump() for warning in view.warnings],
+            "restart_required": True,
+        }
+
+    @app.get("/api/v1/modpacks/search")
+    async def modpack_search(query: str, request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        if not query.strip() or len(query) > 100:
+            raise HTTPException(422, "Enter a search of at most 100 characters.")
+        try:
+            projects = await search_modpacks(http_client, query.strip())
+        except ModrinthError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"projects": [project.model_dump() for project in projects]}
+
+    def record_modpack_profile(
+        admin: Administrator, db: Session, name: str, result_directory: str, version: str
+    ) -> Profile:
+        profile = Profile(
+            name=name.strip(),
+            server_directory=result_directory,
+            distribution="fabric",
+            minecraft_version=version,
+            is_fixture=False,
+        )
+        db.add(profile)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="modpack_install",
+                result="success",
+                safe_detail=f"Imported modpack into {result_directory}",
+            )
+        )
+        db.commit()
+        return profile
+
+    @app.post("/api/v1/modpacks/install", status_code=201)
+    async def modpack_install(
+        payload: ModpackInstallRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        try:
+            data = await fetch_mrpack(http_client, payload.project_id, payload.version_id)
+            result = await install_modpack(
+                http_client, config.server_root, payload.directory_name, data
+            )
+        except (ModpackError, ModrinthError, ProvisionError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(409, "The new server folder could not be created.") from exc
+        profile = record_modpack_profile(
+            admin, db, payload.name, result.directory, result.minecraft_version
+        )
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            **result.model_dump(),
+            "eula_accepted": False,
+        }
+
+    @app.post("/api/v1/modpacks/upload", status_code=201)
+    async def modpack_upload(
+        request: Request,
+        db: Db,
+        file: UploadFile,
+        name: str = Form(min_length=1, max_length=80),
+        directory_name: str = Form(min_length=1, max_length=64),
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        data = await file.read(MAX_MRPACK_BYTES + 1)
+        try:
+            result = await install_modpack(http_client, config.server_root, directory_name, data)
+        except (ModpackError, ModrinthError, ProvisionError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(409, "The new server folder could not be created.") from exc
+        profile = record_modpack_profile(
+            admin, db, name, result.directory, result.minecraft_version
+        )
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            **result.model_dump(),
+            "eula_accepted": False,
+        }
+
+    @app.get("/api/v1/profiles/{profile_id}/prerequisites")
+    def profile_prerequisites(profile_id: str, request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        info = DISTRIBUTIONS.get(profile.distribution, DISTRIBUTIONS["unknown"])
+        required = None if profile.is_fixture else required_java_major(profile.minecraft_version)
+        runtimes = [] if profile.is_fixture else discover_java_runtimes()
+        selected = find_java(required, runtimes)
+        launch_problem: str | None = None
+        if not profile.is_fixture:
+            if profile.distribution == "unknown":
+                launch_problem = "The distribution of this server folder was not recognized."
+            else:
+                try:
+                    launch_arguments(profile.distribution, directory)
+                except LaunchPlanError as exc:
+                    launch_problem = str(exc)
+        extension = info.extension_directory
+        return {
+            "distribution": profile.distribution,
+            "label": info.label,
+            "minecraft_version": profile.minecraft_version,
+            "is_fixture": profile.is_fixture,
+            "eula_accepted": profile.is_fixture or eula_accepted(directory),
+            "required_java_major": required,
+            "java_runtimes": [runtime.model_dump() for runtime in runtimes],
+            "selected_java": selected.model_dump() if selected else None,
+            "java_satisfied": profile.is_fixture or selected is not None,
+            "launch_files_ready": launch_problem is None,
+            "launch_problem": launch_problem,
+            "extension_directory": extension,
+            "extension_directory_present": bool(extension)
+            and (directory / str(extension)).is_dir(),
+        }
 
     @app.get("/api/v1/system/metrics")
     def system_metrics(request: Request, db: Db) -> dict[str, object]:
@@ -322,6 +758,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         current(request, db)
         return {**manager.snapshot(), "profile_id": app.state.active_profile_id}
 
+    def eula_accepted(directory: Path) -> bool:
+        eula = directory / "eula.txt"
+        try:
+            if not eula.is_file():
+                return False
+            with eula.open(encoding="utf-8", errors="replace") as handle:
+                return "eula=true" in handle.read(4096).lower()
+        except OSError:
+            return False
+
     def launch_spec(profile: Profile, mode: str) -> tuple[tuple[str, ...], Path, str]:
         try:
             directory = canonical_child(Path(profile.server_directory), config.server_root)
@@ -335,22 +781,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 directory,
                 "Fixture",
             )
-        if profile.distribution != "vanilla":
+        info = DISTRIBUTIONS.get(profile.distribution)
+        if info is None or profile.distribution == "unknown":
             raise HTTPException(
-                409, "Only vanilla server.jar profiles can be launched in this milestone."
+                409, "Blockstead cannot launch this profile because its distribution is unknown."
             )
-        jar = directory / "server.jar"
-        eula = directory / "eula.txt"
-        if not jar.is_file():
-            raise HTTPException(409, "This vanilla profile does not contain server.jar.")
-        if (
-            not eula.is_file()
-            or "eula=true" not in eula.read_text(encoding="utf-8", errors="replace").lower()
-        ):
+        if not eula_accepted(directory):
             raise HTTPException(
                 409, "Accept the Minecraft EULA in eula.txt before starting this server."
             )
-        return (("java", "-jar", str(jar), "nogui"), directory, "Vanilla Minecraft")
+        required = required_java_major(profile.minecraft_version)
+        runtime = find_java(required, discover_java_runtimes())
+        if runtime is None:
+            needed = f"Java {required} or newer" if required else "a Java runtime"
+            raise HTTPException(
+                409,
+                f"Starting this server needs {needed}, but none was found on this computer. "
+                "Install it and try again.",
+            )
+        try:
+            arguments = launch_arguments(profile.distribution, directory, runtime.path)
+        except LaunchPlanError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return arguments, directory, info.label
 
     @app.get("/api/v1/server/logs")
     def process_logs(request: Request, db: Db) -> list[dict[str, object]]:
@@ -360,10 +813,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/schedules")
     def list_schedules(request: Request, db: Db) -> list[dict[str, object]]:
         current(request, db)
-        return [{"id": s.id, "profile_id": s.profile_id, "enabled": s.enabled, "start_time": s.start_time, "stop_time": s.stop_time, "backup_before_stop": s.backup_before_stop, "power_off_after_stop": s.power_off_after_stop, "wake_time": s.wake_time} for s in db.scalars(select(Schedule)).all()]
+        return [
+            {
+                "id": s.id,
+                "profile_id": s.profile_id,
+                "enabled": s.enabled,
+                "start_time": s.start_time,
+                "stop_time": s.stop_time,
+                "backup_before_stop": s.backup_before_stop,
+                "power_off_after_stop": s.power_off_after_stop,
+                "wake_time": s.wake_time,
+            }
+            for s in db.scalars(select(Schedule)).all()
+        ]
 
     @app.put("/api/v1/schedules/{profile_id}")
-    def save_schedule(profile_id: str, payload: ScheduleRequest, request: Request, db: Db) -> dict[str, object]:
+    def save_schedule(
+        profile_id: str, payload: ScheduleRequest, request: Request, db: Db
+    ) -> dict[str, object]:
         admin = mutation(request, db)
         if payload.profile_id != profile_id or db.get(Profile, profile_id) is None:
             raise HTTPException(404, "That profile was not found.")
@@ -375,7 +842,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.add(schedule)
         for name, value in payload.model_dump().items():
             setattr(schedule, name, value)
-        db.add(AuditEvent(admin_id=admin.id, category="schedule_update", result="success", safe_detail=f"Updated schedule for profile {profile_id}"))
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="schedule_update",
+                result="success",
+                safe_detail=f"Updated schedule for profile {profile_id}",
+            )
+        )
         db.commit()
         return {"id": schedule.id, **payload.model_dump()}
 
