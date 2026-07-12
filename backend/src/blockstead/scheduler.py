@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -7,12 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from .models import AuditEvent, Profile, Schedule
+from .process import ProcessManager
 
 
 class Scheduler:
     """Small persistent daily scheduler. All server operations remain in the API process."""
 
-    def __init__(self, factory: sessionmaker[Session], manager: object, start: object, data_dir: Path) -> None:
+    def __init__(self, factory: sessionmaker[Session], manager: ProcessManager, start: Callable[[Profile], Awaitable[None]], data_dir: Path) -> None:
         self.factory, self.manager, self.start, self.data_dir = factory, manager, start, data_dir
         self._task: asyncio.Task[None] | None = None
 

@@ -1,6 +1,6 @@
 import logging
 import sys
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -144,8 +144,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     scheduler = Scheduler(factory, manager, scheduled_start, config.data_dir)
 
     @app.middleware("http")
-    async def security_headers(request: Request, call_next: object) -> Response:
-        response = await call_next(request)  # type: ignore[operator]
+    async def security_headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
