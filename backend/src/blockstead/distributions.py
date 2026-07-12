@@ -131,6 +131,6 @@ def launch_arguments(
         arguments = [java_executable]
         if (folder / "user_jvm_args.txt").is_file():
             arguments.append("@user_jvm_args.txt")
-        arguments.extend((f"@{args_file.relative_to(folder)}", "nogui"))
+        arguments.extend((f"@{args_file.relative_to(folder).as_posix()}", "nogui"))
         return tuple(arguments)
     raise LaunchPlanError("Blockstead does not know how to launch this distribution.")
