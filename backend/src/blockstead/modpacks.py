@@ -250,9 +250,9 @@ async def fetch_mrpack(client: httpx.AsyncClient, project_id: str, version_id: s
         async with client.stream("GET", url) as response:
             response.raise_for_status()
             async for chunk in response.aiter_bytes():
-                received.extend(chunk)
-                if len(received) > MAX_MRPACK_BYTES:
+                if len(received) + len(chunk) > MAX_MRPACK_BYTES:
                     raise ModpackError("The modpack file is larger than Blockstead accepts.")
+                received.extend(chunk)
                 digest.update(chunk)
     except httpx.HTTPError as exc:
         raise ModpackError(f"The modpack download failed ({type(exc).__name__}).") from exc

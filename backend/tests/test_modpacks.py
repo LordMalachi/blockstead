@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+import blockstead.modpacks as modpacks_module
 from blockstead.modpacks import (
     ModpackError,
     fetch_mrpack,
@@ -234,4 +235,37 @@ async def test_fetch_mrpack_refuses_untrusted_catalog_files(
 
     catalog = httpx.AsyncClient(transport=httpx.MockTransport(catalog_handler))
     with pytest.raises(ModpackError, match=message):
+        await fetch_mrpack(catalog, "pack-proj", None)
+
+
+async def test_fetch_mrpack_caps_streamed_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
+    pack = b"too-large"
+
+    def catalog_handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url).split("?")[0]
+        if url == f"{MODRINTH_API}/project/pack-proj/version":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "pack-ver",
+                        "project_id": "pack-proj",
+                        "version_type": "release",
+                        "files": [
+                            {
+                                "filename": "pack.mrpack",
+                                "url": "https://cdn.modrinth.com/pack.mrpack",
+                                "hashes": {"sha512": hashlib.sha512(pack).hexdigest()},
+                            }
+                        ],
+                    }
+                ],
+            )
+        if url == "https://cdn.modrinth.com/pack.mrpack":
+            return httpx.Response(200, content=pack)
+        return httpx.Response(404)
+
+    monkeypatch.setattr(modpacks_module, "MAX_MRPACK_BYTES", 8)
+    catalog = httpx.AsyncClient(transport=httpx.MockTransport(catalog_handler))
+    with pytest.raises(ModpackError, match="larger"):
         await fetch_mrpack(catalog, "pack-proj", None)
