@@ -91,8 +91,14 @@ Use the pinned Python 3.12 and Node 22 runtimes:
 Open <http://127.0.0.1:5173>. The first dashboard flow imports the sanitized
 `fixtures/servers/vanilla-fixture` folder and launches its safe Python fixture
 process. Imported vanilla profiles with `server.jar` and an accepted `eula.txt`
-can also be started from the dashboard. Run all checks with `./scripts/test.sh`. Regenerate the
-documentation screenshots below with `npm --prefix frontend run screenshots`.
+can also be started from the dashboard. For a Fabric or Paper profile, use the
+**Extensions** panel to inventory, search, install, upload, disable, or remove
+compatible mods and plugins. Use **Modpacks** to install a Fabric pack from
+Modrinth or import a local `.mrpack`; Blockstead creates a new profile and then
+shows its Java, launcher, and EULA requirements in **Server readiness**.
+
+Run all checks with `./scripts/test.sh`. Regenerate the documentation screenshots
+below with `npm --prefix frontend run screenshots`.
 
 ### Screenshots
 

@@ -167,8 +167,13 @@ def _first_stable_version(entries: object) -> str | None:
     return None
 
 
-async def _fabric_plan(client: httpx.AsyncClient, version: str) -> ProvisionPlan:
-    loader = _first_stable_version(await _get_json(client, FABRIC_LOADER.format(version=version)))
+async def fabric_plan(
+    client: httpx.AsyncClient, version: str, loader_version: str | None = None
+) -> ProvisionPlan:
+    """Plan the Fabric server launcher, optionally pinning the loader version."""
+    loader = loader_version or _first_stable_version(
+        await _get_json(client, FABRIC_LOADER.format(version=version))
+    )
     installer = _first_stable_version(await _get_json(client, FABRIC_INSTALLER))
     if loader is None or installer is None:
         raise ProvisionError(f"Fabric does not offer a stable server for Minecraft {version}.")
@@ -193,7 +198,7 @@ async def resolve_plan(client: httpx.AsyncClient, distribution: str, version: st
     if distribution == "paper":
         return await _paper_plan(client, version)
     if distribution == "fabric":
-        return await _fabric_plan(client, version)
+        return await fabric_plan(client, version)
     if distribution == "neoforge":
         raise ProvisionError(
             "Blockstead does not download NeoForge yet because its installer must be "

@@ -11,6 +11,7 @@ import psutil
 from fastapi import (
     Depends,
     FastAPI,
+    Form,
     HTTPException,
     Request,
     Response,
@@ -45,6 +46,13 @@ from .extensions import read_extensions
 from .import_scan import canonical_child, scan_server
 from .java_runtime import discover_java_runtimes, find_java
 from .models import Administrator, AuditEvent, LoginSession, Profile, Schedule
+from .modpacks import (
+    MAX_MRPACK_BYTES,
+    ModpackError,
+    fetch_mrpack,
+    install_modpack,
+    search_modpacks,
+)
 from .modrinth import ModrinthError, plan_install
 from .modrinth import search as modrinth_search
 from .process import InvalidTransition, ProcessManager
@@ -62,6 +70,7 @@ from .schemas import (
     EulaRequest,
     ImportRequest,
     InstallRequest,
+    ModpackInstallRequest,
     PlayerActionRequest,
     ProfileCreate,
     ProvisionRequest,
@@ -593,6 +602,89 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "entry": entry.model_dump() if entry else None,
             "warnings": [warning.model_dump() for warning in view.warnings],
             "restart_required": True,
+        }
+
+    @app.get("/api/v1/modpacks/search")
+    async def modpack_search(query: str, request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        if not query.strip() or len(query) > 100:
+            raise HTTPException(422, "Enter a search of at most 100 characters.")
+        try:
+            projects = await search_modpacks(http_client, query.strip())
+        except ModrinthError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"projects": [project.model_dump() for project in projects]}
+
+    def record_modpack_profile(
+        admin: Administrator, db: Session, name: str, result_directory: str, version: str
+    ) -> Profile:
+        profile = Profile(
+            name=name.strip(),
+            server_directory=result_directory,
+            distribution="fabric",
+            minecraft_version=version,
+            is_fixture=False,
+        )
+        db.add(profile)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="modpack_install",
+                result="success",
+                safe_detail=f"Imported modpack into {result_directory}",
+            )
+        )
+        db.commit()
+        return profile
+
+    @app.post("/api/v1/modpacks/install", status_code=201)
+    async def modpack_install(
+        payload: ModpackInstallRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        try:
+            data = await fetch_mrpack(http_client, payload.project_id, payload.version_id)
+            result = await install_modpack(
+                http_client, config.server_root, payload.directory_name, data
+            )
+        except (ModpackError, ModrinthError, ProvisionError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(409, "The new server folder could not be created.") from exc
+        profile = record_modpack_profile(
+            admin, db, payload.name, result.directory, result.minecraft_version
+        )
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            **result.model_dump(),
+            "eula_accepted": False,
+        }
+
+    @app.post("/api/v1/modpacks/upload", status_code=201)
+    async def modpack_upload(
+        request: Request,
+        db: Db,
+        file: UploadFile,
+        name: str = Form(min_length=1, max_length=80),
+        directory_name: str = Form(min_length=1, max_length=64),
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        data = await file.read(MAX_MRPACK_BYTES + 1)
+        try:
+            result = await install_modpack(http_client, config.server_root, directory_name, data)
+        except (ModpackError, ModrinthError, ProvisionError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(409, "The new server folder could not be created.") from exc
+        profile = record_modpack_profile(
+            admin, db, name, result.directory, result.minecraft_version
+        )
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            **result.model_dump(),
+            "eula_accepted": False,
         }
 
     @app.get("/api/v1/profiles/{profile_id}/prerequisites")

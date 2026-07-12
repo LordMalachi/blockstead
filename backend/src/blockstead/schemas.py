@@ -47,6 +47,13 @@ class ToggleRequest(BaseModel):
     enabled: bool
 
 
+class ModpackInstallRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    directory_name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    project_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    version_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
 class StartRequest(BaseModel):
     profile_id: str = Field(default="", max_length=36)
     mode: str = Field(default="normal", pattern=r"^(normal|slow|ignore-stop|crash)$")
