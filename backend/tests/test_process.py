@@ -46,7 +46,8 @@ async def test_duplicate_start_fails_safely() -> None:
     await manager.start()
     with pytest.raises(InvalidTransition):
         await manager.start()
-    await manager.close()
+    await manager.close(timeout=1)
+    assert manager.state == ProcessState.STOPPED
 
 
 @pytest.mark.asyncio
@@ -66,3 +67,15 @@ async def test_stop_timeout_requires_explicit_force() -> None:
     assert manager.state == ProcessState.STOPPING
     await manager.force_stop()
     assert manager.state == ProcessState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_close_forces_process_only_after_graceful_timeout() -> None:
+    manager = ProcessManager(fixture_script())
+    await manager.start(mode="ignore-stop")
+    await wait_for(manager, ProcessState.RUNNING)
+
+    await manager.close(timeout=0.05)
+
+    assert manager.state == ProcessState.STOPPED
+    assert manager.reason == "Force stopped after graceful timeout"

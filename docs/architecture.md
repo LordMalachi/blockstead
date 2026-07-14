@@ -25,7 +25,7 @@ never proof of health.
 
 ## Request security
 
-The unauthenticated surface is limited to health, setup status, first-admin
+The unauthenticated surface is limited to versioned health, setup status, first-admin
 creation, and login. Authentication uses an HttpOnly, SameSite=Strict session
 cookie. Mutations require an `X-CSRF-Token` matching a session-bound token and
 an allowed `Origin`. WebSockets require an unexpired authenticated cookie and

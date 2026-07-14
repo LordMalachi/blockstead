@@ -89,8 +89,5 @@ def find_java(required_major: int | None, runtimes: list[JavaRuntime]) -> JavaRu
     """Pick the discovered default, or the lowest runtime satisfying a known requirement."""
     if required_major is None:
         return runtimes[0] if runtimes else None
-    return min(
-        (runtime for runtime in runtimes if runtime.major >= required_major),
-        key=lambda runtime: runtime.major,
-        default=None,
-    )
+    compatible = [runtime for runtime in runtimes if runtime.major >= required_major]
+    return min(compatible, key=lambda runtime: runtime.major) if compatible else None
