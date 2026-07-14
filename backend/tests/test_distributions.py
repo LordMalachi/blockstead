@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from blockstead import java_runtime
 from blockstead.distributions import (
     LaunchPlanError,
     detect_distribution,
@@ -98,12 +99,28 @@ def test_java_major_parsing() -> None:
 
 def test_find_java_picks_lowest_satisfying() -> None:
     runtimes = [
+        JavaRuntime(path="/j21", version="21.0.2", major=21),
         JavaRuntime(path="/j8", version="1.8.0", major=8),
         JavaRuntime(path="/j17", version="17.0.9", major=17),
-        JavaRuntime(path="/j21", version="21.0.2", major=21),
     ]
     assert find_java(17, runtimes) is not None
     assert find_java(17, runtimes).path == "/j17"  # type: ignore[union-attr]
     assert find_java(22, runtimes) is None
     assert find_java(None, runtimes).path == "/j21"  # type: ignore[union-attr]
     assert find_java(None, []) is None
+
+
+def test_discover_java_keeps_default_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    candidates = [Path("/j21"), Path("/j8"), Path("/j17")]
+    runtimes = {
+        Path("/j21"): JavaRuntime(path="/j21", version="21.0.2", major=21),
+        Path("/j8"): JavaRuntime(path="/j8", version="1.8.0", major=8),
+        Path("/j17"): JavaRuntime(path="/j17", version="17.0.9", major=17),
+    }
+    monkeypatch.setattr(java_runtime, "_candidate_executables", lambda: candidates)
+    monkeypatch.setattr(java_runtime, "_probe", runtimes.get)
+
+    discovered = java_runtime.discover_java_runtimes()
+
+    assert [runtime.path for runtime in discovered] == ["/j21", "/j8", "/j17"]
+    assert find_java(None, discovered) == runtimes[Path("/j21")]

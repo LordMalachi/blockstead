@@ -79,14 +79,18 @@ def _probe(executable: Path) -> JavaRuntime | None:
 
 def discover_java_runtimes() -> list[JavaRuntime]:
     runtimes = [runtime for runtime in map(_probe, _candidate_executables()) if runtime]
-    return sorted(runtimes, key=lambda runtime: runtime.major)
+    if not runtimes:
+        return []
+    default, *alternatives = runtimes
+    return [default, *sorted(alternatives, key=lambda runtime: runtime.major)]
 
 
 def find_java(required_major: int | None, runtimes: list[JavaRuntime]) -> JavaRuntime | None:
-    """Pick the lowest runtime that satisfies the minimum requirement."""
+    """Pick the discovered default, or the lowest runtime satisfying a known requirement."""
     if required_major is None:
-        return runtimes[-1] if runtimes else None
-    for runtime in runtimes:
-        if runtime.major >= required_major:
-            return runtime
-    return None
+        return runtimes[0] if runtimes else None
+    return min(
+        (runtime for runtime in runtimes if runtime.major >= required_major),
+        key=lambda runtime: runtime.major,
+        default=None,
+    )
