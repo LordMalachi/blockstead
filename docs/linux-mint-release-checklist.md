@@ -15,7 +15,14 @@ Blockstead revision, tester, and date with the results.
 - [ ] LAN access works only after opt-in and shows its security warning.
 - [ ] Backup/restore, disk-full behavior, permissions, crash recovery, and log
       rotation pass once milestone 2 is merged.
-- [ ] Upgrade preserves data; uninstall preserves worlds/backups by default.
+- [ ] Upgrade from the previous release preserves configuration, administrator
+      data, schedules, worlds, and backups.
+- [ ] A deliberately broken update restores the previous application, database,
+      service files, enabled state, and running state.
+- [ ] Update refuses to stop the dashboard while a managed Minecraft child
+      process is still running.
+- [ ] Uninstall removes the application/service while preserving configuration,
+      private data, worlds, and backups by default; reinstall reuses them.
 - [ ] Hardened unit permits Java, networking, configured imports, and backups.
 
 Attach command output and observations to the release record. Do not mark Linux

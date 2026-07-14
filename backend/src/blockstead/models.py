@@ -53,7 +53,9 @@ class AuditEvent(Base):
 class Schedule(Base):
     __tablename__ = "schedules"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), unique=True
+    )
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     start_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
     stop_time: Mapped[str | None] = mapped_column(String(5), nullable=True)

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
@@ -25,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from . import __version__
 from .config import Settings
 from .db import Base, create_session_factory
 from .distributions import (
@@ -124,7 +126,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await manager.close()
         await http_client.aclose()
 
-    app = FastAPI(title="Blockstead API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Blockstead API", version=__version__, lifespan=lifespan)
     app.state.settings = config
     app.state.session_factory = factory
     app.state.process_manager = manager
@@ -200,7 +202,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            "version": __version__,
+        }
 
     @app.get("/api/v1/setup/status")
     def setup_status(db: Db) -> dict[str, bool]:
@@ -988,12 +993,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await websocket.close(code=1008)
                 return
         await websocket.accept()
+        subscription: asyncio.Task[None] | None = None
         try:
             for event in manager.logs():
                 await websocket.send_json(event.__dict__)
-            await manager.subscribe(lambda event: websocket.send_json(event.__dict__))
+            subscription = asyncio.create_task(
+                manager.subscribe(lambda event: websocket.send_json(event.__dict__))
+            )
+            while (await websocket.receive())["type"] != "websocket.disconnect":
+                pass
         except (WebSocketDisconnect, RuntimeError):
             return
+        finally:
+            if subscription is not None:
+                subscription.cancel()
+                await asyncio.gather(subscription, return_exceptions=True)
 
     static_dir = Path(__file__).parents[3] / "frontend" / "dist"
     if static_dir.is_dir():

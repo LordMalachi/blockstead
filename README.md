@@ -79,6 +79,33 @@ To follow live application messages, use `sudo journalctl -u blockstead -f`.
 Your Minecraft folders live in `/srv/minecraft`; Blockstead’s private data and
 scheduled backup archives live in `/var/lib/blockstead`.
 
+### Updating Blockstead
+
+Stop the Minecraft server safely from the dashboard. Download or extract the
+new Blockstead release into a new folder, enter that folder, and rerun the same
+installer:
+
+```bash
+sudo ./scripts/install-linux.sh
+```
+
+The installer recognizes the existing installation, shows the old and new
+versions, and preserves `/etc/blockstead`, `/var/lib/blockstead`, and
+`/srv/minecraft`. It builds the replacement before stopping the dashboard,
+backs up the application database and installed code, runs database migrations,
+and verifies the new health endpoint. If the update fails, it restores the
+previous application and database and restarts the earlier service.
+
+Do not copy files directly into `/opt/blockstead`; that can leave obsolete
+dependencies or mismatched frontend assets behind.
+
+To remove the application while keeping configuration, administrator data,
+backups, and Minecraft files for a later reinstall, run:
+
+```bash
+sudo ./scripts/uninstall-linux.sh
+```
+
 ### Development setup
 
 Use the pinned Python 3.12 and Node 22 runtimes:
@@ -1300,8 +1327,8 @@ Windows:
 ## 19. Linux Mint installation experience
 
 The quick-start above is the supported installation path for Linux Mint 22.x
-and compatible Ubuntu-based systems. The installer needs `python3` 3.12 or
-newer, Node.js with npm, `curl`, and `systemd`; Java 21 is needed to run a
+and compatible Ubuntu-based systems. The installer needs Python 3.12.x,
+Node.js with npm, `curl`, and `systemd`; Java 21 is needed to run a
 modern vanilla Minecraft server.
 
 From a checked-out Blockstead folder, the installation command is:
@@ -1310,13 +1337,14 @@ From a checked-out Blockstead folder, the installation command is:
 sudo ./scripts/install-linux.sh
 ```
 
-The installer:
+The installer, on both a fresh installation and an update:
 
 1. clearly displays the paths and changes it will make and requires confirmation
 2. creates the dedicated unprivileged `blockstead` account and private data folders
-3. builds the frontend, creates the application virtual environment, and installs the service
-4. binds the dashboard to localhost, starts it, and checks its health endpoint
-5. prints the exact dashboard URL, first-run steps, and journal command
+3. builds the frontend and creates a fresh application virtual environment
+4. preserves owner data, upgrades the database, and installs the service
+5. binds the dashboard to localhost, starts it, and checks its versioned health endpoint
+6. prints the exact dashboard URL, first-run steps, and journal command
 
 After opening `http://127.0.0.1:8765`, create the first administrator account.
 Put a legitimately obtained vanilla `server.jar` folder under `/srv/minecraft`,
@@ -1324,8 +1352,10 @@ review and accept Minecraft's EULA in that folder yourself, import it from the
 dashboard, select the profile, and choose **Start server**. The service is
 enabled during installation and starts automatically after a reboot.
 
-Installation fails safely: if the service does not become healthy, it is stopped
-and disabled rather than being left in a restart loop.
+Installation and update fail safely. A failed fresh installation is stopped and
+disabled rather than being left in a restart loop. A failed update restores the
+previous application, service files, and database, then returns the service to
+its earlier enabled and running state.
 
 A signed `.deb` package may be added later; the scripted installer is the
 recommended path for now.

@@ -229,9 +229,22 @@ class ProcessManager:
         finally:
             self._subscribers.discard(queue)
 
-    async def close(self) -> None:
+    async def close(self, timeout: float = 10.0) -> None:  # noqa: ASYNC109
         if self._process and self._process.returncode is None:
-            self._process.kill()
-            await self._process.wait()
+            if self.state in {
+                ProcessState.RUNNING,
+                ProcessState.STARTING,
+                ProcessState.DEGRADED,
+            }:
+                if not await self.stop(timeout):
+                    await self.force_stop()
+            elif self.state == ProcessState.STOPPING:
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout)
+                except asyncio.TimeoutError:  # noqa: UP041
+                    await self.force_stop()
+            else:
+                self._process.kill()
+                await self._process.wait()
         if self._reader:
             await asyncio.gather(self._reader, return_exceptions=True)
