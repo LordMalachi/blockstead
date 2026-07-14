@@ -23,6 +23,8 @@ test("captures documentation screenshots @docs", async ({ page }) => {
   await expect(page.getByText("Running", { exact: true })).toBeVisible({ timeout: 5_000 });
   await page.getByRole("button", { name: "Who is online?" }).click();
   await expect(page.getByRole("log")).toContainText("players online");
+  await page.getByRole("link", { name: "Overview" }).click();
+  await page.waitForTimeout(500);
   await page.screenshot({ path: out("03-overview-running") });
 
   await page.getByLabel("Player name").fill("New_Neighbor");

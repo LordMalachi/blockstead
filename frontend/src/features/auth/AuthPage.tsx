@@ -17,5 +17,32 @@ export function AuthPage({ setup, onSuccess }: { setup: boolean; onSuccess: () =
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to continue."); }
     finally { setBusy(false); }
   }
-  return <main className="auth-shell"><section className="auth-card" aria-labelledby="auth-title"><div className="brand-mark" aria-hidden="true">B</div><p className="eyebrow">Local server care</p><h1 id="auth-title">{setup ? "Welcome to Blockstead" : "Welcome back"}</h1><p>{setup ? "Create the administrator who will manage this machine. Then import a server folder and start it from the dashboard." : "Sign in to manage your Minecraft server."}</p>{setup && <ol className="setup-steps"><li>Create this administrator account.</li><li>Place your vanilla server folder inside Blockstead’s managed-server location.</li><li>Accept Minecraft’s EULA yourself, import the folder, then choose Start server.</li></ol>}<form onSubmit={event => { void submit(event); }}><label>Username<input autoComplete="username" required minLength={3} value={username} onChange={e => setUsername(e.target.value)} /></label><label>Password<input type="password" autoComplete={setup ? "new-password" : "current-password"} required minLength={12} value={password} onChange={e => setPassword(e.target.value)} /></label>{error && <div className="error" role="alert">{error}</div>}<Button disabled={busy}>{busy ? "Working…" : setup ? "Create administrator" : "Sign in"}</Button></form><p className="privacy-note">Blockstead stays on this computer unless you explicitly enable LAN access.</p></section></main>;
+  return <main className="auth-shell">
+    <section className="auth-intro" aria-label="About Blockstead">
+      <a className="auth-brand" href="/" aria-label="Blockstead home"><span className="brand-mark" aria-hidden="true"><span>B</span></span><span>Blockstead</span></a>
+      <div className="auth-intro__copy">
+        <p className="eyebrow">Your world. Your machine.</p>
+        <h2>Run your Minecraft server with confidence.</h2>
+        <p>Start, stop, schedule, and care for your server from one calm local dashboard.</p>
+        <ul className="feature-list"><li><span>01</span>Safe server controls</li><li><span>02</span>Live console and players</li><li><span>03</span>Private by default</li></ul>
+      </div>
+      <p className="auth-intro__footer">Built for the person who keeps the world running.</p>
+    </section>
+    <section className="auth-panel">
+      <div className="auth-card" aria-labelledby="auth-title">
+        <div className="auth-card__mobile-brand"><span className="brand-mark" aria-hidden="true"><span>B</span></span><strong>Blockstead</strong></div>
+        <p className="eyebrow">{setup ? "Let’s get you settled" : "Local server care"}</p>
+        <h1 id="auth-title">{setup ? "Welcome to Blockstead" : "Welcome back"}</h1>
+        <p>{setup ? "Create the administrator for this machine. You’ll add your server on the next screen." : "Sign in to manage your Minecraft server."}</p>
+        {setup && <ol className="setup-steps"><li><span>1</span><div><strong>Create your account</strong><small>This is the local Blockstead administrator.</small></div></li><li><span>2</span><div><strong>Add your server folder</strong><small>Blockstead scans it without changing files.</small></div></li><li><span>3</span><div><strong>Review and start</strong><small>Accept the EULA, check readiness, and launch.</small></div></li></ol>}
+        <form onSubmit={event => { void submit(event); }}>
+          <label>Username<input autoComplete="username" required minLength={3} value={username} onChange={e => setUsername(e.target.value)} placeholder="Your admin name" /></label>
+          <label>Password<input type="password" autoComplete={setup ? "new-password" : "current-password"} required minLength={12} value={password} onChange={e => setPassword(e.target.value)} placeholder="12 characters or more" /></label>
+          {error && <div className="error" role="alert">{error}</div>}
+          <Button disabled={busy}>{busy ? "Working…" : setup ? "Create administrator" : "Sign in"}</Button>
+        </form>
+        <p className="privacy-note"><span aria-hidden="true">◆</span> Blockstead stays on this computer unless you explicitly enable LAN access.</p>
+      </div>
+    </section>
+  </main>;
 }
