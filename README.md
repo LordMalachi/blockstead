@@ -13,6 +13,8 @@ Blockstead manages the process around them.
 
 ## What it does today
 
+- lists every server it looks after, and gives each one its own workspace with a
+  bookmarkable page for the console, players, mods, schedule, and settings
 - imports an existing vanilla `server.jar` folder without moving or rewriting it
 - starts, stops, restarts, and watches the managed server process
 - streams live server logs and sends one-line Minecraft console commands
@@ -140,8 +142,8 @@ documentation spec (`frontend/e2e/screenshots.spec.ts`).
 | Overview with the fixture running | Live log and guided quick commands |
 | ![Player management](docs/screenshots/05-players.png) | ![Typed read-only settings](docs/screenshots/06-settings.png) |
 | Player management | Typed read-only settings |
-| ![System health](docs/screenshots/07-system.png) | |
-| System health | |
+| ![System health](docs/screenshots/07-system.png) | ![Every server on this computer](docs/screenshots/08-servers.png) |
+| System health | Every server on this computer |
 
 Blockstead is intended for a friend or family member who wants to run a Minecraft server on a spare Linux computer without becoming a full-time Linux administrator. It provides a clean browser-based interface for starting and stopping the server, reading logs, managing players, creating backups, diagnosing crashes, and switching between supported server configurations.
 

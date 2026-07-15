@@ -25,6 +25,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import Scope
 
 from . import __version__
 from .config import Settings
@@ -100,6 +102,23 @@ def error(status_code: int, code: str, message: str, recovery: str | None = None
     if recovery:
         body["error"]["recovery"] = recovery  # type: ignore[index]
     return JSONResponse(status_code=status_code, content=body)
+
+
+class SpaStaticFiles(StaticFiles):
+    """Serve the built frontend, letting the browser router own unknown page paths."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            unknown_page = (
+                exc.status_code == 404
+                and not path.startswith("api")
+                and scope.get("method") in {"GET", "HEAD"}
+            )
+            if not unknown_page:
+                raise
+            return await super().get_response("index.html", scope)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -1011,7 +1030,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     static_dir = Path(__file__).parents[3] / "frontend" / "dist"
     if static_dir.is_dir():
-        app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
+        app.mount("/", SpaStaticFiles(directory=static_dir, html=True), name="frontend")
     return app
 
 
