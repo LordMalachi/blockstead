@@ -39,3 +39,29 @@ def test_authenticated_fixture_lifecycle(client: TestClient, auth: dict[str, str
     assert command.status_code == 202
     assert client.post("/api/v1/server/stop", headers=auth).status_code == 202
     assert wait_for_state(client, "STOPPED")["exit_code"] == 0
+
+
+def test_logs_endpoint_names_the_profile_that_produced_each_line(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    fixture = Path(__file__).parents[2] / "fixtures" / "servers" / "vanilla-fixture"
+    profile_id = client.post(
+        "/api/v1/profiles", headers=auth, json={"name": "Fixture", "path": str(fixture)}
+    ).json()["id"]
+
+    assert (
+        client.post(
+            "/api/v1/server/start", headers=auth, json={"profile_id": profile_id}
+        ).status_code
+        == 202
+    )
+    wait_for_state(client, "RUNNING")
+    assert client.post("/api/v1/server/stop", headers=auth).status_code == 202
+    wait_for_state(client, "STOPPED")
+
+    # The buffer outlives the run, so a reader needs every line to say who produced it.
+    # ProcessManager covers the two-profile case; this pins the wire format the console
+    # filters on, since only one profile may exist per server directory.
+    events = client.get("/api/v1/server/logs", headers=auth).json()
+    assert events
+    assert {event["profile_id"] for event in events} == {profile_id}

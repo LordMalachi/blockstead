@@ -2,7 +2,7 @@ export interface ApiError { error: { code: string; message: string; recovery?: s
 export interface Session { username: string; csrf_token?: string }
 export interface Profile { id: string; name: string; server_directory: string; distribution: string; minecraft_version: string | null; is_fixture: boolean }
 export interface ProcessState { state: "STOPPED" | "STARTING" | "RUNNING" | "STOPPING" | "CRASHED" | "DEGRADED" | "UNKNOWN"; pid: number | null; exit_code: number | null; reason: string; started_at?: string | null; profile_id?: string | null }
-export interface LogEvent { sequence: number; timestamp: string; line: string }
+export interface LogEvent { sequence: number; timestamp: string; line: string; profile_id: string | null }
 export interface ImportScan { canonical_path: string; distribution: string; minecraft_version: string | null; detected_files: string[]; is_fixture: boolean; plan: string[] }
 export interface SettingEntry { key: string; label: string; type: "string" | "integer" | "boolean"; value: string | number | boolean | null }
 export interface SettingsView { present: boolean; settings: SettingEntry[]; other_keys: string[] }

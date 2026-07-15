@@ -40,9 +40,10 @@ export function ConsolePage() {
     setCommand("");
   }
 
-  // The managed process writes one log stream. Showing it under a profile that does
-  // not own that process would attribute another server's output to this one.
-  const lines = scope.isActive ? logs : [];
+  // One rolling buffer serves every run, so it still holds lines from profiles that ran
+  // earlier. Match on the profile that produced each line, not on who holds the process
+  // now, or a previous server's output would be attributed to this one.
+  const lines = logs.filter(entry => entry.profile_id === scope.profile.id);
   return <section className="card console" id="console">
     <div className="section-heading"><div><p className="eyebrow">{scope.profile.name}</p><h2>Live server log</h2></div><span className="live-count"><i />{lines.length} lines</span></div>
     <div className="log" role="log" aria-live="polite">{lines.length ? lines.map(entry => <div key={entry.sequence}><time>{new Date(entry.timestamp).toLocaleTimeString()}</time><span>{entry.line}</span></div>) : <p className="empty">{scope.occupant ? `The log belongs to ${scope.occupant.name}, which is the server running right now.` : "Start this server to see its logs here."}</p>}</div>

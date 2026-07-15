@@ -159,7 +159,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     async def scheduled_start(profile: Profile) -> None:
         arguments, cwd, label = launch_spec(profile, "normal")
-        await manager.start(arguments, cwd=cwd, label=label)
+        await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)
         app.state.active_profile_id = profile.id
 
     scheduler = Scheduler(factory, manager, scheduled_start, config.data_dir)
@@ -885,7 +885,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "That profile was not found.")
         try:
             arguments, cwd, label = launch_spec(profile, payload.mode)
-            await manager.start(arguments, cwd=cwd, label=label)
+            await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
         db.add(
@@ -933,7 +933,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if profile is None:
                 raise HTTPException(404, "That profile was not found.")
             arguments, cwd, label = launch_spec(profile, payload.mode)
-            await manager.start(arguments, cwd=cwd, label=label)
+            await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
         db.add(
