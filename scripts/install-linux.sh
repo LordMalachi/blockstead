@@ -225,6 +225,15 @@ if [[ $ready != true ]]; then
   rollback 1
 fi
 
+# The API answers /api/v1/health even when the dashboard is not being served, which
+# looks like a successful install until the owner opens a browser and gets a 404.
+dashboard_type=$(curl --fail --silent --output /dev/null --write-out '%{content_type}' "$health_url/" || true)
+if [[ $dashboard_type != text/html* ]]; then
+  echo "Blockstead is healthy but served no dashboard at $health_url" >&2
+  echo "Review: sudo journalctl -u $SERVICE -n 100" >&2
+  rollback 1
+fi
+
 trap - ERR INT TERM
 if [[ $mode == update ]]; then
   result="Blockstead was updated from $old_version to $new_version"

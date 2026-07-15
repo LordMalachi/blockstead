@@ -11,7 +11,9 @@ Blockstead revision, tester, and date with the results.
 - [ ] Fixture import is read-only; existing vanilla import plan makes no changes.
 - [ ] Start, readiness, live logs, command input, graceful stop, forced timeout,
       abnormal exit, and reboot reconciliation work.
-- [ ] Production frontend loads; raw exceptions are not exposed.
+- [ ] Production frontend loads from the installed service, and a bookmarked server
+      page such as `/servers/<id>/console` still loads after a refresh; raw
+      exceptions are not exposed.
 - [ ] LAN access works only after opt-in and shows its security warning.
 - [ ] Backup/restore, disk-full behavior, permissions, crash recovery, and log
       rotation pass once milestone 2 is merged.

@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     secure_cookies: bool = False
     allowed_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
     session_hours: int = 12
+    #: Built dashboard to serve. Left unset, Blockstead looks for it in the source
+    #: checkout and next to an installed virtual environment.
+    static_dir: Path | None = None
 
     @field_validator("bind_host")
     @classmethod
