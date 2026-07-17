@@ -7,8 +7,15 @@ import pytest
 
 from blockstead.provisioning import (
     FABRIC_INSTALLER,
+    FORGE_MAVEN,
+    FORGE_PROMOTIONS,
     MOJANG_MANIFEST,
+    NEOFORGE_MAVEN,
+    NEOFORGE_METADATA,
     PAPER_BUILDS,
+    QUILT_INSTALLER,
+    QUILT_INSTALLER_MAVEN,
+    QUILT_LOADER,
     ProvisionError,
     list_versions,
     provision_profile,
@@ -22,6 +29,17 @@ JAR_SHA256 = hashlib.sha256(JAR_BYTES).hexdigest()
 VERSION_DETAIL_URL = "https://piston-meta.example/1.21.1.json"
 VANILLA_JAR_URL = "https://piston-data.example/server.jar"
 PAPER_JAR_URL = "https://fill-data.example/paper-1.21.1-10.jar"
+NEOFORGE_LOADER = "21.1.77"
+NEOFORGE_INSTALLER_URL = (
+    f"{NEOFORGE_MAVEN}/{NEOFORGE_LOADER}/"
+    f"neoforge-{NEOFORGE_LOADER}-installer.jar"
+)
+FORGE_COORDINATE = "1.20.1-47.4.10"
+FORGE_INSTALLER_URL = (
+    f"{FORGE_MAVEN}/{FORGE_COORDINATE}/forge-{FORGE_COORDINATE}-installer.jar"
+)
+QUILT_INSTALLER_VERSION = "0.12.0"
+QUILT_INSTALLER_URL = QUILT_INSTALLER_MAVEN.format(installer=QUILT_INSTALLER_VERSION)
 
 RESPONSES: dict[str, object] = {
     MOJANG_MANIFEST: {
@@ -60,6 +78,18 @@ RESPONSES: dict[str, object] = {
         {"loader": {"version": "0.16.5", "stable": True}},
     ],
     FABRIC_INSTALLER: [{"version": "1.0.1", "stable": True}],
+    FORGE_PROMOTIONS: {"promos": {"1.20.1-recommended": "47.4.10"}},
+    f"{FORGE_INSTALLER_URL}.sha1": JAR_SHA1,
+    NEOFORGE_METADATA: (
+        "<metadata><versioning><versions><version>21.1.76-beta</version>"
+        "<version>21.1.77</version></versions></versioning></metadata>"
+    ),
+    f"{NEOFORGE_INSTALLER_URL}.sha1": JAR_SHA1,
+    QUILT_LOADER.format(version="1.21.1"): [
+        {"loader": {"version": "0.29.0", "stable": True}}
+    ],
+    QUILT_INSTALLER: [{"version": QUILT_INSTALLER_VERSION, "stable": True}],
+    f"{QUILT_INSTALLER_URL}.sha1": JAR_SHA1,
 }
 
 
@@ -68,7 +98,10 @@ def handler(request: httpx.Request) -> httpx.Response:
     if url in {VANILLA_JAR_URL, PAPER_JAR_URL}:
         return httpx.Response(200, content=JAR_BYTES)
     if url in RESPONSES:
-        return httpx.Response(200, json=json.loads(json.dumps(RESPONSES[url])))
+        payload = RESPONSES[url]
+        if isinstance(payload, str):
+            return httpx.Response(200, text=payload)
+        return httpx.Response(200, json=json.loads(json.dumps(payload)))
     return httpx.Response(404)
 
 
@@ -98,9 +131,22 @@ async def test_fabric_plan_has_no_publisher_checksum(client: httpx.AsyncClient) 
     assert any("checksum" in note for note in plan.notes)
 
 
-async def test_neoforge_is_refused_with_guidance(client: httpx.AsyncClient) -> None:
-    with pytest.raises(ProvisionError, match="import that folder"):
-        await resolve_plan(client, "neoforge", "1.21.1")
+async def test_neoforge_plan_uses_official_installer(client: httpx.AsyncClient) -> None:
+    plan = await resolve_plan(client, "neoforge", "1.21.1")
+    assert plan.loader_version == NEOFORGE_LOADER
+    assert plan.url == NEOFORGE_INSTALLER_URL
+    assert plan.checksum == JAR_SHA1
+
+
+async def test_forge_and_quilt_plans_use_official_installers(
+    client: httpx.AsyncClient,
+) -> None:
+    forge = await resolve_plan(client, "forge", "1.20.1")
+    assert forge.loader_version == "47.4.10"
+    assert forge.url == FORGE_INSTALLER_URL
+    quilt = await resolve_plan(client, "quilt", "1.21.1")
+    assert quilt.loader_version == "0.29.0"
+    assert quilt.url == QUILT_INSTALLER_URL
 
 
 async def test_unknown_version_is_refused(client: httpx.AsyncClient) -> None:

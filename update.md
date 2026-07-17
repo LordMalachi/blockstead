@@ -58,7 +58,10 @@ Blockstead already provides:
 - manual and scheduled world backups with manifests, SHA-256 verification,
   per-server result history, retention rules, and staged verified restore;
 - optional Linux host shutdown and RTC wake scheduling;
-- Modrinth extension search, uploads, and Fabric modpack installation;
+- compatible Modrinth extension search, uploads, and Fabric, Forge, Quilt, and
+  NeoForge modpack installation;
+- official profile creation for Vanilla, Fabric, Forge, Quilt, NeoForge, and
+  Paper, plus revision-safe editing of generated loader configuration files;
 - a responsive visual system and guided first-run experience;
 - a server-card landing page and a routed, bookmarkable workspace per server.
 

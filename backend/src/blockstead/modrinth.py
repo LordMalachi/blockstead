@@ -20,9 +20,17 @@ JAR_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+\- ]{0,127}\.jar$")
 LOADER_FILTERS: dict[str, list[str]] = {
     "paper": ["paper", "spigot", "bukkit"],
     "fabric": ["fabric"],
+    "forge": ["forge"],
+    "quilt": ["quilt"],
     "neoforge": ["neoforge"],
 }
-PROJECT_TYPES: dict[str, str] = {"paper": "plugin", "fabric": "mod", "neoforge": "mod"}
+PROJECT_TYPES: dict[str, str] = {
+    "paper": "plugin",
+    "fabric": "mod",
+    "forge": "mod",
+    "quilt": "mod",
+    "neoforge": "mod",
+}
 
 
 class ModrinthError(ValueError):
@@ -35,6 +43,9 @@ class ModrinthProject(BaseModel):
     title: str | None
     description: str | None
     downloads: int | None
+    icon_url: str | None = None
+    author: str | None = None
+    project_type: str | None = None
 
 
 class PlannedFile(BaseModel):
@@ -53,7 +64,7 @@ def _loaders_for(distribution: str) -> list[str]:
     if loaders is None:
         raise ModrinthError(
             "This distribution does not have a Modrinth catalog. "
-            "Only Paper, Fabric, and NeoForge servers can install from Modrinth."
+            "Only plugin or mod loader profiles can install from Modrinth."
         )
     return loaders
 
@@ -77,6 +88,7 @@ async def search(
     facets: list[list[str]] = [
         [f"project_type:{PROJECT_TYPES[distribution]}"],
         [f"categories:{loader}" for loader in loaders],
+        ["server_side:required", "server_side:optional"],
     ]
     if minecraft_version:
         facets.append([f"versions:{minecraft_version}"])
@@ -99,6 +111,11 @@ async def search(
                     hit["description"][:300] if isinstance(hit.get("description"), str) else None
                 ),
                 downloads=(hit.get("downloads") if isinstance(hit.get("downloads"), int) else None),
+                icon_url=hit.get("icon_url") if isinstance(hit.get("icon_url"), str) else None,
+                author=hit.get("author") if isinstance(hit.get("author"), str) else None,
+                project_type=(
+                    hit.get("project_type") if isinstance(hit.get("project_type"), str) else None
+                ),
             )
         )
     return projects
@@ -189,6 +206,13 @@ async def plan_install(
         root_loaders = root.get("loaders")
         if isinstance(root_loaders, list) and not (set(root_loaders) & set(loaders)):
             raise ModrinthError("That Modrinth version does not support this server's loader.")
+        game_versions = root.get("game_versions")
+        if (
+            minecraft_version
+            and isinstance(game_versions, list)
+            and minecraft_version not in game_versions
+        ):
+            raise ModrinthError("That Modrinth version does not support this Minecraft version.")
     else:
         root = await _best_version(client, project_id, loaders, minecraft_version)
     planned: list[PlannedFile] = [_planned_from(root, None)]

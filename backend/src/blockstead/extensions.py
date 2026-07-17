@@ -25,11 +25,15 @@ from .distributions import DISTRIBUTIONS
 MAX_JARS = 200
 MAX_METADATA_BYTES = 1_000_000
 
-Kind = Literal["paper-plugin", "fabric-mod", "neoforge-mod", "forge-mod", "unknown"]
+Kind = Literal[
+    "paper-plugin", "fabric-mod", "quilt-mod", "neoforge-mod", "forge-mod", "unknown"
+]
 
 _NATIVE_LOADERS: dict[str, frozenset[str]] = {
     "paper": frozenset({"paper"}),
     "fabric": frozenset({"fabric"}),
+    "quilt": frozenset({"quilt", "fabric"}),
+    "forge": frozenset({"forge"}),
     "neoforge": frozenset({"neoforge"}),
 }
 
@@ -123,6 +127,39 @@ def _parse_fabric(raw: bytes, found: _Metadata) -> None:
             )
 
 
+def _parse_quilt(raw: bytes, found: _Metadata) -> None:
+    try:
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return
+    if not isinstance(data, dict):
+        return
+    loader = data.get("quilt_loader")
+    if not isinstance(loader, dict):
+        return
+    found.loaders.append("quilt")
+    found.fill("identifier", _clean(loader.get("id")))
+    metadata = loader.get("metadata")
+    if isinstance(metadata, dict):
+        found.fill("display_name", _clean(metadata.get("name")))
+    found.fill("version", _clean(loader.get("version")))
+    depends = loader.get("depends")
+    records = depends if isinstance(depends, list) else []
+    declared: list[str] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        dep_id = record.get("id")
+        versions = record.get("versions")
+        constraint = versions[0] if isinstance(versions, list) and versions else versions
+        if dep_id == "minecraft":
+            found.fill("minecraft_constraint", _clean(constraint))
+        elif isinstance(dep_id, str) and dep_id not in {"java", "quilt_loader"}:
+            declared.append(dep_id[:100])
+    if declared and not found.dependencies:
+        found.dependencies = sorted(declared)
+
+
 def _parse_mods_toml(raw: bytes, loader: str, found: _Metadata) -> None:
     try:
         data = tomllib.loads(raw.decode("utf-8", errors="replace"))
@@ -175,6 +212,7 @@ def _parse_plugin_yml(raw: bytes, found: _Metadata) -> None:
 
 def _kind_of(loaders: list[str]) -> Kind:
     for loader, kind in (
+        ("quilt", "quilt-mod"),
         ("fabric", "fabric-mod"),
         ("neoforge", "neoforge-mod"),
         ("forge", "forge-mod"),
@@ -199,6 +237,9 @@ def _inspect_jar(path: Path) -> ExtensionEntry:
             fabric = _read_member(archive, "fabric.mod.json")
             if fabric is not None:
                 _parse_fabric(fabric, found)
+            quilt = _read_member(archive, "quilt.mod.json")
+            if quilt is not None:
+                _parse_quilt(quilt, found)
             neo = _read_member(archive, "META-INF/neoforge.mods.toml")
             if neo is not None:
                 _parse_mods_toml(neo, "neoforge", found)

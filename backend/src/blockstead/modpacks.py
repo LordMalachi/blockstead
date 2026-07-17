@@ -1,12 +1,12 @@
-"""Import Modrinth modpacks (.mrpack) as new Fabric server profiles.
+"""Import Modrinth modpacks (.mrpack) as new loader-backed server profiles.
 
 A .mrpack is a zip holding modrinth.index.json plus override folders.
 Everything inside it is treated as untrusted data: file paths are
 validated against traversal, download hosts are allowlisted per the
 Modrinth pack specification, every download is checksum-verified, and
 eula.txt is never written from pack contents. Packs that need a loader
-Blockstead cannot install without executing an installer (NeoForge,
-Forge, Quilt) are refused with guidance rather than half-imported.
+installer-based loaders are provisioned through the same bounded official
+installer path used by new profiles.
 """
 
 import hashlib
@@ -20,6 +20,8 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel
 
+from .distributions import required_java_major
+from .java_runtime import discover_java_runtimes, find_java
 from .modrinth import (
     MODRINTH_API,
     ModrinthError,
@@ -32,7 +34,8 @@ from .provisioning import (
     DIRECTORY_PATTERN,
     ProvisionError,
     download_verified_file,
-    fabric_plan,
+    install_loader,
+    resolve_plan,
 )
 
 MAX_MRPACK_BYTES = 256 * 1024 * 1024
@@ -74,6 +77,7 @@ class ModpackResult(BaseModel):
     directory: str
     name: str
     minecraft_version: str
+    distribution: str = "fabric"
     loader_version: str | None
     installed_files: int
     override_files: int
@@ -130,12 +134,6 @@ def parse_mrpack(data: bytes) -> ModpackIndex:
     if len(loaders) != 1:
         raise ModpackError("The modpack does not declare exactly one mod loader.")
     loader, loader_version = loaders[0]
-    if loader != "fabric":
-        raise ModpackError(
-            f"This pack needs {loader.capitalize()}, which Blockstead cannot install "
-            "without running its installer. Install that server manually, import it, "
-            "then add the pack's mods to it."
-        )
     entries = index.get("files")
     if not isinstance(entries, list):
         raise ModpackError("The modpack index had an unexpected shape.")
@@ -219,7 +217,9 @@ async def fetch_mrpack(client: httpx.AsyncClient, project_id: str, version_id: s
     if version_id:
         version = await _version_by_id(client, version_id)
     else:
-        version = await _best_version(client, project_id, ["fabric"], None)
+        version = await _best_version(
+            client, project_id, ["fabric", "forge", "quilt", "neoforge"], None
+        )
     files = version.get("files")
     usable = [item for item in files if isinstance(item, dict)] if isinstance(files, list) else []
     chosen = next(
@@ -267,7 +267,17 @@ async def search_modpacks(client: httpx.AsyncClient, query: str) -> list[Modrint
         f"{MODRINTH_API}/search",
         {
             "query": query[:100],
-            "facets": json.dumps([["project_type:modpack"], ["categories:fabric"]]),
+            "facets": json.dumps(
+                [
+                    ["project_type:modpack"],
+                    [
+                        "categories:fabric",
+                        "categories:forge",
+                        "categories:quilt",
+                        "categories:neoforge",
+                    ],
+                ]
+            ),
             "limit": "20",
         },
     )
@@ -285,6 +295,9 @@ async def search_modpacks(client: httpx.AsyncClient, query: str) -> list[Modrint
                     hit["description"][:300] if isinstance(hit.get("description"), str) else None
                 ),
                 downloads=(hit.get("downloads") if isinstance(hit.get("downloads"), int) else None),
+                icon_url=hit.get("icon_url") if isinstance(hit.get("icon_url"), str) else None,
+                author=hit.get("author") if isinstance(hit.get("author"), str) else None,
+                project_type="modpack",
             )
         )
     return projects
@@ -295,11 +308,21 @@ async def install_modpack(
     server_root: Path,
     directory_name: str,
     data: bytes,
+    java_executable: str | None = None,
 ) -> ModpackResult:
     """Create a new profile folder from .mrpack bytes: files, overrides, launcher."""
     if not DIRECTORY_PATTERN.match(directory_name):
         raise ModpackError("Folder names use lowercase letters, digits, hyphens, and underscores.")
     index = parse_mrpack(data)
+    if index.loader in {"forge", "quilt", "neoforge"} and java_executable is None:
+        runtime = find_java(
+            required_java_major(index.minecraft_version), discover_java_runtimes()
+        )
+        if runtime is None:
+            raise ModpackError(
+                "This modpack needs a compatible Java runtime to install its loader."
+            )
+        java_executable = runtime.path
     root = server_root.resolve(strict=True)
     target = root / directory_name
     if target.exists():
@@ -318,15 +341,10 @@ async def install_modpack(
                 pack_file.checksum,
             )
         override_count, notes = _extract_overrides(data, target)
-        launcher = await fabric_plan(client, index.minecraft_version, index.loader_version)
-        await download_verified_file(
-            client,
-            launcher.url,
-            target,
-            "fabric-server-launch.jar",
-            launcher.checksum_algorithm,
-            launcher.checksum,
+        launcher = await resolve_plan(
+            client, index.loader, index.minecraft_version, index.loader_version
         )
+        await install_loader(client, launcher, target, java_executable)
         notes.extend(launcher.notes)
     except (ModpackError, ProvisionError, ModrinthError, OSError):
         shutil.rmtree(target, ignore_errors=True)
@@ -335,6 +353,7 @@ async def install_modpack(
         directory=str(target),
         name=index.name,
         minecraft_version=index.minecraft_version,
+        distribution=index.loader,
         loader_version=index.loader_version,
         installed_files=len(index.files),
         override_files=override_count,

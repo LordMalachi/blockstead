@@ -6,6 +6,7 @@ import { Button } from "../../components/Button";
 import { StatusBadge } from "../../components/StatusBadge";
 import { ModpacksPanel } from "../extensions/ModpacksPanel";
 import { scopeFor, type ServerScope } from "./scope";
+import { ProvisionPanel } from "./ProvisionPanel";
 
 const fixturePath = "fixtures/servers/vanilla-fixture";
 
@@ -24,7 +25,7 @@ function ServerCard({ scope, allowlist, schedule, onAction }: { scope: ServerSco
   const { profile } = scope;
   return <article className="server-card">
     <div className="server-card__head">
-      <div><h3><Link to={`/servers/${profile.id}/overview`}>{profile.name}</Link></h3><p>{profile.distribution} · {profile.minecraft_version ?? "version unknown"}</p></div>
+      <div><h3><Link to={`/servers/${profile.id}/overview`}>{profile.name}</Link></h3><p>{profile.distribution}{profile.loader_version ? ` ${profile.loader_version}` : ""} · {profile.minecraft_version ?? "version unknown"}</p></div>
       <StatusBadge state={scope.state} />
     </div>
     <dl className="server-card__facts">
@@ -85,7 +86,8 @@ export function ServersPage() {
     </section>
     {notice && <div className="error page-notice" role="alert">{notice}</div>}
     {list.length > 0 && <div className="server-grid">{list.map((profile, index) => <ServerCard key={profile.id} scope={scopeFor(profile, snapshot, list)} allowlist={rosters[index]?.data?.allowlist.readable ? rosters[index].data.allowlist.players.length : null} schedule={schedules.data?.find(entry => entry.profile_id === profile.id)} onAction={(endpoint, body) => action.mutate({ endpoint, body })} />)}</div>}
-    <section className={`card${list.length ? "" : " onboarding-card"}`}>
+    <ProvisionPanel stopped={hostFree} onCreated={id => { void navigate(`/servers/${id}/overview`); }} />
+    <section className="card">
       <p className="eyebrow">{list.length ? "Add a server" : "First safe workflow"}</p>
       <h2>Import a server folder</h2>
       <p>The scan is read-only. Blockstead records a profile without changing server files.</p>

@@ -1,16 +1,22 @@
 """Provision new server profiles from official download sources.
 
-This module downloads data only. It never executes anything it
-downloads, never writes eula.txt, and always stages a download and
-verifies its published checksum before the file reaches its final name.
+Downloads are staged and checksum-verified where publishers provide a
+digest. Forge, Quilt, and NeoForge require their official Java installer;
+those installers run without a shell, with a timeout, and only inside the
+new profile directory. This module never writes or accepts eula.txt.
 """
 
+import asyncio
 import hashlib
 import re
+import shutil
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import httpx
 from pydantic import BaseModel
+
+from .distributions import LaunchPlanError, launch_arguments
 
 USER_AGENT = "blockstead/0.1.0 (https://github.com/LordMalachi/blockstead)"
 MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
@@ -25,6 +31,22 @@ FABRIC_INSTALLER = "https://meta.fabricmc.net/v2/versions/installer"
 FABRIC_SERVER_JAR = (
     "https://meta.fabricmc.net/v2/versions/loader/{version}/{loader}/{installer}/server/jar"
 )
+FORGE_PROMOTIONS = (
+    "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
+)
+FORGE_MAVEN = "https://maven.minecraftforge.net/net/minecraftforge/forge"
+NEOFORGE_METADATA = (
+    "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"
+)
+NEOFORGE_MAVEN = "https://maven.neoforged.net/releases/net/neoforged/neoforge"
+QUILT_GAME = "https://meta.quiltmc.org/v3/versions/game"
+QUILT_LOADER = "https://meta.quiltmc.org/v3/versions/loader/{version}"
+QUILT_INSTALLER = "https://meta.quiltmc.org/v3/versions/installer"
+QUILT_INSTALLER_MAVEN = (
+    "https://maven.quiltmc.org/repository/release/org/quiltmc/quilt-installer/"
+    "{installer}/quilt-installer-{installer}.jar"
+)
+INSTALL_TIMEOUT_SECONDS = 300
 
 
 class ProvisionError(ValueError):
@@ -34,6 +56,7 @@ class ProvisionError(ValueError):
 class ProvisionPlan(BaseModel):
     distribution: str
     minecraft_version: str
+    loader_version: str | None = None
     file_name: str
     url: str
     checksum_algorithm: str | None
@@ -53,6 +76,17 @@ async def _get_json(client: httpx.AsyncClient, url: str) -> object:
         response.raise_for_status()
         return response.json()
     except (httpx.HTTPError, ValueError) as exc:
+        raise ProvisionError(
+            f"A download source did not answer as expected ({type(exc).__name__})."
+        ) from exc
+
+
+async def _get_text(client: httpx.AsyncClient, url: str) -> str:
+    try:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.text
+    except httpx.HTTPError as exc:
         raise ProvisionError(
             f"A download source did not answer as expected ({type(exc).__name__})."
         ) from exc
@@ -99,6 +133,39 @@ async def list_versions(client: httpx.AsyncClient, distribution: str) -> list[st
             entry["version"]
             for entry in games
             if isinstance(entry, dict) and entry.get("stable") and "version" in entry
+        ]
+    if distribution == "forge":
+        promotions = await _get_json(client, FORGE_PROMOTIONS)
+        values = promotions.get("promos") if isinstance(promotions, dict) else None
+        if not isinstance(values, dict):
+            raise ProvisionError("Forge's version list had an unexpected shape.")
+        forge_versions = {
+            key.rsplit("-", 1)[0]
+            for key in values
+            if key.endswith(("-recommended", "-latest"))
+        }
+        return sorted(forge_versions, key=_version_key, reverse=True)
+    if distribution == "neoforge":
+        neoforge_versions = _maven_versions(await _get_text(client, NEOFORGE_METADATA))
+        return sorted(
+            {
+                minecraft
+                for item in neoforge_versions
+                if (minecraft := _neoforge_minecraft(item)) != "unknown"
+            },
+            key=_version_key,
+            reverse=True,
+        )
+    if distribution == "quilt":
+        games = await _get_json(client, QUILT_GAME)
+        if not isinstance(games, list):
+            raise ProvisionError("Quilt's version list had an unexpected shape.")
+        return [
+            entry["version"]
+            for entry in games
+            if isinstance(entry, dict)
+            and entry.get("stable")
+            and isinstance(entry.get("version"), str)
         ]
     raise ProvisionError("Blockstead cannot list downloadable versions for this distribution.")
 
@@ -167,6 +234,32 @@ def _first_stable_version(entries: object) -> str | None:
     return None
 
 
+def _version_key(value: str) -> tuple[tuple[int, object], ...]:
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.lower())
+        for part in re.split(r"[.+_-]", value)
+    )
+
+
+def _maven_versions(raw: str) -> list[str]:
+    try:
+        root = ET.fromstring(raw)  # noqa: S314 - stdlib parser does not fetch external entities
+    except ET.ParseError as exc:
+        raise ProvisionError("A loader version list had an unexpected shape.") from exc
+    return [node.text for node in root.findall("./versioning/versions/version") if node.text]
+
+
+def _neoforge_minecraft(loader_version: str) -> str:
+    parts = loader_version.split(".")
+    if len(parts) < 2 or not all(part.isdigit() for part in parts[:2]):
+        return "unknown"
+    major, minor = int(parts[0]), int(parts[1])
+    if major < 26:
+        return f"1.{major}.{minor}"
+    patch = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
+    return f"{major}.{minor}.{patch}" if patch else f"{major}.{minor}"
+
+
 async def fabric_plan(
     client: httpx.AsyncClient, version: str, loader_version: str | None = None
 ) -> ProvisionPlan:
@@ -180,6 +273,7 @@ async def fabric_plan(
     return ProvisionPlan(
         distribution="fabric",
         minecraft_version=version,
+        loader_version=loader,
         file_name=f"fabric-server-mc.{version}-loader.{loader}-launcher.{installer}.jar",
         url=FABRIC_SERVER_JAR.format(version=version, loader=loader, installer=installer),
         checksum_algorithm=None,
@@ -192,19 +286,158 @@ async def fabric_plan(
     )
 
 
-async def resolve_plan(client: httpx.AsyncClient, distribution: str, version: str) -> ProvisionPlan:
+async def forge_plan(
+    client: httpx.AsyncClient, version: str, loader_version: str | None = None
+) -> ProvisionPlan:
+    promotions = await _get_json(client, FORGE_PROMOTIONS)
+    promos = promotions.get("promos") if isinstance(promotions, dict) else None
+    if not isinstance(promos, dict):
+        raise ProvisionError("Forge's version list had an unexpected shape.")
+    loader = loader_version
+    if loader is None:
+        candidate = promos.get(f"{version}-recommended") or promos.get(f"{version}-latest")
+        loader = candidate if isinstance(candidate, str) else None
+    if loader is None:
+        raise ProvisionError(f"Forge does not list a server installer for Minecraft {version}.")
+    coordinate = loader if loader.startswith(f"{version}-") else f"{version}-{loader}"
+    file_name = f"forge-{coordinate}-installer.jar"
+    url = f"{FORGE_MAVEN}/{coordinate}/{file_name}"
+    checksum = (await _get_text(client, f"{url}.sha1")).strip().split()[0]
+    return ProvisionPlan(
+        distribution="forge",
+        minecraft_version=version,
+        loader_version=coordinate.removeprefix(f"{version}-"),
+        file_name=file_name,
+        url=url,
+        checksum_algorithm="sha1",
+        checksum=checksum,
+        notes=[
+            f"Forge {coordinate} from the official Forge Maven repository.",
+            "The verified official installer runs only inside the new server folder.",
+        ],
+    )
+
+
+async def neoforge_plan(
+    client: httpx.AsyncClient, version: str, loader_version: str | None = None
+) -> ProvisionPlan:
+    available = _maven_versions(await _get_text(client, NEOFORGE_METADATA))
+    if loader_version:
+        candidates = [item for item in available if item == loader_version]
+    else:
+        candidates = [item for item in available if _neoforge_minecraft(item) == version]
+    if not candidates:
+        raise ProvisionError(f"NeoForge does not list a server installer for Minecraft {version}.")
+    stable = [item for item in candidates if not re.search(r"(?i)(alpha|beta|rc)", item)]
+    loader = max(stable or candidates, key=_version_key)
+    file_name = f"neoforge-{loader}-installer.jar"
+    url = f"{NEOFORGE_MAVEN}/{loader}/{file_name}"
+    checksum = (await _get_text(client, f"{url}.sha1")).strip().split()[0]
+    return ProvisionPlan(
+        distribution="neoforge",
+        minecraft_version=version,
+        loader_version=loader,
+        file_name=file_name,
+        url=url,
+        checksum_algorithm="sha1",
+        checksum=checksum,
+        notes=[
+            f"NeoForge {loader} from the official NeoForged Maven repository.",
+            "The verified official installer runs only inside the new server folder.",
+        ],
+    )
+
+
+async def quilt_plan(
+    client: httpx.AsyncClient, version: str, loader_version: str | None = None
+) -> ProvisionPlan:
+    loaders = await _get_json(client, QUILT_LOADER.format(version=version))
+    loader = loader_version or _first_stable_version(loaders)
+    if loader is None and isinstance(loaders, list):
+        choices = [
+            entry.get("loader", entry).get("version")
+            for entry in loaders
+            if isinstance(entry, dict) and isinstance(entry.get("loader", entry), dict)
+        ]
+        stable_loaders = [
+            item
+            for item in choices
+            if isinstance(item, str) and not re.search(r"(?i)(alpha|beta|rc)", item)
+        ]
+        loader = max(stable_loaders, key=_version_key) if stable_loaders else None
+    installers = await _get_json(client, QUILT_INSTALLER)
+    installer_entries = installers if isinstance(installers, list) else []
+    installer = _first_stable_version(installers)
+    if installer is None and isinstance(installers, list):
+        installer = next(
+            (
+                entry.get("version")
+                for entry in installers
+                if isinstance(entry, dict) and isinstance(entry.get("version"), str)
+            ),
+            None,
+        )
+    if loader is None or installer is None:
+        raise ProvisionError(f"Quilt does not offer a server for Minecraft {version}.")
+    installer_record = next(
+        (
+            entry
+            for entry in installer_entries
+            if isinstance(entry, dict) and entry.get("version") == installer
+        ),
+        {},
+    )
+    listed_url = installer_record.get("url") if isinstance(installer_record, dict) else None
+    url = (
+        listed_url
+        if isinstance(listed_url, str) and listed_url.startswith("https://")
+        else QUILT_INSTALLER_MAVEN.format(installer=installer)
+    )
+    hashes = installer_record.get("hashes") if isinstance(installer_record, dict) else None
+    published = hashes.get("sha512") if isinstance(hashes, dict) else None
+    checksum: str | None = None
+    checksum_algorithm: str | None = None
+    if isinstance(published, str):
+        checksum, checksum_algorithm = published, "sha512"
+    else:
+        try:
+            checksum = (await _get_text(client, f"{url}.sha1")).strip().split()[0]
+            checksum_algorithm = "sha1"
+        except ProvisionError:
+            pass
+    return ProvisionPlan(
+        distribution="quilt",
+        minecraft_version=version,
+        loader_version=loader,
+        file_name=f"quilt-installer-{installer}.jar",
+        url=url,
+        checksum_algorithm=checksum_algorithm,
+        checksum=checksum,
+        notes=[
+            f"Quilt Loader {loader} with installer {installer}.",
+            "The official Quilt installer downloads the Minecraft server and creates its launcher.",
+        ],
+    )
+
+
+async def resolve_plan(
+    client: httpx.AsyncClient,
+    distribution: str,
+    version: str,
+    loader_version: str | None = None,
+) -> ProvisionPlan:
     if distribution == "vanilla":
         return await _vanilla_plan(client, version)
     if distribution == "paper":
         return await _paper_plan(client, version)
     if distribution == "fabric":
-        return await fabric_plan(client, version)
+        return await fabric_plan(client, version, loader_version)
+    if distribution == "forge":
+        return await forge_plan(client, version, loader_version)
+    if distribution == "quilt":
+        return await quilt_plan(client, version, loader_version)
     if distribution == "neoforge":
-        raise ProvisionError(
-            "Blockstead does not download NeoForge yet because its installer must be "
-            "executed. Run the official NeoForge installer in a folder inside the "
-            "server root, then import that folder."
-        )
+        return await neoforge_plan(client, version, loader_version)
     raise ProvisionError("Blockstead cannot provision this distribution.")
 
 
@@ -261,12 +494,83 @@ async def _download_verified(
     )
 
 
+async def _run_installer(arguments: tuple[str, ...], directory: Path) -> None:
+    """Run one verified loader installer in a new profile folder without a shell."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *arguments,
+            cwd=directory,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            await asyncio.wait_for(process.wait(), timeout=INSTALL_TIMEOUT_SECONDS)
+        except TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise ProvisionError("The loader installer timed out and was stopped.") from exc
+    except OSError as exc:
+        raise ProvisionError("The Java loader installer could not be started.") from exc
+    if process.returncode != 0:
+        raise ProvisionError(f"The loader installer exited with code {process.returncode}.")
+
+
+async def install_loader(
+    client: httpx.AsyncClient,
+    plan: ProvisionPlan,
+    directory: Path,
+    java_executable: str | None,
+) -> str:
+    """Download a server artifact and, where required, install its loader."""
+    download_name = "fabric-server-launch.jar" if plan.distribution == "fabric" else plan.file_name
+    sha256 = await download_verified_file(
+        client,
+        plan.url,
+        directory,
+        download_name,
+        plan.checksum_algorithm,
+        plan.checksum,
+    )
+    if plan.distribution in {"forge", "quilt", "neoforge"}:
+        if java_executable is None:
+            raise ProvisionError(
+                f"Installing {plan.distribution.capitalize()} needs a compatible Java runtime."
+            )
+        installer = directory / download_name
+        arguments: tuple[str, ...]
+        if plan.distribution == "quilt":
+            arguments = (
+                java_executable,
+                "-jar",
+                str(installer),
+                "install",
+                "server",
+                plan.minecraft_version,
+                plan.loader_version or "",
+                "--download-server",
+                "--install-dir=.",
+            )
+        else:
+            arguments = (java_executable, "-jar", str(installer), "--installServer")
+        await _run_installer(arguments, directory)
+        installer.unlink(missing_ok=True)
+    try:
+        launch_arguments(plan.distribution, directory, java_executable or "java")
+    except LaunchPlanError as exc:
+        raise ProvisionError(
+            "The download completed, but the expected server launch files were not created."
+        ) from exc
+    return sha256
+
+
 async def provision_profile(
     client: httpx.AsyncClient,
     server_root: Path,
     directory_name: str,
     distribution: str,
     version: str,
+    loader_version: str | None = None,
+    java_executable: str | None = None,
 ) -> ProvisionResult:
     """Create a new profile folder and place a verified server file in it."""
     if not DIRECTORY_PATTERN.match(directory_name):
@@ -277,14 +581,11 @@ async def provision_profile(
     target = root / directory_name
     if target.exists():
         raise ProvisionError("A folder with that name already exists in the server root.")
-    plan = await resolve_plan(client, distribution, version)
+    plan = await resolve_plan(client, distribution, version, loader_version)
     target.mkdir(mode=0o755)
     try:
-        sha256 = await _download_verified(client, plan, target)
-    except ProvisionError:
-        try:
-            target.rmdir()
-        except OSError:
-            pass
+        sha256 = await install_loader(client, plan, target, java_executable)
+    except (ProvisionError, OSError):
+        shutil.rmtree(target, ignore_errors=True)
         raise
     return ProvisionResult(plan=plan, directory=str(target), sha256=sha256)

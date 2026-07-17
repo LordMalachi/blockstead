@@ -29,8 +29,11 @@ class CommandRequest(BaseModel):
 class ProvisionRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     directory_name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
-    distribution: str = Field(pattern=r"^(vanilla|paper|fabric|neoforge)$")
+    distribution: str = Field(pattern=r"^(vanilla|paper|fabric|forge|quilt|neoforge)$")
     minecraft_version: str = Field(min_length=1, max_length=32, pattern=r"^[0-9][0-9A-Za-z._-]*$")
+    loader_version: str | None = Field(
+        default=None, max_length=64, pattern=r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$"
+    )
 
 
 class EulaRequest(BaseModel):
@@ -53,6 +56,12 @@ class InstallRequest(BaseModel):
 class ToggleRequest(BaseModel):
     file_name: str = Field(min_length=5, max_length=132)
     enabled: bool
+
+
+class ModConfigUpdateRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=512)
+    revision: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    content: str = Field(max_length=1_000_000)
 
 
 class ModpackInstallRequest(BaseModel):

@@ -1,7 +1,7 @@
 import { scopeFor } from "./scope";
 import type { ProcessState, Profile } from "../../api/client";
 
-const profile = (id: string, name: string): Profile => ({ id, name, server_directory: `/srv/${id}`, distribution: "vanilla", minecraft_version: "1.21", is_fixture: true });
+const profile = (id: string, name: string): Profile => ({ id, name, server_directory: `/srv/${id}`, distribution: "vanilla", minecraft_version: "1.21", loader_version: null, is_fixture: true });
 const home = profile("home", "Home world");
 const creative = profile("creative", "Creative world");
 const snapshot = (over: Partial<ProcessState>): ProcessState => ({ state: "STOPPED", pid: null, exit_code: null, reason: "Stopped", ...over });

@@ -1,6 +1,6 @@
 export interface ApiError { error: { code: string; message: string; recovery?: string } }
 export interface Session { username: string; csrf_token?: string }
-export interface Profile { id: string; name: string; server_directory: string; distribution: string; minecraft_version: string | null; is_fixture: boolean }
+export interface Profile { id: string; name: string; server_directory: string; distribution: string; minecraft_version: string | null; loader_version: string | null; is_fixture: boolean }
 export interface ProcessState { state: "STOPPED" | "STARTING" | "RUNNING" | "STOPPING" | "CRASHED" | "DEGRADED" | "UNKNOWN"; pid: number | null; exit_code: number | null; reason: string; started_at?: string | null; profile_id?: string | null }
 export interface LogEvent { sequence: number; timestamp: string; line: string; profile_id: string | null }
 export interface ImportScan { canonical_path: string; distribution: string; minecraft_version: string | null; detected_files: string[]; is_fixture: boolean; plan: string[] }
@@ -27,12 +27,17 @@ export interface RestoreResult { restored_paths: string[]; preserved_paths: stri
 export interface BackupPolicy { keep_count: number | null; keep_days: number | null; max_total_mb: number | null }
 export interface JavaRuntime { path: string; version: string; major: number }
 export interface PrerequisitesView { distribution: string; label: string; minecraft_version: string | null; is_fixture: boolean; eula_accepted: boolean; required_java_major: number | null; java_runtimes: JavaRuntime[]; selected_java: JavaRuntime | null; java_satisfied: boolean; launch_files_ready: boolean; launch_problem: string | null; extension_directory: string | null; extension_directory_present: boolean }
-export interface ExtensionEntry { file_name: string; size_bytes: number; sha256: string | null; kind: "paper-plugin" | "fabric-mod" | "neoforge-mod" | "forge-mod" | "unknown"; loaders: string[]; identifier: string | null; display_name: string | null; version: string | null; minecraft_constraint: string | null; environment: string | null; dependencies: string[]; readable: boolean }
+export interface ExtensionEntry { file_name: string; size_bytes: number; sha256: string | null; kind: "paper-plugin" | "fabric-mod" | "quilt-mod" | "neoforge-mod" | "forge-mod" | "unknown"; loaders: string[]; identifier: string | null; display_name: string | null; version: string | null; minecraft_constraint: string | null; environment: string | null; dependencies: string[]; readable: boolean }
 export interface ExtensionWarning { code: string; message: string; files: string[] }
 export interface ExtensionsView { directory: string | null; present: boolean; entries: ExtensionEntry[]; disabled_entries: ExtensionEntry[]; warnings: ExtensionWarning[]; truncated: boolean }
-export interface CatalogProject { project_id: string; slug: string | null; title: string | null; description: string | null; downloads: number | null }
+export interface CatalogProject { project_id: string; slug: string | null; title: string | null; description: string | null; downloads: number | null; icon_url?: string | null; author?: string | null; project_type?: string | null }
 export interface CatalogSearch { minecraft_version?: string | null; projects: CatalogProject[] }
-export interface ModpackInstallResult { id: string; name: string; directory: string; minecraft_version: string; loader_version: string | null; installed_files: number; override_files: number; skipped_unsupported: string[]; notes: string[]; eula_accepted: boolean }
+export interface ModpackInstallResult { id: string; name: string; directory: string; distribution: string; minecraft_version: string; loader_version: string | null; installed_files: number; override_files: number; skipped_unsupported: string[]; notes: string[]; eula_accepted: boolean }
+export interface ProvisionVersions { distribution: string; versions: string[] }
+export interface ProvisionResult { id: string; name: string; distribution: string; minecraft_version: string; loader_version: string | null; directory: string; notes: string[]; eula_accepted: boolean }
+export interface ModConfigEntry { path: string; size_bytes: number }
+export interface ModConfigsView { distribution: string; directory: string; files: ModConfigEntry[] }
+export interface ModConfigDocument { path: string; content: string; revision: string; size_bytes: number; restart_required?: boolean }
 
 let csrfToken = sessionStorage.getItem("blockstead_csrf") ?? "";
 export const setCsrf = (value: string) => { csrfToken = value; sessionStorage.setItem("blockstead_csrf", value); };

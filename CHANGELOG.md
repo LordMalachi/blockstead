@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add dashboard-driven Vanilla, Fabric, Forge, Quilt, NeoForge, and Paper
+  profile creation from official metadata and downloads; persist exact loader
+  versions and run required official loader installers without a shell inside
+  a fresh profile directory.
+- Expand Modrinth browsing, dependency resolution, jar inspection, and
+  `.mrpack` installation across Fabric, Forge, Quilt, and NeoForge.
+- Add a revision-checked loader configuration editor with syntax validation,
+  stopped-server enforcement, atomic replacement, and recovery copies.
+- Document the product's write boundary: imports remain read-only, while an
+  authenticated administrator can explicitly authorize scoped managed writes.
 - Protect worlds whose folder comes from a custom `level-name` (including
   Paper's suffixed dimension folders) instead of only the vanilla `world*`
   convention.

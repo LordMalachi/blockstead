@@ -100,7 +100,7 @@ async def test_search_maps_projects(client: httpx.AsyncClient) -> None:
 
 
 async def test_search_refuses_vanilla(client: httpx.AsyncClient) -> None:
-    with pytest.raises(ModrinthError, match="Paper, Fabric, and NeoForge"):
+    with pytest.raises(ModrinthError, match="plugin or mod loader"):
         await search(client, "vanilla", "1.21.1", "cool")
 
 

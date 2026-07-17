@@ -36,6 +36,7 @@ class Profile(Base):
     server_directory: Mapped[str] = mapped_column(Text, unique=True)
     distribution: Mapped[str] = mapped_column(String(24))
     minecraft_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    loader_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_fixture: Mapped[bool] = mapped_column(Boolean, default=False)
     # Backup retention policy. NULL means "no limit" for that rule; the newest
     # completed backup always survives every rule.

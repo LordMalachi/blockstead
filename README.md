@@ -88,12 +88,24 @@ uses it to fetch new versions.
 ### First run
 
 1. Create your Blockstead administrator account in the browser.
-2. Put your Minecraft server folder inside `/srv/minecraft/` and make sure its
-   `eula.txt` says `eula=true` (Blockstead never accepts the EULA for you).
-3. Use **Import** in the dashboard, review the read-only import plan, and
-   confirm.
-4. Choose **Start server**. That's it — the dashboard, and any schedule you
+2. Put your Minecraft server folder inside `/srv/minecraft/`, or create a new
+   Vanilla, Fabric, Forge, Quilt, NeoForge, or Paper profile in the dashboard.
+3. If importing an existing folder, use **Import** in the dashboard, review
+   the read-only import plan, and confirm.
+4. Review and explicitly accept the Minecraft EULA, then choose **Start server**.
+   That's it — the dashboard, and any schedule you
    set, now survive reboots.
+
+### Read-only imports and managed writes
+
+The **import scan** is intentionally read-only: scanning or recording an existing
+folder never changes it. After an administrator explicitly manages a profile,
+Blockstead can make narrowly scoped writes needed to operate it: create profiles,
+record EULA acceptance, update `server.properties`, install or disable mods and
+plugins, edit loader configuration, and create or restore backups. These actions
+require authentication and CSRF protection; risky file changes are staged, checked
+for stale revisions, restricted to the selected profile, and given recovery copies
+where practical. Blockstead never exposes a general-purpose shell in the browser.
 
 ## Everyday use
 

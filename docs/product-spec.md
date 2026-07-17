@@ -31,7 +31,7 @@ A server owner should be able to:
 - Back up and restore worlds safely.
 - Detect crash reports and assemble useful diagnostic information.
 - Import an existing vanilla server without moving or deleting its files unexpectedly.
-- Create separate profiles for vanilla, Paper, Fabric, and NeoForge.
+- Create separate profiles for Vanilla, Paper, Fabric, Forge, Quilt, and NeoForge.
 - Install or remove plugins and mods with compatibility warnings.
 - Schedule backups and graceful restarts.
 - Use the dashboard from Windows, macOS, Linux, a tablet, or a phone.
@@ -135,7 +135,8 @@ The modern management protocol should remain bound to localhost and use its auth
 - Detect whether the dashboard is running on Linux Mint or another supported development system.
 - Let the owner import an existing server directory or create a new profile.
 - Verify that the selected folder looks like a Minecraft server.
-- Detect the likely distribution: vanilla, Paper, Fabric, NeoForge, or unknown.
+- Detect the likely distribution: Vanilla, Paper, Fabric, Forge, Quilt,
+  NeoForge, or unknown.
 - Detect the Minecraft version where possible.
 - Detect world folders, logs, crash reports, plugins, and mods.
 - Explain file ownership or permission problems in plain language.
@@ -348,6 +349,8 @@ The first implementation may use `.tar.gz`. Add `.tar.zst` only when packaging a
 - Vanilla profile creation and version download.
 - Paper profile creation using official Paper downloads.
 - Fabric profile creation using official Fabric tools.
+- Forge profile creation using official Forge tools.
+- Quilt profile creation using official Quilt tools.
 - NeoForge profile creation using official NeoForge tools.
 - Profile clone.
 - Automatic pre-upgrade backup.
@@ -568,6 +571,8 @@ Implementations:
 - vanilla
 - Paper
 - Fabric
+- Forge
+- Quilt
 - NeoForge
 - unknown or custom
 
@@ -582,7 +587,7 @@ Responsibilities:
 - supply distribution-specific health and metrics behavior
 - identify required Java range when known
 
-Do not place Paper, Fabric, or NeoForge assumptions in generic services.
+Do not place Paper, Fabric, Forge, Quilt, or NeoForge assumptions in generic services.
 
 ---
 
@@ -831,6 +836,8 @@ Do not “convert” a vanilla world into a modded profile without a backup and 
 - Vanilla does not support Paper plugins or loader mods.
 - Paper uses its plugin directory and plugin conventions.
 - Fabric uses its mod directory and loader metadata.
+- Forge uses its mod directory and loader metadata.
+- Quilt uses its mod directory and loader metadata.
 - NeoForge uses its mod directory and loader metadata.
 - A plugin or mod must not be presented as compatible merely because it is a `.jar`.
 
@@ -931,6 +938,8 @@ Maintain sanitized fixtures for:
 - vanilla folder layout
 - Paper folder layout
 - Fabric folder layout
+- Forge folder layout
+- Quilt folder layout
 - NeoForge folder layout
 - old and new `server.properties`
 - allowlist, operator, and ban files
@@ -1422,6 +1431,8 @@ The release must also pass the Linux Mint acceptance checklist and have no known
 - Paper administration documentation: https://docs.papermc.io/paper/admin/
 - Paper plugin installation: https://docs.papermc.io/paper/adding-plugins/
 - Fabric documentation: https://docs.fabricmc.net/
+- Forge downloads: https://files.minecraftforge.net/
+- Quilt server installation: https://quiltmc.org/en/install/server/
 - NeoForge server installation: https://docs.neoforged.net/user/docs/server/
 - Python asynchronous subprocess documentation: https://docs.python.org/3/library/asyncio-subprocess.html
 - systemd execution and sandboxing documentation: https://www.freedesktop.org/software/systemd/man/systemd.exec.html

@@ -55,7 +55,13 @@ def test_provision_creates_profile(
     client, root = api
 
     async def fake_provision(
-        _client: httpx.AsyncClient, server_root: Path, name: str, dist: str, version: str
+        _client: httpx.AsyncClient,
+        server_root: Path,
+        name: str,
+        dist: str,
+        version: str,
+        loader_version: str | None,
+        java_executable: str | None,
     ) -> ProvisionResult:
         return make_result(server_root / name)
 
@@ -87,7 +93,13 @@ def test_provision_error_is_a_safe_400(
     client, _ = api
 
     async def failing(
-        _client: httpx.AsyncClient, server_root: Path, name: str, dist: str, version: str
+        _client: httpx.AsyncClient,
+        server_root: Path,
+        name: str,
+        dist: str,
+        version: str,
+        loader_version: str | None,
+        java_executable: str | None,
     ) -> ProvisionResult:
         raise ProvisionError("A download source did not answer as expected (Timeout).")
 

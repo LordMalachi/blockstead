@@ -86,10 +86,11 @@ def test_parse_skips_server_unsupported_files() -> None:
     assert index.skipped_unsupported == ["mods/client-shader.jar"]
 
 
-def test_parse_refuses_non_fabric_loaders() -> None:
+def test_parse_accepts_installer_backed_loaders() -> None:
     pack = build_mrpack(dependencies={"minecraft": "1.21.1", "neoforge": "21.1.77"})
-    with pytest.raises(ModpackError, match="Neoforge"):
-        parse_mrpack(pack)
+    index = parse_mrpack(pack)
+    assert index.loader == "neoforge"
+    assert index.loader_version == "21.1.77"
 
 
 def test_parse_refuses_traversal_and_bad_hosts() -> None:

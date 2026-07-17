@@ -24,6 +24,8 @@ DISTRIBUTIONS: dict[str, DistributionInfo] = {
     "vanilla": DistributionInfo("vanilla", "Vanilla Minecraft", None),
     "paper": DistributionInfo("paper", "Paper", "plugins"),
     "fabric": DistributionInfo("fabric", "Fabric", "mods"),
+    "forge": DistributionInfo("forge", "Forge", "mods"),
+    "quilt": DistributionInfo("quilt", "Quilt", "mods"),
     "neoforge": DistributionInfo("neoforge", "NeoForge", "mods"),
     "unknown": DistributionInfo("unknown", "Unknown", None),
 }
@@ -40,10 +42,16 @@ def detect_distribution(folder: Path) -> str:
         return "paper"
     if "fabric-server-launch.jar" in names or "fabric-server-launcher.properties" in names:
         return "fabric"
+    if "quilt-server-launch.jar" in names or "quilt-server-launcher.properties" in names:
+        return "quilt"
     if any(name.startswith("neoforge-") and name.endswith(".jar") for name in names):
         return "neoforge"
     if (folder / "libraries" / "net" / "neoforged" / "neoforge").is_dir():
         return "neoforge"
+    if any(name.startswith("forge-") and name.endswith(".jar") for name in names):
+        return "forge"
+    if (folder / "libraries" / "net" / "minecraftforge" / "forge").is_dir():
+        return "forge"
     if "server.properties" in names and ("server.jar" in names or "fake-server.json" in names):
         return "vanilla"
     return "unknown"
@@ -88,18 +96,24 @@ def _single_top_level_jar(folder: Path, exclude: frozenset[str] = frozenset()) -
     return jars[0]
 
 
-def _neoforge_args_file(folder: Path) -> Path:
-    base = folder / "libraries" / "net" / "neoforged" / "neoforge"
+def _loader_args_file(folder: Path, distribution: str) -> Path:
+    coordinates = {
+        "forge": ("minecraftforge", "forge"),
+        "neoforge": ("neoforged", "neoforge"),
+    }
+    group, artifact = coordinates[distribution]
+    base = folder / "libraries" / "net" / group / artifact
     file_name = "win_args.txt" if os.name == "nt" else "unix_args.txt"
     candidates = sorted(base.glob(f"*/{file_name}")) if base.is_dir() else []
     if not candidates:
         raise LaunchPlanError(
-            "This NeoForge folder has no installed launch files. "
-            "Run the NeoForge installer in it first."
+            f"This {DISTRIBUTIONS[distribution].label} folder has no installed launch files. "
+            f"Run the {DISTRIBUTIONS[distribution].label} installer in it first."
         )
     if len(candidates) > 1:
         raise LaunchPlanError(
-            "Multiple NeoForge versions are installed in this folder; remove all but one."
+            f"Multiple {DISTRIBUTIONS[distribution].label} versions are installed in this "
+            "folder; remove all but one."
         )
     return candidates[0]
 
@@ -126,8 +140,26 @@ def launch_arguments(
         if not jar.is_file():
             raise LaunchPlanError("This Fabric profile does not contain fabric-server-launch.jar.")
         return (java_executable, "-jar", str(jar), "nogui")
-    if distribution == "neoforge":
-        args_file = _neoforge_args_file(folder)
+    if distribution == "quilt":
+        jar = folder / "quilt-server-launch.jar"
+        if not jar.is_file():
+            raise LaunchPlanError("This Quilt profile does not contain quilt-server-launch.jar.")
+        return (java_executable, "-jar", str(jar), "nogui")
+    if distribution in {"forge", "neoforge"}:
+        try:
+            args_file = _loader_args_file(folder, distribution)
+        except LaunchPlanError:
+            # Forge 1.16 and older used a directly launchable universal/server jar.
+            if distribution != "forge":
+                raise
+            legacy = sorted(
+                entry
+                for entry in folder.glob("forge-*.jar")
+                if "installer" not in entry.name and entry.is_file()
+            )
+            if len(legacy) == 1:
+                return (java_executable, "-jar", str(legacy[0]), "nogui")
+            raise
         arguments = [java_executable]
         if (folder / "user_jvm_args.txt").is_file():
             arguments.append("@user_jvm_args.txt")

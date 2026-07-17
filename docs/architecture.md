@@ -58,9 +58,10 @@ ownership of existing servers.
 
 ## Management views
 
-Player lists (`whitelist.json`, `ops.json`, `banned-players.json`) and
-`server.properties` are read-only views over the profile folder, which is
-re-canonicalized against the allowed server root on every request. The parsers
+Player lists (`whitelist.json`, `ops.json`, `banned-players.json`) remain
+read-only views. `server.properties` and bounded loader configuration files have
+authenticated, revision-checked editors with recovery snapshots. Every profile
+folder is re-canonicalized against the allowed server root on every request. The parsers
 bound file size, skip malformed or hostile records, degrade to an explicit
 "not readable" flag instead of failing, and never return values for
 secret-like keys (`password`, `secret`, `token`). Unknown settings expose key

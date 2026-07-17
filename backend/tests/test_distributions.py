@@ -39,6 +39,19 @@ def test_detects_neoforge_by_libraries(tmp_path: Path) -> None:
     assert detect_distribution(folder) == "neoforge"
 
 
+def test_detects_forge_and_quilt(tmp_path: Path) -> None:
+    forge = make_folder(
+        tmp_path,
+        "libraries/net/minecraftforge/forge/1.20.1-47.4.10/unix_args.txt",
+        "server.properties",
+    )
+    assert detect_distribution(forge) == "forge"
+    quilt = tmp_path / "quilt"
+    quilt.mkdir()
+    (quilt / "quilt-server-launch.jar").write_bytes(b"")
+    assert detect_distribution(quilt) == "quilt"
+
+
 def test_detects_vanilla_and_unknown(tmp_path: Path) -> None:
     vanilla = make_folder(tmp_path, "server.properties", "server.jar")
     assert detect_distribution(vanilla) == "vanilla"
@@ -88,6 +101,21 @@ def test_launch_arguments_neoforge_uses_args_file(tmp_path: Path) -> None:
     assert any(arg.startswith("@libraries/") for arg in args)
     with pytest.raises(LaunchPlanError, match="does not know"):
         launch_arguments("unknown", folder)
+
+
+def test_launch_arguments_forge_and_quilt(tmp_path: Path) -> None:
+    forge = make_folder(
+        tmp_path,
+        "libraries/net/minecraftforge/forge/1.20.1-47.4.10/unix_args.txt",
+        "user_jvm_args.txt",
+    )
+    args = launch_arguments("forge", forge, "/java")
+    assert args[0] == "/java"
+    assert any("minecraftforge/forge" in item for item in args)
+    quilt = tmp_path / "quilt-launch"
+    quilt.mkdir()
+    (quilt / "quilt-server-launch.jar").write_bytes(b"")
+    assert launch_arguments("quilt", quilt, "/java")[-1] == "nogui"
 
 
 def test_java_major_parsing() -> None:

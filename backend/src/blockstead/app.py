@@ -59,6 +59,12 @@ from .extension_ops import (
 from .extensions import read_extensions
 from .import_scan import canonical_child, scan_server
 from .java_runtime import discover_java_runtimes, find_java
+from .mod_configs import (
+    ModConfigError,
+    list_mod_configs,
+    read_mod_config,
+    write_mod_config,
+)
 from .models import Administrator, AuditEvent, BackupRecord, LoginSession, Profile, Schedule
 from .modpacks import (
     MAX_MRPACK_BYTES,
@@ -86,6 +92,7 @@ from .schemas import (
     EulaRequest,
     ImportRequest,
     InstallRequest,
+    ModConfigUpdateRequest,
     ModpackInstallRequest,
     PlayerActionRequest,
     ProfileCreate,
@@ -390,6 +397,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "server_directory": p.server_directory,
                 "distribution": p.distribution,
                 "minecraft_version": p.minecraft_version,
+                "loader_version": p.loader_version,
                 "is_fixture": p.is_fixture,
             }
             for p in db.scalars(select(Profile).order_by(Profile.created_at)).all()
@@ -706,6 +714,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             server_directory=result.canonical_path,
             distribution=result.distribution,
             minecraft_version=result.minecraft_version,
+            loader_version=None,
             is_fixture=result.is_fixture,
         )
         db.add(profile)
@@ -737,6 +746,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/v1/provision", status_code=201)
     async def provision(payload: ProvisionRequest, request: Request, db: Db) -> dict[str, object]:
         admin = mutation(request, db)
+        java_executable: str | None = None
+        if payload.distribution in {"forge", "quilt", "neoforge"}:
+            runtime = find_java(
+                required_java_major(payload.minecraft_version), discover_java_runtimes()
+            )
+            if runtime is None:
+                raise HTTPException(
+                    409,
+                    "That loader uses an official Java installer, but no compatible Java "
+                    "runtime was found on this computer.",
+                )
+            java_executable = runtime.path
         try:
             result = await provision_profile(
                 http_client,
@@ -744,6 +765,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 payload.directory_name,
                 payload.distribution,
                 payload.minecraft_version,
+                payload.loader_version,
+                java_executable,
             )
         except ProvisionError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -754,6 +777,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             server_directory=result.directory,
             distribution=payload.distribution,
             minecraft_version=payload.minecraft_version,
+            loader_version=result.plan.loader_version,
             is_fixture=False,
         )
         db.add(profile)
@@ -774,6 +798,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "name": profile.name,
             "distribution": profile.distribution,
             "minecraft_version": profile.minecraft_version,
+            "loader_version": profile.loader_version,
             "directory": result.directory,
             "sha256": result.sha256,
             "notes": result.plan.notes,
@@ -964,6 +989,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, "This server distribution does not load plugins or mods.")
         return profile, directory / info.extension_directory
 
+    def require_server_stopped() -> None:
+        if manager.state.value not in {"STOPPED", "CRASHED"}:
+            raise HTTPException(409, "Stop the server before changing mods or configuration.")
+
     @app.get("/api/v1/profiles/{profile_id}/modrinth/search")
     async def extension_search(
         profile_id: str, query: str, request: Request, db: Db
@@ -988,6 +1017,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile_id: str, payload: InstallRequest, request: Request, db: Db
     ) -> dict[str, object]:
         admin = mutation(request, db)
+        require_server_stopped()
         profile, extension_dir = extension_context(profile_id, db)
         try:
             planned = await plan_install(
@@ -1047,6 +1077,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile_id: str, payload: ToggleRequest, request: Request, db: Db
     ) -> dict[str, object]:
         admin = mutation(request, db)
+        require_server_stopped()
         _, extension_dir = extension_context(profile_id, db)
         try:
             set_enabled(extension_dir, payload.file_name, payload.enabled)
@@ -1077,6 +1108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         disabled: bool = False,
     ) -> dict[str, object]:
         admin = mutation(request, db)
+        require_server_stopped()
         _, extension_dir = extension_context(profile_id, db)
         try:
             remove_extension(extension_dir, file_name, disabled)
@@ -1098,6 +1130,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile_id: str, file: UploadFile, request: Request, db: Db
     ) -> dict[str, object]:
         admin = mutation(request, db)
+        require_server_stopped()
         profile, extension_dir = extension_context(profile_id, db)
         content = await file.read(MAX_UPLOAD_BYTES + 1)
         try:
@@ -1122,6 +1155,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "restart_required": True,
         }
 
+    @app.get("/api/v1/profiles/{profile_id}/configs")
+    def profile_configs(profile_id: str, request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        profile, _ = extension_context(profile_id, db)
+        files = list_mod_configs(profile_directory(profile_id, db))
+        return {
+            "distribution": profile.distribution,
+            "directory": "config",
+            "files": [entry.model_dump() for entry in files],
+        }
+
+    @app.get("/api/v1/profiles/{profile_id}/configs/file")
+    def profile_config_file(
+        profile_id: str, path: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        current(request, db)
+        extension_context(profile_id, db)
+        try:
+            return read_mod_config(profile_directory(profile_id, db), path).model_dump()
+        except (ModConfigError, OSError) as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.put("/api/v1/profiles/{profile_id}/configs/file")
+    def update_profile_config(
+        profile_id: str,
+        payload: ModConfigUpdateRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        require_server_stopped()
+        extension_context(profile_id, db)
+        try:
+            document = write_mod_config(
+                profile_directory(profile_id, db),
+                payload.path,
+                payload.revision,
+                payload.content,
+            )
+        except ModConfigError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="mod_config_update",
+                result="success",
+                safe_detail=f"Updated loader configuration {payload.path}",
+            )
+        )
+        db.commit()
+        return {**document.model_dump(), "restart_required": True}
+
     @app.get("/api/v1/modpacks/search")
     async def modpack_search(query: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
@@ -1134,13 +1219,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"projects": [project.model_dump() for project in projects]}
 
     def record_modpack_profile(
-        admin: Administrator, db: Session, name: str, result_directory: str, version: str
+        admin: Administrator,
+        db: Session,
+        name: str,
+        result_directory: str,
+        distribution: str,
+        version: str,
+        loader_version: str | None,
     ) -> Profile:
         profile = Profile(
             name=name.strip(),
             server_directory=result_directory,
-            distribution="fabric",
+            distribution=distribution,
             minecraft_version=version,
+            loader_version=loader_version,
             is_fixture=False,
         )
         db.add(profile)
@@ -1170,7 +1262,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except OSError as exc:
             raise HTTPException(409, "The new server folder could not be created.") from exc
         profile = record_modpack_profile(
-            admin, db, payload.name, result.directory, result.minecraft_version
+            admin,
+            db,
+            payload.name,
+            result.directory,
+            result.distribution,
+            result.minecraft_version,
+            result.loader_version,
         )
         return {
             "id": profile.id,
@@ -1196,7 +1294,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except OSError as exc:
             raise HTTPException(409, "The new server folder could not be created.") from exc
         profile = record_modpack_profile(
-            admin, db, name, result.directory, result.minecraft_version
+            admin,
+            db,
+            name,
+            result.directory,
+            result.distribution,
+            result.minecraft_version,
+            result.loader_version,
         )
         return {
             "id": profile.id,
