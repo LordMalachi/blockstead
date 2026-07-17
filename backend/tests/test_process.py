@@ -41,6 +41,26 @@ async def test_ready_command_and_graceful_stop() -> None:
 
 
 @pytest.mark.asyncio
+async def test_logs_stay_attributed_to_the_profile_that_produced_them() -> None:
+    manager = ProcessManager(fixture_script())
+    await manager.start(owner="profile-a")
+    await wait_for(manager, ProcessState.RUNNING)
+    await manager.stop(timeout=1)
+    first_run = [event.sequence for event in manager.logs()]
+    assert first_run, "the first run should have produced log lines"
+
+    # The rolling buffer outlives the run, so a second profile must not inherit it.
+    await manager.start(owner="profile-b")
+    await wait_for(manager, ProcessState.RUNNING)
+    await manager.stop(timeout=1)
+
+    events = manager.logs()
+    assert {event.profile_id for event in events} == {"profile-a", "profile-b"}
+    assert all(event.profile_id == "profile-a" for event in events if event.sequence in first_run)
+    assert [event for event in events if event.profile_id == "profile-b"]
+
+
+@pytest.mark.asyncio
 async def test_duplicate_start_fails_safely() -> None:
     manager = ProcessManager(fixture_script())
     await manager.start()

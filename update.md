@@ -33,8 +33,8 @@ remain available without dominating normal server care.
 | Milestone | Status | Outcome |
 | --- | --- | --- |
 | 0. Visual foundation | Complete | Cohesive responsive UI, sidebar navigation, clearer server controls, and improved first-run experience |
-| 1. Server workspace navigation | Next | Replace the single long page with profile-aware server workspaces and routed tools |
-| 2. Backup Center | Planned | Manual and scheduled backups, history, retention, verification, and staged restore |
+| 1. Server workspace navigation | Complete | Profile-aware server workspaces, a server-card landing page, and routed tools |
+| 2. Backup Center | Next | Manual and scheduled backups, history, retention, verification, and staged restore |
 | 3. Guided settings editor | Planned | Safe typed editing with search, validation, diff preview, and automatic snapshots |
 | 4. Owner-focused overview | Planned | Useful server health, player, backup, schedule, storage, and update information |
 | 5. Automation upgrade | Planned | Weekly schedules, readable action sequences, previews, and execution history |
@@ -55,17 +55,17 @@ Blockstead already provides:
 - daily server start and stop scheduling with backup-before-stop;
 - optional Linux host shutdown and RTC wake scheduling;
 - Modrinth extension search, uploads, and Fabric modpack installation;
-- a responsive visual system and guided first-run experience.
+- a responsive visual system and guided first-run experience;
+- a server-card landing page and a routed, bookmarkable workspace per server.
 
 The main limitations to address are:
 
-- all server tools are stacked into one long dashboard page;
 - Backups is still a navigation placeholder rather than a management surface;
 - server settings remain read-only;
-- the schedule panel is basic and currently follows the first profile instead
-  of the active profile;
+- the schedule panel is basic, with a single daily start and stop time;
 - metrics show current values rather than useful history or trends;
-- operational events exist internally but are not presented as an activity feed.
+- operational events exist internally but are not presented as an activity feed;
+- online player counts are not available, so server cards show allowlist size.
 
 ## Focused enhancement: shared browser map
 
@@ -91,7 +91,7 @@ client mod.
 
 ## Milestone 1: server workspace navigation
 
-**Status: Next**
+**Status: Complete**
 
 ### Why
 
@@ -120,18 +120,20 @@ Home
 
 ### Work checklist
 
-- [ ] Add routed top-level and per-server pages.
-- [ ] Create a server-card landing page for all profiles.
-- [ ] Show state, version, player count, next schedule, last backup, and the
-      primary lifecycle action on each server card.
-- [ ] Add a persistent selected-server header and server switcher.
-- [ ] Move the existing panels into focused server routes without changing
+- [x] Add routed top-level and per-server pages.
+- [x] Create a server-card landing page for all profiles.
+- [x] Show state, version, player count, next schedule, last backup, and the
+      primary lifecycle action on each server card. Cards show allowlist size
+      rather than an online player count, and state that no backup history
+      exists yet; neither fact has a source until milestones 2 and 8.
+- [x] Add a persistent selected-server header and server switcher.
+- [x] Move the existing panels into focused server routes without changing
       their backend behavior.
-- [ ] Make schedule, metrics, console, and mutations consistently follow the
+- [x] Make schedule, metrics, console, and mutations consistently follow the
       selected profile.
-- [ ] Preserve useful URLs so a page can be bookmarked or refreshed.
-- [ ] Provide compact mobile navigation for the same routes.
-- [ ] Update component tests, Playwright flows, and documentation screenshots.
+- [x] Preserve useful URLs so a page can be bookmarked or refreshed.
+- [x] Provide compact mobile navigation for the same routes.
+- [x] Update component tests, Playwright flows, and documentation screenshots.
 
 ### Acceptance criteria
 
@@ -351,6 +353,32 @@ Before marking any milestone complete:
 
 ## Progress log
 
+- **2026-07-14 — Server workspace navigation complete.** Replaced the single
+  scrolling dashboard with React Router routes: a `/servers` card landing page,
+  a `/servers/:profileId/…` workspace per server (overview, console, players,
+  mods and plugins, schedule, settings), and a top-level `/system` page. Backups,
+  Files, and Activity stay visible as labelled placeholders.
+  Decisions and consequences:
+  - A shared `scopeFor` helper derives every server page's state from the URL
+    profile, so a profile only ever shows or mutates its own process. Because
+    Blockstead runs one server at a time, a profile that does not hold the
+    managed process reads as stopped, its start action is disabled, and the
+    console explains which server owns the log instead of showing it.
+  - Modpack installation moved to the servers landing page, since it creates a
+    new server and must stay reachable with no profiles imported.
+  - The schedule panel now follows the selected profile; it previously always
+    edited the first profile's schedule from the System section.
+  - The backend static mount gained an SPA fallback, without which a bookmarked
+    `/servers/<id>/console` returned 404 on refresh.
+  - Cards show allowlist size, not online players, and say backup history does
+    not exist yet: neither has a data source before milestones 2 and 8.
+  Verification: frontend lint, 13 unit tests (including new `scopeFor` coverage),
+  production build, 95 backend tests (including new SPA fallback tests), the
+  Playwright workflow against the real backend covering deep links, refresh, and
+  back/forward, a 390px-wide pass over every server page, regenerated
+  screenshots, and `git diff --check`.
+  Follow-up: `backend/tests/test_version.py` cannot run in the local `.venv`
+  (Python 3.10 against a repo that pins 3.12.8); it needs a rebuilt environment.
 - **2026-07-14 — Visual foundation complete.** Added the forest-green responsive
   application shell, section navigation, primary server control surface,
   improved status presentation, and redesigned setup/sign-in experience.

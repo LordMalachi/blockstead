@@ -42,6 +42,9 @@ class LogEvent:
     sequence: int
     timestamp: str
     line: str
+    #: Profile that produced the line. The buffer outlives any single run, so without
+    #: this a reader cannot tell whose output an old line belongs to.
+    profile_id: str | None = None
 
 
 class InvalidTransition(RuntimeError):
@@ -62,6 +65,7 @@ class ProcessManager:
         self._logs: deque[LogEvent] = deque(maxlen=log_limit)
         self._subscribers: set[asyncio.Queue[LogEvent]] = set()
         self._sequence = 0
+        self._owner: str | None = None
 
     def snapshot(self) -> dict[str, object]:
         alive = self._process is not None and self._process.returncode is None
@@ -88,6 +92,7 @@ class ProcessManager:
         cwd: Path | None = None,
         label: str = "Server",
         mode: str = "normal",
+        owner: str | None = None,
     ) -> None:
         async with self._lock:
             if self.state not in {
@@ -99,6 +104,7 @@ class ProcessManager:
             self.transition(ProcessState.STARTING, "Waiting for readiness")
             self.exit_code = None
             self._force_requested = False
+            self._owner = owner
             try:
                 if arguments is None:
                     if self.fake_script is None:
@@ -156,6 +162,7 @@ class ProcessManager:
             self._sequence,
             datetime.now(timezone.utc).isoformat(),  # noqa: UP017
             line,
+            self._owner,
         )
         self._logs.append(event)
         for queue in tuple(self._subscribers):

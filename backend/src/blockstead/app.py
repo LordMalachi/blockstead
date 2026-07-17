@@ -25,6 +25,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import Scope
 
 from . import __version__
 from .config import Settings
@@ -102,6 +104,39 @@ def error(status_code: int, code: str, message: str, recovery: str | None = None
     return JSONResponse(status_code=status_code, content=body)
 
 
+def resolve_static_dir(configured: Path | None = None) -> Path | None:
+    """Locate the built dashboard in both the source checkout and an installed release.
+
+    Installing the backend puts this module in the virtual environment's site-packages,
+    so a path relative to it no longer reaches the frontend the installer copies beside
+    that environment. blockstead.service runs from the application directory, which is
+    what makes the working-directory candidate reach it.
+    """
+    candidates = [] if configured is None else [configured]
+    candidates += [
+        Path(__file__).parents[3] / "frontend" / "dist",
+        Path.cwd() / "frontend" / "dist",
+    ]
+    return next((path for path in candidates if path.is_dir()), None)
+
+
+class SpaStaticFiles(StaticFiles):
+    """Serve the built frontend, letting the browser router own unknown page paths."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            unknown_page = (
+                exc.status_code == 404
+                and not path.startswith("api")
+                and scope.get("method") in {"GET", "HEAD"}
+            )
+            if not unknown_page:
+                raise
+            return await super().get_response("index.html", scope)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or Settings()
     config.prepare()
@@ -140,7 +175,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     async def scheduled_start(profile: Profile) -> None:
         arguments, cwd, label = launch_spec(profile, "normal")
-        await manager.start(arguments, cwd=cwd, label=label)
+        await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)
         app.state.active_profile_id = profile.id
 
     scheduler = Scheduler(factory, manager, scheduled_start, config.data_dir)
@@ -866,7 +901,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "That profile was not found.")
         try:
             arguments, cwd, label = launch_spec(profile, payload.mode)
-            await manager.start(arguments, cwd=cwd, label=label)
+            await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
         db.add(
@@ -914,7 +949,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if profile is None:
                 raise HTTPException(404, "That profile was not found.")
             arguments, cwd, label = launch_spec(profile, payload.mode)
-            await manager.start(arguments, cwd=cwd, label=label)
+            await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
         db.add(
@@ -1009,9 +1044,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 subscription.cancel()
                 await asyncio.gather(subscription, return_exceptions=True)
 
-    static_dir = Path(__file__).parents[3] / "frontend" / "dist"
-    if static_dir.is_dir():
-        app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
+    static_dir = resolve_static_dir(config.static_dir)
+    if static_dir is None:
+        # Serving only the API looks healthy to the installer, so say so plainly.
+        log.warning(
+            "The built dashboard was not found; serving the API only. "
+            "Build frontend/dist or set BLOCKSTEAD_STATIC_DIR."
+        )
+    else:
+        app.mount("/", SpaStaticFiles(directory=static_dir, html=True), name="frontend")
     return app
 
 
