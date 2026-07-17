@@ -46,8 +46,8 @@ test("captures documentation screenshots @docs", async ({ page }) => {
   await page.screenshot({ path: out("05-players") });
 
   await page.getByRole("link", { name: "Settings" }).click();
-  await expect(page.getByRole("heading", { name: "Server settings" })).toBeVisible();
-  await expect(page.getByRole("row", { name: /Player limit/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Guided settings" })).toBeVisible();
+  await expect(page.getByLabel("Player limit")).toBeVisible();
   await page.screenshot({ path: out("06-settings") });
 
   await page.getByRole("link", { name: "System" }).click();

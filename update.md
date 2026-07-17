@@ -35,7 +35,7 @@ remain available without dominating normal server care.
 | 0. Visual foundation | Complete | Cohesive responsive UI, sidebar navigation, clearer server controls, and improved first-run experience |
 | 1. Server workspace navigation | Complete | Profile-aware server workspaces, a server-card landing page, and routed tools |
 | 2. Backup Center | In progress | Manual and scheduled backups, history, retention, verification, and staged restore |
-| 3. Guided settings editor | Planned | Safe typed editing with search, validation, diff preview, and automatic snapshots |
+| 3. Guided settings editor | In progress | Safe typed editing with search, validation, diff preview, and automatic snapshots |
 | 4. Owner-focused overview | Planned | Useful server health, player, backup, schedule, storage, and update information |
 | 5. Automation upgrade | Planned | Weekly schedules, readable action sequences, previews, and execution history |
 | 6. Activity and notifications | Planned | Human-readable audit history and important operational alerts |
@@ -50,7 +50,7 @@ Blockstead already provides:
 - a live Minecraft console with guided commands and no browser-accessible shell;
 - server readiness checks, Java detection, and explicit EULA acceptance;
 - player allowlist, operator, ban, and pardon workflows;
-- read-only server settings and player files;
+- guided editing for common server settings and read-only player files;
 - host and process metrics;
 - daily server start and stop scheduling with backup-before-stop;
 - manual and scheduled world backups with per-server result history;
@@ -62,7 +62,7 @@ Blockstead already provides:
 The main limitations to address are:
 
 - backups do not yet have manifests, retention rules, verification, or restore;
-- server settings remain read-only;
+- advanced server settings still require a raw editor or direct file access;
 - the schedule panel is basic, with a single daily start and stop time;
 - metrics show current values rather than useful history or trends;
 - operational events exist internally but are not presented as an activity feed;
@@ -181,7 +181,7 @@ normal maintenance rather than exist only as a scheduled side effect.
 
 ## Milestone 3: guided settings editor
 
-**Status: Planned**
+**Status: In progress**
 
 ### Why
 
@@ -190,16 +190,16 @@ cover normal ownership tasks without forcing the user into a raw file editor.
 
 ### Work checklist
 
-- [ ] Group common settings into Gameplay, Players, World, Network, and
+- [x] Group common settings into Gameplay, Players, World, Network, and
       Performance categories.
-- [ ] Add search and plain-language descriptions.
-- [ ] Use toggles, numeric inputs, and constrained choices where appropriate.
-- [ ] Validate ranges and incompatible values before writing.
-- [ ] Preserve unknown keys, comments, and ordering where practical.
-- [ ] Mark settings that require a restart.
-- [ ] Show a diff and pending restart summary before applying changes.
-- [ ] Create an automatic configuration snapshot before every write.
-- [ ] Use revisions or optimistic concurrency to prevent stale overwrites.
+- [x] Add search and plain-language descriptions.
+- [x] Use toggles, numeric inputs, and constrained choices where appropriate.
+- [x] Validate ranges and incompatible values before writing.
+- [x] Preserve unknown keys, comments, and ordering where practical.
+- [x] Mark settings that require a restart.
+- [x] Show a diff and pending restart summary before applying changes.
+- [x] Create an automatic configuration snapshot before every write.
+- [x] Use revisions or optimistic concurrency to prevent stale overwrites.
 - [ ] Add an advanced raw editor with validation and a recovery copy.
 
 ### Acceptance criteria
@@ -354,6 +354,21 @@ Before marking any milestone complete:
 
 ## Progress log
 
+- **2026-07-17 — Guided settings editor core complete.** Replaced the read-only
+  settings table with grouped Gameplay, Players, World, Network, and Performance
+  controls, searchable labels and descriptions, constrained choices, numeric
+  bounds, and restart markers. Every save requires a server-generated diff
+  preview, validates typed and cross-setting rules, rejects stale SHA-256
+  revisions, creates a private copy of the complete original properties file,
+  and atomically replaces the source. Comments, secret-bearing lines, unknown
+  keys, and ordering remain untouched. The editor reports the recovery snapshot
+  and pending restart without restarting a running server. Verification: strict
+  backend lint and type checks, 112 backend tests (excluding the existing local
+  Python 3.10 conflict in `test_version.py`), frontend lint, 22 frontend tests,
+  production build, the Playwright lifecycle workflow against the real backend,
+  refreshed documentation screenshots with visual review, and
+  `git diff --check`. Follow-up: the validated advanced raw editor remains open
+  before Milestone 3 can be marked complete.
 - **2026-07-17 — Backup Center first slice complete.** Added a profile-scoped
   **Back up now** workflow and persistent history for both manual and scheduled
   backups. Each attempt records in-progress, completed, or failed state with its

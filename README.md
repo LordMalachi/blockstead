@@ -18,7 +18,8 @@ Blockstead manages the process around them.
 - imports an existing vanilla `server.jar` folder without moving or rewriting it
 - starts, stops, restarts, and watches the managed server process
 - streams live server logs and sends one-line Minecraft console commands
-- reads server settings and player lists, with guided allowlist/operator/ban actions
+- safely edits common server settings with validation, diff review, and recovery snapshots
+- reads player lists, with guided allowlist/operator/ban actions
 - shows host CPU, memory, disk use, and server uptime
 - saves a daily start/stop schedule; scheduled stops flush Minecraft saves and
   create compressed world archives before stopping the server
@@ -141,8 +142,8 @@ documentation spec (`frontend/e2e/screenshots.spec.ts`).
 | First-run administrator setup | Read-only import plan |
 | ![Overview with the fixture running](docs/screenshots/03-overview-running.png) | ![Live log and guided quick commands](docs/screenshots/04-console.png) |
 | Overview with the fixture running | Live log and guided quick commands |
-| ![Player management](docs/screenshots/05-players.png) | ![Typed read-only settings](docs/screenshots/06-settings.png) |
-| Player management | Typed read-only settings |
+| ![Player management](docs/screenshots/05-players.png) | ![Guided settings editor](docs/screenshots/06-settings.png) |
+| Player management | Guided settings editor |
 | ![System health](docs/screenshots/07-system.png) | ![Every server on this computer](docs/screenshots/08-servers.png) |
 | System health | Every server on this computer |
 

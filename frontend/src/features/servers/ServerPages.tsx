@@ -26,6 +26,6 @@ export function BackupsPage() {
 
 export function SettingsPage() {
   const scope = useServerScope();
-  return <SettingsPanel profileId={scope.profile.id} />;
+  return <SettingsPanel profileId={scope.profile.id} running={scope.running} />;
 }
 import { BackupsPanel } from "../backups/BackupsPanel";

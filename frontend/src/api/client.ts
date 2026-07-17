@@ -4,8 +4,14 @@ export interface Profile { id: string; name: string; server_directory: string; d
 export interface ProcessState { state: "STOPPED" | "STARTING" | "RUNNING" | "STOPPING" | "CRASHED" | "DEGRADED" | "UNKNOWN"; pid: number | null; exit_code: number | null; reason: string; started_at?: string | null; profile_id?: string | null }
 export interface LogEvent { sequence: number; timestamp: string; line: string; profile_id: string | null }
 export interface ImportScan { canonical_path: string; distribution: string; minecraft_version: string | null; detected_files: string[]; is_fixture: boolean; plan: string[] }
-export interface SettingEntry { key: string; label: string; type: "string" | "integer" | "boolean"; value: string | number | boolean | null }
-export interface SettingsView { present: boolean; settings: SettingEntry[]; other_keys: string[] }
+export type SettingCategory = "Gameplay" | "Players" | "World" | "Network" | "Performance"
+export type SettingValue = string | number | boolean
+export interface SettingEntry { key: string; label: string; category: SettingCategory; description: string; type: "string" | "integer" | "boolean"; value: SettingValue | null; minimum: number | null; maximum: number | null; options: string[]; restart_required: boolean }
+export interface SettingsView { present: boolean; revision: string | null; settings: SettingEntry[]; other_keys: string[] }
+export interface SettingChange { key: string; value: SettingValue }
+export interface SettingDiff { key: string; label: string; category: SettingCategory; before: SettingValue | null; after: SettingValue; restart_required: boolean }
+export interface SettingsPreview { revision: string; changes: SettingDiff[]; restart_required: boolean }
+export interface SettingsApplyResult extends SettingsPreview { snapshot_name: string; previous_revision: string; view: SettingsView }
 export interface PlayerEntry { name: string; uuid: string | null; level: number | null; reason: string | null }
 export interface PlayerFile { present: boolean; readable: boolean; players: PlayerEntry[] }
 export interface PlayersView { allowlist: PlayerFile; operators: PlayerFile; bans: PlayerFile }

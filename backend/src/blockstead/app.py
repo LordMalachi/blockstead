@@ -81,6 +81,7 @@ from .schemas import (
     ProfileCreate,
     ProvisionRequest,
     ScheduleRequest,
+    SettingsUpdateRequest,
     StartRequest,
     ToggleRequest,
 )
@@ -95,6 +96,12 @@ from .security import (
     verify_password,
 )
 from .server_files import read_players, read_settings
+from .server_settings import (
+    SettingsConflictError,
+    SettingsValidationError,
+    apply_settings_update,
+    preview_settings_update,
+)
 
 log = logging.getLogger("blockstead.api")
 
@@ -605,6 +612,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def profile_settings(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
         return read_settings(profile_directory(profile_id, db)).model_dump()
+
+    @app.post("/api/v1/profiles/{profile_id}/settings/preview")
+    def preview_profile_settings(
+        profile_id: str, payload: SettingsUpdateRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        mutation(request, db)
+        requested = {change.key: change.value for change in payload.changes}
+        try:
+            preview = preview_settings_update(
+                profile_directory(profile_id, db), payload.revision, requested
+            )
+        except SettingsConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except SettingsValidationError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return preview.model_dump()
+
+    @app.put("/api/v1/profiles/{profile_id}/settings")
+    def update_profile_settings(
+        profile_id: str, payload: SettingsUpdateRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        requested = {change.key: change.value for change in payload.changes}
+        try:
+            result = apply_settings_update(
+                profile_directory(profile_id, db),
+                config.data_dir,
+                profile_id,
+                payload.revision,
+                requested,
+            )
+        except SettingsConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except SettingsValidationError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                409,
+                "Blockstead could not snapshot and safely replace server.properties.",
+            ) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="settings_update",
+                result="success",
+                safe_detail=(
+                    f"Updated {len(result.changes)} settings for profile {profile_id}; "
+                    f"recovery snapshot {result.snapshot_name}"
+                ),
+            )
+        )
+        db.commit()
+        return result.model_dump()
 
     @app.get("/api/v1/profiles/{profile_id}/players")
     def profile_players(profile_id: str, request: Request, db: Db) -> dict[str, object]:

@@ -36,8 +36,9 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
   await expect(page.getByRole("log")).toContainText("Added Browser_Tester to the whitelist");
 
   await page.getByRole("link", { name: "Settings" }).click();
-  await expect(page.getByRole("heading", { name: "Server settings" })).toBeVisible();
-  await expect(page.getByRole("row", { name: /Player limit/ })).toContainText("20");
+  await expect(page.getByRole("heading", { name: "Guided settings" })).toBeVisible();
+  await expect(page.getByLabel("Player limit")).toHaveValue("20");
+  await expect(page.getByLabel("Difficulty")).toHaveValue("normal");
 
   await page.getByRole("link", { name: "Backups" }).click();
   await expect(page.getByRole("heading", { name: "Backup Center" })).toBeVisible();

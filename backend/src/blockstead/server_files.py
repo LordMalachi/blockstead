@@ -1,47 +1,10 @@
 import json
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel
 
-MAX_FILE_BYTES = 1_000_000
-
-SettingType = Literal["string", "integer", "boolean"]
-
-KNOWN_SETTINGS: dict[str, tuple[SettingType, str]] = {
-    "motd": ("string", "Message of the day"),
-    "server-port": ("integer", "Server port"),
-    "max-players": ("integer", "Player limit"),
-    "online-mode": ("boolean", "Verify Mojang accounts"),
-    "white-list": ("boolean", "Allowlist required"),
-    "enforce-whitelist": ("boolean", "Enforce allowlist"),
-    "pvp": ("boolean", "Player-versus-player combat"),
-    "difficulty": ("string", "Difficulty"),
-    "gamemode": ("string", "Default game mode"),
-    "hardcore": ("boolean", "Hardcore mode"),
-    "level-name": ("string", "World folder"),
-    "view-distance": ("integer", "View distance (chunks)"),
-    "simulation-distance": ("integer", "Simulation distance (chunks)"),
-    "spawn-protection": ("integer", "Spawn protection radius"),
-    "allow-flight": ("boolean", "Allow flight"),
-    "allow-nether": ("boolean", "Allow the Nether"),
-    "enable-command-block": ("boolean", "Command blocks"),
-}
-
-SECRET_MARKERS = ("password", "secret", "token")
-
-
-class SettingEntry(BaseModel):
-    key: str
-    label: str
-    type: SettingType
-    value: str | int | bool | None
-
-
-class SettingsView(BaseModel):
-    present: bool
-    settings: list[SettingEntry]
-    other_keys: list[str]
+from .server_settings import MAX_FILE_BYTES as MAX_FILE_BYTES
+from .server_settings import read_settings as read_settings
 
 
 class PlayerEntry(BaseModel):
@@ -70,42 +33,6 @@ def _read_limited(path: Path) -> str | None:
         return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-
-
-def _typed_value(kind: SettingType, raw: str) -> str | int | bool | None:
-    if kind == "boolean":
-        return raw.lower() == "true" if raw.lower() in {"true", "false"} else None
-    if kind == "integer":
-        try:
-            return int(raw)
-        except ValueError:
-            return None
-    return raw
-
-
-def read_settings(server_directory: Path) -> SettingsView:
-    text = _read_limited(server_directory / "server.properties")
-    if text is None:
-        return SettingsView(present=False, settings=[], other_keys=[])
-    values: dict[str, str] = {}
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith(("#", "!")) or "=" not in stripped:
-            continue
-        key, _, raw = stripped.partition("=")
-        values[key.strip()] = raw.strip()
-    settings = [
-        SettingEntry(key=key, label=label, type=kind, value=_typed_value(kind, values[key]))
-        for key, (kind, label) in KNOWN_SETTINGS.items()
-        if key in values
-    ]
-    other = sorted(
-        key
-        for key in values
-        if key not in KNOWN_SETTINGS
-        and not any(marker in key.lower() for marker in SECRET_MARKERS)
-    )
-    return SettingsView(present=True, settings=settings, other_keys=other)
 
 
 def _read_player_file(path: Path, *, ban_file: bool = False) -> PlayerFile:

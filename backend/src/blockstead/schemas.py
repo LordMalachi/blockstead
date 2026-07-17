@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Credentials(BaseModel):
@@ -67,6 +67,25 @@ class ScheduleRequest(BaseModel):
     backup_before_stop: bool = True
     power_off_after_stop: bool = False
     wake_time: str | None = Field(default=None, pattern=r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+
+
+class SettingChangeRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    key: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9-]+$")
+    value: str | int | bool
+
+
+class SettingsUpdateRequest(BaseModel):
+    revision: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    changes: list[SettingChangeRequest] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def unique_keys(self) -> "SettingsUpdateRequest":
+        keys = [change.key for change in self.changes]
+        if len(keys) != len(set(keys)):
+            raise ValueError("setting changes must use unique keys")
+        return self
 
 
 PLAYER_ACTIONS: dict[str, str] = {
