@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -8,10 +9,12 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from . import __version__
 from .backups import BackupError, create_backup_archive
 from .import_scan import canonical_child
 from .models import AuditEvent, BackupRecord, Profile, Schedule
 from .process import ProcessManager
+from .retention import enforce_retention
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +154,11 @@ class Scheduler:
                 self.data_dir,
                 record.id,
                 now,
+                profile_name=profile.name,
+                distribution=profile.distribution,
+                minecraft_version=profile.minecraft_version,
+                application_version=__version__,
+                trigger="schedule",
             )
         except BackupError as exc:
             record.status = "failed"
@@ -170,10 +178,14 @@ class Scheduler:
 
         record.status = "completed"
         record.file_name = archive.file_name
+        record.manifest_name = archive.manifest_name
+        record.sha256 = archive.sha256
+        record.included_paths = json.dumps(list(archive.included_paths))
         record.size_bytes = archive.size_bytes
         record.duration_ms = round((time.monotonic() - started) * 1000)
         record.result = f"Protected {', '.join(archive.included_paths)}."
         record.completed_at = datetime.now().astimezone()
+        enforce_retention(db, profile, self.data_dir)
         db.add(
             AuditEvent(
                 admin_id=self._admin_id(db),

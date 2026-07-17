@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import sys
 import time
@@ -30,7 +31,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Scope
 
 from . import __version__
-from .backups import BackupArchive, BackupError, create_backup_archive
+from .backups import (
+    BackupArchive,
+    BackupError,
+    RestoreError,
+    create_backup_archive,
+    perform_restore,
+    plan_restore,
+)
 from .config import Settings
 from .db import Base, create_session_factory
 from .distributions import (
@@ -69,8 +77,10 @@ from .provisioning import (
     list_versions,
     provision_profile,
 )
+from .retention import enforce_retention
 from .scheduler import Scheduler
 from .schemas import (
+    BackupPolicyRequest,
     CommandRequest,
     Credentials,
     EulaRequest,
@@ -184,6 +194,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.session_factory = factory
     app.state.process_manager = manager
     app.state.active_profile_id = None
+    # Profiles with a restore in flight; starting or backing up one is refused.
+    restoring_profiles: set[str] = set()
 
     def get_db() -> Iterator[Session]:
         with factory() as db:
@@ -261,6 +273,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 value = value.replace(tzinfo=timezone.utc)  # noqa: UP017
             return value.astimezone(timezone.utc).isoformat()  # noqa: UP017
 
+        archive_available = bool(
+            record.status == "completed"
+            and record.file_name
+            and (
+                config.data_dir / "backups" / record.profile_id / record.file_name
+            ).is_file()
+        )
         return {
             "id": record.id,
             "profile_id": record.profile_id,
@@ -270,6 +289,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "file_name": record.file_name,
             "size_bytes": record.size_bytes,
             "duration_ms": record.duration_ms,
+            "sha256": record.sha256,
+            "included_paths": json.loads(record.included_paths)
+            if record.included_paths
+            else [],
+            "archive_available": archive_available,
             "result": record.result,
             "created_at": timestamp(record.created_at),
             "completed_at": timestamp(record.completed_at) if record.completed_at else None,
@@ -396,6 +420,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         if pending is not None:
             raise HTTPException(409, "A backup is already in progress for this server.")
+        if profile.id in restoring_profiles:
+            raise HTTPException(
+                409, "A restore is in progress for this server. Wait for it to finish."
+            )
 
         created_at = datetime.now(timezone.utc)  # noqa: UP017
         record = BackupRecord(profile_id=profile.id, trigger="manual", created_at=created_at)
@@ -430,6 +458,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 config.data_dir,
                 record.id,
                 created_at,
+                profile_name=profile.name,
+                distribution=profile.distribution,
+                minecraft_version=profile.minecraft_version,
+                application_version=__version__,
+                trigger="manual",
             )
         except BackupError as exc:
             failure = str(exc)
@@ -451,6 +484,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         record.duration_ms = round((time.monotonic() - started) * 1000)
         if archive is not None:
             record.file_name = archive.file_name
+            record.manifest_name = archive.manifest_name
+            record.sha256 = archive.sha256
+            record.included_paths = json.dumps(list(archive.included_paths))
             record.size_bytes = archive.size_bytes
         if failure:
             record.status = "failed"
@@ -459,6 +495,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             assert archive is not None
             record.status = "completed"
             record.result = f"Protected {', '.join(archive.included_paths)}."
+            enforce_retention(db, profile, config.data_dir)
         db.add(
             AuditEvent(
                 admin_id=admin.id,
@@ -475,6 +512,179 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if failure:
             raise HTTPException(409, failure)
         return backup_payload(record)
+
+    def restore_context(
+        profile_id: str, backup_id: str, db: Session
+    ) -> tuple[Profile, BackupRecord, Path]:
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        record = db.get(BackupRecord, backup_id)
+        if record is None or record.profile_id != profile.id:
+            raise HTTPException(404, "That backup was not found for this server.")
+        if record.status == "expired":
+            raise HTTPException(
+                409, "This backup was removed by the retention policy and cannot be restored."
+            )
+        if record.status != "completed" or not record.file_name or not record.manifest_name:
+            raise HTTPException(
+                409, "Only a completed backup with a manifest can be restored."
+            )
+        try:
+            server_directory = canonical_child(
+                Path(profile.server_directory), config.server_root
+            )
+        except (ValueError, OSError) as exc:
+            raise HTTPException(
+                409, "The profile folder is no longer inside the allowed server root."
+            ) from exc
+        return profile, record, server_directory
+
+    def restore_blockers(profile: Profile, db: Session) -> list[str]:
+        blockers: list[str] = []
+        snapshot = manager.snapshot()
+        if app.state.active_profile_id == profile.id and snapshot["state"] not in {
+            "STOPPED",
+            "CRASHED",
+        }:
+            blockers.append("Stop this server before restoring a backup.")
+        if profile.id in restoring_profiles:
+            blockers.append("A restore is already in progress for this server.")
+        pending = db.scalar(
+            select(BackupRecord).where(
+                BackupRecord.profile_id == profile.id,
+                BackupRecord.status == "in_progress",
+            )
+        )
+        if pending is not None:
+            blockers.append("Wait for the current backup to finish before restoring.")
+        return blockers
+
+    @app.get("/api/v1/profiles/{profile_id}/backups/{backup_id}/restore-preview")
+    def restore_preview(
+        profile_id: str, backup_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        current(request, db)
+        profile, record, server_directory = restore_context(profile_id, backup_id, db)
+        assert record.file_name and record.manifest_name
+        try:
+            plan = plan_restore(
+                config.data_dir,
+                profile.id,
+                record.file_name,
+                record.manifest_name,
+                server_directory,
+            )
+        except RestoreError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        blockers = restore_blockers(profile, db)
+        return {
+            "backup_id": record.id,
+            "verified": True,
+            "sha256": plan.sha256,
+            "size_bytes": plan.size_bytes,
+            "included_paths": list(plan.included_paths),
+            "worlds_replaced": list(plan.worlds_replaced),
+            "required_bytes": plan.required_bytes,
+            "available_bytes": plan.available_bytes,
+            "backup_created_at": plan.created_at,
+            "minecraft_version": plan.minecraft_version,
+            "can_restore": not blockers,
+            "blockers": blockers,
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/backups/{backup_id}/restore")
+    async def restore_backup(
+        profile_id: str, backup_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        profile, record, server_directory = restore_context(profile_id, backup_id, db)
+        blockers = restore_blockers(profile, db)
+        if blockers:
+            raise HTTPException(409, " ".join(blockers))
+        assert record.file_name and record.manifest_name
+        restoring_profiles.add(profile.id)
+        try:
+            result = await asyncio.to_thread(
+                perform_restore,
+                config.data_dir,
+                profile.id,
+                record.file_name,
+                record.manifest_name,
+                server_directory,
+                datetime.now(timezone.utc),  # noqa: UP017
+            )
+        except RestoreError as exc:
+            db.add(
+                AuditEvent(
+                    admin_id=admin.id,
+                    category="backup_restore",
+                    result="failed",
+                    safe_detail=f"Restore failed for {profile.name}: {exc}",
+                )
+            )
+            db.commit()
+            raise HTTPException(409, str(exc)) from exc
+        finally:
+            restoring_profiles.discard(profile.id)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="backup_restore",
+                result="success",
+                safe_detail=f"Restored a verified backup for {profile.name}",
+            )
+        )
+        db.commit()
+        return {
+            "restored_paths": list(result.restored_paths),
+            "preserved_paths": list(result.preserved_paths),
+            "result": (
+                f"Restored {', '.join(result.restored_paths)}. "
+                "The replaced world folders were kept beside them "
+                "until you remove them."
+            ),
+        }
+
+    def policy_payload(profile: Profile) -> dict[str, int | None]:
+        return {
+            "keep_count": profile.backup_keep_count,
+            "keep_days": profile.backup_keep_days,
+            "max_total_mb": profile.backup_max_total_mb,
+        }
+
+    @app.get("/api/v1/profiles/{profile_id}/backup-policy")
+    def read_backup_policy(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, int | None]:
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        return policy_payload(profile)
+
+    @app.put("/api/v1/profiles/{profile_id}/backup-policy")
+    def update_backup_policy(
+        profile_id: str, payload: BackupPolicyRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        profile.backup_keep_count = payload.keep_count
+        profile.backup_keep_days = payload.keep_days
+        profile.backup_max_total_mb = payload.max_total_mb
+        expired = enforce_retention(db, profile, config.data_dir)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="backup_policy",
+                result="success",
+                safe_detail=f"Updated backup retention for {profile.name}",
+            )
+        )
+        db.commit()
+        return {**policy_payload(profile), "expired_now": len(expired)}
 
     @app.post("/api/v1/profiles", status_code=201)
     def create_profile(payload: ProfileCreate, request: Request, db: Db) -> dict[str, object]:
@@ -1101,6 +1311,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile = db.get(Profile, payload.profile_id)
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
+        if profile.id in restoring_profiles:
+            raise HTTPException(
+                409, "A restore is in progress for this server. Wait for it to finish."
+            )
         try:
             arguments, cwd, label = launch_spec(profile, payload.mode)
             await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)

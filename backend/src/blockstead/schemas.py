@@ -37,6 +37,14 @@ class EulaRequest(BaseModel):
     accept: bool
 
 
+class BackupPolicyRequest(BaseModel):
+    """Retention rules; null disables a rule rather than meaning zero."""
+
+    keep_count: int | None = Field(default=None, ge=1, le=500)
+    keep_days: int | None = Field(default=None, ge=1, le=3650)
+    max_total_mb: int | None = Field(default=None, ge=100, le=10_000_000)
+
+
 class InstallRequest(BaseModel):
     project_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     version_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")

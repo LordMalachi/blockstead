@@ -37,6 +37,11 @@ class Profile(Base):
     distribution: Mapped[str] = mapped_column(String(24))
     minecraft_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_fixture: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Backup retention policy. NULL means "no limit" for that rule; the newest
+    # completed backup always survives every rule.
+    backup_keep_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=10)
+    backup_keep_days: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    backup_max_total_mb: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -77,6 +82,9 @@ class BackupRecord(Base):
     method: Mapped[str] = mapped_column(String(24), default="world_archive")
     trigger: Mapped[str] = mapped_column(String(24), default="manual")
     file_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manifest_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    included_paths: Mapped[str | None] = mapped_column(Text, nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     result: Mapped[str] = mapped_column(Text, default="Backup is in progress.")

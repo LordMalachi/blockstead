@@ -55,7 +55,8 @@ Blockstead already provides:
 - guided editing for common server settings and read-only player files;
 - host and process metrics;
 - daily server start and stop scheduling with backup-before-stop;
-- manual and scheduled world backups with per-server result history;
+- manual and scheduled world backups with manifests, SHA-256 verification,
+  per-server result history, retention rules, and staged verified restore;
 - optional Linux host shutdown and RTC wake scheduling;
 - Modrinth extension search, uploads, and Fabric modpack installation;
 - a responsive visual system and guided first-run experience;
@@ -63,7 +64,6 @@ Blockstead already provides:
 
 The main limitations to address are:
 
-- backups do not yet have manifests, retention rules, verification, or restore;
 - advanced server settings still require a raw editor or direct file access;
 - the schedule panel is basic, with a single daily start and stop time;
 - metrics show current values rather than useful history or trends;
@@ -160,18 +160,18 @@ normal maintenance rather than exist only as a scheduled side effect.
 
 - [x] Add a manual **Back up now** action.
 - [x] Record backup status, creation time, duration, size, method, and result.
-- [ ] Store a manifest containing profile, Minecraft, loader, included paths,
+- [x] Store a manifest containing profile, Minecraft, loader, included paths,
       exclusions, application version, and SHA-256 checksum information.
 - [x] Show backup progress without pretending an accepted task is complete.
 - [x] Flush Minecraft saves before capturing a running server.
 - [x] Guarantee that any temporary save suspension is reversed on failure.
-- [ ] Add configurable retention by count, age, and total storage.
-- [ ] Show last successful backup and protection warnings on the overview.
-- [ ] Add restore preview and available-disk checks.
-- [ ] Allow restore only while the selected server is stopped.
-- [ ] Verify checksums and reject archive path traversal before restore.
-- [ ] Restore into staging and preserve the replaced world until validation.
-- [ ] Add hostile archive, interrupted backup, and failed restore tests.
+- [x] Add configurable retention by count, age, and total storage.
+- [x] Show last successful backup and protection warnings on the overview.
+- [x] Add restore preview and available-disk checks.
+- [x] Allow restore only while the selected server is stopped.
+- [x] Verify checksums and reject archive path traversal before restore.
+- [x] Restore into staging and preserve the replaced world until validation.
+- [x] Add hostile archive, interrupted backup, and failed restore tests.
 
 ### Acceptance criteria
 

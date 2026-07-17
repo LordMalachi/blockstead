@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Write a manifest with a SHA-256 checksum beside every world backup and show
+  the verification state in the Backup Center.
+- Add a staged, verified restore workflow: preview what a restore will replace,
+  require the server to be stopped, verify the archive checksum, reject unsafe
+  archive contents, extract into staging, and keep the replaced world folders
+  beside the restored ones.
+- Add per-profile backup retention by count, age, and total size, applied after
+  each successful backup; the newest completed backup always survives.
+- Show the last backup and a protection warning on each server's overview page.
+
 - Rewrite the README as an owner-facing Linux Mint guide and move the full
   product specification to `docs/product-spec.md`.
 - Teach the Linux installer to check for missing system packages (including
