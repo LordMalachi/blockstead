@@ -5,7 +5,7 @@ import { AuthPage } from "./features/auth/AuthPage";
 import { ConsolePage } from "./features/console/ConsolePage";
 import { OverviewPage } from "./features/servers/OverviewPage";
 import { ServerLayout } from "./features/servers/ServerLayout";
-import { ModsPage, PlayersPage, SchedulePage, SettingsPage } from "./features/servers/ServerPages";
+import { BackupsPage, ModsPage, PlayersPage, SchedulePage, SettingsPage } from "./features/servers/ServerPages";
 import { ServersPage } from "./features/servers/ServersPage";
 import { AppShell } from "./features/shell/AppShell";
 import { SystemPage } from "./features/system/SystemPage";
@@ -26,6 +26,7 @@ export default function App() {
         <Route path="console" element={<ConsolePage />} />
         <Route path="players" element={<PlayersPage />} />
         <Route path="mods" element={<ModsPage />} />
+        <Route path="backups" element={<BackupsPage />} />
         <Route path="schedule" element={<SchedulePage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>

@@ -16,11 +16,11 @@ const serverNav = [
   { path: "console", label: "Console", icon: "terminal" },
   { path: "players", label: "Players", icon: "users" },
   { path: "mods", label: "Mods and plugins", icon: "blocks" },
+  { path: "backups", label: "Backups", icon: "package" },
   { path: "schedule", label: "Schedule", icon: "clock" },
   { path: "settings", label: "Settings", icon: "sliders" },
 ];
 const serverSoon = [
-  { label: "Backups", icon: "package", note: "Next" },
   { label: "Files", icon: "folder", note: "Later" },
 ];
 

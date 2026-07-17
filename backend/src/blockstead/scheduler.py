@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import shutil
+import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -8,7 +8,9 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from .models import AuditEvent, Profile, Schedule
+from .backups import BackupError, create_backup_archive
+from .import_scan import canonical_child
+from .models import AuditEvent, BackupRecord, Profile, Schedule
 from .process import ProcessManager
 
 logger = logging.getLogger(__name__)
@@ -23,8 +25,10 @@ class Scheduler:
         manager: ProcessManager,
         start: Callable[[Profile], Awaitable[None]],
         data_dir: Path,
+        server_root: Path,
     ) -> None:
-        self.factory, self.manager, self.start, self.data_dir = factory, manager, start, data_dir
+        self.factory, self.manager, self.start = factory, manager, start
+        self.data_dir, self.server_root = data_dir, server_root
         self._task: asyncio.Task[None] | None = None
 
     def begin(self) -> None:
@@ -84,10 +88,20 @@ class Scheduler:
         date: str,
         now: datetime,
     ) -> None:
+        schedule.last_stop_date = date
         if self.manager.snapshot()["state"] in {"RUNNING", "STARTING", "DEGRADED"}:
+            backed_up = False
             if schedule.backup_before_stop:
-                await self.manager.command("save-all flush")
-                self.backup(profile, now)
+                saving_suspended = False
+                try:
+                    await self.manager.command("save-off")
+                    saving_suspended = True
+                    await self.manager.command("save-all flush")
+                    await self.backup(db, profile, now)
+                    backed_up = True
+                finally:
+                    if saving_suspended:
+                        await self.manager.command("save-on")
             graceful = await self.manager.stop(timeout=60.0)
             if not graceful:
                 raise RuntimeError("scheduled graceful stop timed out")
@@ -96,10 +110,13 @@ class Scheduler:
                     admin_id=self._admin_id(db),
                     category="scheduled_stop",
                     result="success",
-                    safe_detail=f"Backed up and stopped {profile.name} on schedule",
+                    safe_detail=(
+                        f"Backed up and stopped {profile.name} on schedule"
+                        if backed_up
+                        else f"Stopped {profile.name} on schedule"
+                    ),
                 )
             )
-        schedule.last_stop_date = date
         # The installer grants this exact helper passwordless access. It sets the RTC
         # wake alarm before requesting shutdown; failures leave the machine on.
         if schedule.power_off_after_stop:
@@ -110,23 +127,63 @@ class Scheduler:
             process = await asyncio.create_subprocess_exec(*command)
             await process.wait()
 
-    def backup(self, profile: Profile, now: datetime) -> Path:
-        # Ask Minecraft to flush first; archive world folders without ever including secrets.
-        destination = self.data_dir / "backups"
-        destination.mkdir(mode=0o700, exist_ok=True)
-        stamp = now.strftime("%Y%m%d-%H%M%S")
-        archive = destination / f"{profile.id}-{stamp}"
-        roots = [path for path in Path(profile.server_directory).glob("world*") if path.is_dir()]
-        if not roots:
-            raise RuntimeError("No world directory was found for backup")
-        for root in roots:
-            shutil.make_archive(
-                str(archive) + f"-{root.name}",
-                "gztar",
-                root_dir=root.parent,
-                base_dir=root.name,
+    async def backup(self, db: Session, profile: Profile, now: datetime) -> BackupRecord:
+        record = BackupRecord(profile_id=profile.id, trigger="schedule", created_at=now)
+        db.add(record)
+        db.flush()
+        # Make progress visible to the Backup Center and block a simultaneous
+        # manual backup before the archive work moves to a thread.
+        db.commit()
+        started = time.monotonic()
+        try:
+            try:
+                server_directory = canonical_child(
+                    Path(profile.server_directory), self.server_root
+                )
+            except (ValueError, OSError) as exc:
+                raise BackupError(
+                    "The profile folder is no longer inside the allowed server root."
+                ) from exc
+            archive = await asyncio.to_thread(
+                create_backup_archive,
+                profile.id,
+                server_directory,
+                self.data_dir,
+                record.id,
+                now,
             )
-        return archive
+        except BackupError as exc:
+            record.status = "failed"
+            record.result = str(exc)
+            record.completed_at = datetime.now().astimezone()
+            record.duration_ms = round((time.monotonic() - started) * 1000)
+            db.add(
+                AuditEvent(
+                    admin_id=self._admin_id(db),
+                    category="scheduled_backup",
+                    result="failed",
+                    safe_detail=f"Backup failed for {profile.name}: {exc}",
+                )
+            )
+            db.commit()
+            raise
+
+        record.status = "completed"
+        record.file_name = archive.file_name
+        record.size_bytes = archive.size_bytes
+        record.duration_ms = round((time.monotonic() - started) * 1000)
+        record.result = f"Protected {', '.join(archive.included_paths)}."
+        record.completed_at = datetime.now().astimezone()
+        db.add(
+            AuditEvent(
+                admin_id=self._admin_id(db),
+                category="scheduled_backup",
+                result="success",
+                safe_detail=f"Created scheduled backup for {profile.name}",
+            )
+        )
+        db.commit()
+        return record
 
     @staticmethod
     def _admin_id(db: Session) -> str:

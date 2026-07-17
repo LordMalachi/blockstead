@@ -19,7 +19,13 @@ export function SchedulePage() {
   return <SchedulePanel profileId={scope.profile.id} />;
 }
 
+export function BackupsPage() {
+  const scope = useServerScope();
+  return <BackupsPanel profileId={scope.profile.id} running={scope.running} />;
+}
+
 export function SettingsPage() {
   const scope = useServerScope();
   return <SettingsPanel profileId={scope.profile.id} />;
 }
+import { BackupsPanel } from "../backups/BackupsPanel";

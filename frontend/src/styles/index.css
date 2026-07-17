@@ -242,6 +242,22 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
 .state-label--ok { color: var(--ok)!important; }
 .state-label--warning { color: var(--warning)!important; }
 
+.backup-action { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-4); margin-top: var(--space-3); padding: var(--space-3); border: 1px solid color-mix(in srgb, var(--brand) 30%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--brand) 6%, var(--surface)); }
+.backup-action h3, .backup-history h3 { margin: 0 0 .35rem; }
+.backup-action p { margin: 0; color: var(--ink); }
+.backup-action small { display: block; margin-top: .4rem; color: var(--muted); }
+.backup-history { margin-top: var(--space-4); }
+.backup-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+.backup-table { width: 100%; border-collapse: collapse; min-width: 760px; }
+.backup-table th, .backup-table td { padding: .75rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.backup-table th { color: var(--muted); background: var(--bg); font-size: .66rem; letter-spacing: .09em; text-transform: uppercase; }
+.backup-table td { font-size: .8rem; }
+.backup-table tr:last-child td { border-bottom: 0; }
+.backup-status { display: inline-flex; padding: .2rem .45rem; border-radius: 6px; color: var(--muted); background: var(--surface-3); font-size: .68rem; font-weight: 800; text-transform: capitalize; }
+.backup-status--completed { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, var(--surface)); }
+.backup-status--failed { color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, var(--surface)); }
+.backup-status--in_progress { color: var(--warning); background: color-mix(in srgb, var(--warning) 9%, var(--surface)); }
+
 .readiness-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: .8rem; margin-top: var(--space-3); }
 .readiness-grid article { display: flex; flex-direction: column; align-items: start; gap: .4rem; min-width: 0; padding: var(--space-3); border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
 .readiness-grid small { color: var(--muted); overflow-wrap: anywhere; }
@@ -317,6 +333,7 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
   .command > div { grid-template-columns: 1fr; }
   .log div { grid-template-columns: 1fr; gap: 0; margin-bottom: .45rem; }
   .schedule-grid { grid-template-columns: 1fr; }
+  .backup-action { grid-template-columns: 1fr; }
   .settings-table th:nth-child(3), .settings-table td:nth-child(3) { display: none; }
 }
 

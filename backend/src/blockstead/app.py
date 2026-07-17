@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Scope
 
 from . import __version__
+from .backups import BackupArchive, BackupError, create_backup_archive
 from .config import Settings
 from .db import Base, create_session_factory
 from .distributions import (
@@ -49,7 +51,7 @@ from .extension_ops import (
 from .extensions import read_extensions
 from .import_scan import canonical_child, scan_server
 from .java_runtime import discover_java_runtimes, find_java
-from .models import Administrator, AuditEvent, LoginSession, Profile, Schedule
+from .models import Administrator, AuditEvent, BackupRecord, LoginSession, Profile, Schedule
 from .modpacks import (
     MAX_MRPACK_BYTES,
     ModpackError,
@@ -155,6 +157,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         engine = factory.kw["bind"]
         Base.metadata.create_all(engine)
+        with factory() as db:
+            interrupted = db.scalars(
+                select(BackupRecord).where(BackupRecord.status == "in_progress")
+            ).all()
+            for record in interrupted:
+                record.status = "failed"
+                record.result = "Blockstead stopped before this backup completed."
+                record.completed_at = datetime.now(timezone.utc)  # noqa: UP017
+            db.commit()
         scheduler.begin()
         yield
         await scheduler.close()
@@ -178,7 +189,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)
         app.state.active_profile_id = profile.id
 
-    scheduler = Scheduler(factory, manager, scheduled_start, config.data_dir)
+    scheduler = Scheduler(
+        factory, manager, scheduled_start, config.data_dir, config.server_root
+    )
 
     @app.middleware("http")
     async def security_headers(
@@ -234,6 +247,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin, session = current(request, db)
         require_mutation_security(request, session, config.origins)
         return admin
+
+    def backup_payload(record: BackupRecord) -> dict[str, object]:
+        def timestamp(value: datetime) -> str:
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)  # noqa: UP017
+            return value.astimezone(timezone.utc).isoformat()  # noqa: UP017
+
+        return {
+            "id": record.id,
+            "profile_id": record.profile_id,
+            "status": record.status,
+            "method": record.method,
+            "trigger": record.trigger,
+            "file_name": record.file_name,
+            "size_bytes": record.size_bytes,
+            "duration_ms": record.duration_ms,
+            "result": record.result,
+            "created_at": timestamp(record.created_at),
+            "completed_at": timestamp(record.completed_at) if record.completed_at else None,
+        }
 
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:
@@ -326,6 +359,115 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
             for p in db.scalars(select(Profile).order_by(Profile.created_at)).all()
         ]
+
+    @app.get("/api/v1/profiles/{profile_id}/backups")
+    def list_backups(profile_id: str, request: Request, db: Db) -> list[dict[str, object]]:
+        current(request, db)
+        if db.get(Profile, profile_id) is None:
+            raise HTTPException(404, "That profile was not found.")
+        records = db.scalars(
+            select(BackupRecord)
+            .where(BackupRecord.profile_id == profile_id)
+            .order_by(BackupRecord.created_at.desc())
+            .limit(50)
+        ).all()
+        return [backup_payload(record) for record in records]
+
+    @app.post("/api/v1/profiles/{profile_id}/backups", status_code=201)
+    async def create_backup(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        pending = db.scalar(
+            select(BackupRecord).where(
+                BackupRecord.profile_id == profile_id,
+                BackupRecord.status == "in_progress",
+            )
+        )
+        if pending is not None:
+            raise HTTPException(409, "A backup is already in progress for this server.")
+
+        created_at = datetime.now(timezone.utc)  # noqa: UP017
+        record = BackupRecord(profile_id=profile.id, trigger="manual", created_at=created_at)
+        db.add(record)
+        db.commit()
+        started = time.monotonic()
+        archive: BackupArchive | None = None
+        failure: str | None = None
+        snapshot = manager.snapshot()
+        running = (
+            app.state.active_profile_id == profile.id
+            and snapshot["state"] in {"RUNNING", "STARTING", "DEGRADED"}
+        )
+        saving_suspended = False
+        try:
+            try:
+                server_directory = canonical_child(
+                    Path(profile.server_directory), config.server_root
+                )
+            except (ValueError, OSError) as exc:
+                raise BackupError(
+                    "The profile folder is no longer inside the allowed server root."
+                ) from exc
+            if running:
+                await manager.command("save-off")
+                saving_suspended = True
+                await manager.command("save-all flush")
+            archive = await asyncio.to_thread(
+                create_backup_archive,
+                profile.id,
+                server_directory,
+                config.data_dir,
+                record.id,
+                created_at,
+            )
+        except BackupError as exc:
+            failure = str(exc)
+        except (InvalidTransition, ValueError):
+            failure = "The server changed state before its world could be safely backed up."
+        except Exception:
+            log.exception("Unexpected manual backup failure for profile %s", profile.id)
+            failure = "The world archive could not be completed."
+        finally:
+            if saving_suspended:
+                try:
+                    await manager.command("save-on")
+                except (InvalidTransition, ValueError):
+                    failure = (
+                        f"{failure} " if failure else ""
+                    ) + "Minecraft saving could not be re-enabled automatically."
+
+        record.completed_at = datetime.now(timezone.utc)  # noqa: UP017
+        record.duration_ms = round((time.monotonic() - started) * 1000)
+        if archive is not None:
+            record.file_name = archive.file_name
+            record.size_bytes = archive.size_bytes
+        if failure:
+            record.status = "failed"
+            record.result = failure
+        else:
+            assert archive is not None
+            record.status = "completed"
+            record.result = f"Protected {', '.join(archive.included_paths)}."
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="manual_backup",
+                result="failed" if failure else "success",
+                safe_detail=(
+                    f"Backup failed for {profile.name}: {failure}"
+                    if failure
+                    else f"Created manual backup for {profile.name}"
+                ),
+            )
+        )
+        db.commit()
+        if failure:
+            raise HTTPException(409, failure)
+        return backup_payload(record)
 
     @app.post("/api/v1/profiles", status_code=201)
     def create_profile(payload: ProfileCreate, request: Request, db: Db) -> dict[str, object]:

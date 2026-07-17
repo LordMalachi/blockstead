@@ -1,6 +1,6 @@
 # Blockstead upgrade plan and progress
 
-Last updated: 2026-07-14
+Last updated: 2026-07-17
 
 This document explains the next Blockstead UI and product upgrades and tracks
 their implementation. The [README](README.md) remains the full product
@@ -34,7 +34,7 @@ remain available without dominating normal server care.
 | --- | --- | --- |
 | 0. Visual foundation | Complete | Cohesive responsive UI, sidebar navigation, clearer server controls, and improved first-run experience |
 | 1. Server workspace navigation | Complete | Profile-aware server workspaces, a server-card landing page, and routed tools |
-| 2. Backup Center | Next | Manual and scheduled backups, history, retention, verification, and staged restore |
+| 2. Backup Center | In progress | Manual and scheduled backups, history, retention, verification, and staged restore |
 | 3. Guided settings editor | Planned | Safe typed editing with search, validation, diff preview, and automatic snapshots |
 | 4. Owner-focused overview | Planned | Useful server health, player, backup, schedule, storage, and update information |
 | 5. Automation upgrade | Planned | Weekly schedules, readable action sequences, previews, and execution history |
@@ -53,6 +53,7 @@ Blockstead already provides:
 - read-only server settings and player files;
 - host and process metrics;
 - daily server start and stop scheduling with backup-before-stop;
+- manual and scheduled world backups with per-server result history;
 - optional Linux host shutdown and RTC wake scheduling;
 - Modrinth extension search, uploads, and Fabric modpack installation;
 - a responsive visual system and guided first-run experience;
@@ -60,7 +61,7 @@ Blockstead already provides:
 
 The main limitations to address are:
 
-- Backups is still a navigation placeholder rather than a management surface;
+- backups do not yet have manifests, retention rules, verification, or restore;
 - server settings remain read-only;
 - the schedule panel is basic, with a single daily start and stop time;
 - metrics show current values rather than useful history or trends;
@@ -146,7 +147,7 @@ Home
 
 ## Milestone 2: Backup Center
 
-**Status: Planned**
+**Status: In progress**
 
 ### Why
 
@@ -155,13 +156,13 @@ normal maintenance rather than exist only as a scheduled side effect.
 
 ### Work checklist
 
-- [ ] Add a manual **Back up now** action.
-- [ ] Record backup status, creation time, duration, size, method, and result.
+- [x] Add a manual **Back up now** action.
+- [x] Record backup status, creation time, duration, size, method, and result.
 - [ ] Store a manifest containing profile, Minecraft, loader, included paths,
       exclusions, application version, and SHA-256 checksum information.
-- [ ] Show backup progress without pretending an accepted task is complete.
-- [ ] Flush Minecraft saves before capturing a running server.
-- [ ] Guarantee that any temporary save suspension is reversed on failure.
+- [x] Show backup progress without pretending an accepted task is complete.
+- [x] Flush Minecraft saves before capturing a running server.
+- [x] Guarantee that any temporary save suspension is reversed on failure.
 - [ ] Add configurable retention by count, age, and total storage.
 - [ ] Show last successful backup and protection warnings on the overview.
 - [ ] Add restore preview and available-disk checks.
@@ -353,6 +354,23 @@ Before marking any milestone complete:
 
 ## Progress log
 
+- **2026-07-17 — Backup Center first slice complete.** Added a profile-scoped
+  **Back up now** workflow and persistent history for both manual and scheduled
+  backups. Each attempt records in-progress, completed, or failed state with its
+  creation time, duration, archive size, method, source, and owner-safe result.
+  Running servers receive `save-off`, `save-all flush`, and a guaranteed
+  `save-on` attempt around archive creation; failed archives are recorded and do
+  not silently leave saving suspended. Archives contain only direct `world*`
+  directories, omit symbolic links, use private filesystem permissions, and are
+  written through an atomic partial file. A database migration adds the backup
+  history table, and interrupted in-progress records are marked failed at the
+  next application start. The new Backups workspace shows completion progress
+  and per-server history. Verification: strict backend lint and type checks,
+  108 backend tests (excluding the existing Python 3.10-only local environment
+  conflict in `test_version.py`), frontend lint, 20 frontend tests, production
+  build, the Playwright lifecycle workflow against the real backend, and
+  `git diff --check`. Follow-up: manifests, checksums, retention, overview
+  protection warnings, and staged restore remain open in Milestone 2.
 - **2026-07-14 — Server workspace navigation complete.** Replaced the single
   scrolling dashboard with React Router routes: a `/servers` card landing page,
   a `/servers/:profileId/…` workspace per server (overview, console, players,

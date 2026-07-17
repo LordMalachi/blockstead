@@ -39,6 +39,12 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Server settings" })).toBeVisible();
   await expect(page.getByRole("row", { name: /Player limit/ })).toContainText("20");
 
+  await page.getByRole("link", { name: "Backups" }).click();
+  await expect(page.getByRole("heading", { name: "Backup Center" })).toBeVisible();
+  await page.getByRole("button", { name: "Back up now" }).click();
+  await expect(page.getByRole("status")).toContainText("completed successfully", { timeout: 10_000 });
+  await expect(page.getByRole("cell", { name: "Protected world." })).toBeVisible();
+
   await page.getByRole("link", { name: "System" }).click();
   await expect(page.getByRole("heading", { name: "System health" })).toBeVisible();
   await expect(page.getByText("Host CPU")).toBeVisible();

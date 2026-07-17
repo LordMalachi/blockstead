@@ -22,6 +22,7 @@ Blockstead manages the process around them.
 - shows host CPU, memory, disk use, and server uptime
 - saves a daily start/stop schedule; scheduled stops flush Minecraft saves and
   create compressed world archives before stopping the server
+- creates private manual world backups and keeps per-server result history
 - can optionally shut down the Linux computer after a safe stop and set an RTC
   wake alarm for the next day when the computer hardware supports it
 - installs as a `systemd` service, so the Blockstead dashboard starts with Linux
