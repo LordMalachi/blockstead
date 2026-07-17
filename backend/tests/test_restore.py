@@ -173,6 +173,47 @@ def test_restore_rejects_link_members(tmp_path: Path) -> None:
         plan_restore(data, "profile-1", file_name, manifest_name, server)
 
 
+def test_restore_rejects_parent_directory_manifest_roots(tmp_path: Path) -> None:
+    server = make_server(tmp_path, {"world": b"original"})
+    data = tmp_path / "data"
+    file_name, manifest_name = craft_hostile_backup(
+        data, [file_member("../escape.txt", b"escape")], [".."]
+    )
+
+    with pytest.raises(RestoreError, match="unsupported format"):
+        plan_restore(data, "profile-1", file_name, manifest_name, server)
+
+
+def test_restore_rejects_consistent_forgery_against_database_record(
+    tmp_path: Path,
+) -> None:
+    """A rewritten archive-plus-manifest pair is internally consistent, so
+    only the checksum Blockstead recorded at creation time can expose it."""
+
+    server = make_server(tmp_path, {"world": b"original"})
+    data = tmp_path / "data"
+    file_name, manifest_name = make_backup(server, data)
+    folder = data / "backups" / "profile-1"
+    recorded_sha = hashlib.sha256((folder / file_name).read_bytes()).hexdigest()
+
+    (server / "world" / "level.dat").write_bytes(b"attacker world")
+    forged_name, _ = craft_hostile_backup(
+        data, [file_member("world/level.dat", b"attacker world")], ["world"]
+    )
+    (folder / file_name).write_bytes((folder / forged_name).read_bytes())
+    forged_manifest = json.loads(
+        (folder / "20260717-140000-hostile1.manifest.json").read_text(encoding="utf-8")
+    )
+    forged_manifest["archive"]["file_name"] = file_name
+    (folder / manifest_name).write_text(json.dumps(forged_manifest), encoding="utf-8")
+
+    plan_restore(data, "profile-1", file_name, manifest_name, server)
+    with pytest.raises(RestoreError, match="does not match Blockstead's records"):
+        plan_restore(
+            data, "profile-1", file_name, manifest_name, server, expected_sha256=recorded_sha
+        )
+
+
 def test_restore_rejects_members_outside_recorded_worlds(tmp_path: Path) -> None:
     server = make_server(tmp_path, {"world": b"original"})
     data = tmp_path / "data"

@@ -12,6 +12,9 @@ export interface SettingChange { key: string; value: SettingValue }
 export interface SettingDiff { key: string; label: string; category: SettingCategory; before: SettingValue | null; after: SettingValue; restart_required: boolean }
 export interface SettingsPreview { revision: string; changes: SettingDiff[]; restart_required: boolean }
 export interface SettingsApplyResult extends SettingsPreview { snapshot_name: string; previous_revision: string; view: SettingsView }
+export interface RawSettingsView { present: boolean; editable: boolean; problem: string | null; revision: string | null; content: string | null; secret_keys: string[] }
+export interface RawSettingsPreview { revision: string; valid: boolean; problems: string[]; no_changes: boolean; changed_known: SettingDiff[]; removed_known: string[]; other_lines_changed: boolean; restart_required: boolean }
+export interface RawSettingsApplyResult { snapshot_name: string; previous_revision: string; revision: string; changed_known: SettingDiff[]; removed_known: string[]; other_lines_changed: boolean; restart_required: boolean; view: SettingsView }
 export interface PlayerEntry { name: string; uuid: string | null; level: number | null; reason: string | null }
 export interface PlayerFile { present: boolean; readable: boolean; players: PlayerEntry[] }
 export interface PlayersView { allowlist: PlayerFile; operators: PlayerFile; bans: PlayerFile }

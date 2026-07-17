@@ -90,6 +90,7 @@ from .schemas import (
     PlayerActionRequest,
     ProfileCreate,
     ProvisionRequest,
+    RawSettingsUpdateRequest,
     ScheduleRequest,
     SettingsUpdateRequest,
     StartRequest,
@@ -109,8 +110,11 @@ from .server_files import read_players, read_settings
 from .server_settings import (
     SettingsConflictError,
     SettingsValidationError,
+    apply_raw_settings,
     apply_settings_update,
+    preview_raw_settings,
     preview_settings_update,
+    read_raw_settings,
 )
 
 log = logging.getLogger("blockstead.api")
@@ -574,6 +578,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 record.file_name,
                 record.manifest_name,
                 server_directory,
+                record.sha256,
             )
         except RestoreError as exc:
             raise HTTPException(409, str(exc)) from exc
@@ -613,6 +618,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 record.manifest_name,
                 server_directory,
                 datetime.now(timezone.utc),  # noqa: UP017
+                record.sha256,
             )
         except RestoreError as exc:
             db.add(
@@ -870,6 +876,64 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 safe_detail=(
                     f"Updated {len(result.changes)} settings for profile {profile_id}; "
                     f"recovery snapshot {result.snapshot_name}"
+                ),
+            )
+        )
+        db.commit()
+        return result.model_dump()
+
+    @app.get("/api/v1/profiles/{profile_id}/settings/raw")
+    def profile_settings_raw(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        current(request, db)
+        return read_raw_settings(profile_directory(profile_id, db)).model_dump()
+
+    @app.post("/api/v1/profiles/{profile_id}/settings/raw/preview")
+    def preview_profile_settings_raw(
+        profile_id: str, payload: RawSettingsUpdateRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        mutation(request, db)
+        try:
+            preview = preview_raw_settings(
+                profile_directory(profile_id, db), payload.revision, payload.content
+            )
+        except SettingsConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except SettingsValidationError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return preview.model_dump()
+
+    @app.put("/api/v1/profiles/{profile_id}/settings/raw")
+    def update_profile_settings_raw(
+        profile_id: str, payload: RawSettingsUpdateRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        try:
+            result = apply_raw_settings(
+                profile_directory(profile_id, db),
+                config.data_dir,
+                profile_id,
+                payload.revision,
+                payload.content,
+            )
+        except SettingsConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except SettingsValidationError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                409,
+                "Blockstead could not snapshot and safely replace server.properties.",
+            ) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="settings_raw_update",
+                result="success",
+                safe_detail=(
+                    f"Replaced server.properties for profile {profile_id} through the "
+                    f"advanced editor; recovery snapshot {result.snapshot_name}"
                 ),
             )
         )

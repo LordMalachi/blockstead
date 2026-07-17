@@ -81,3 +81,39 @@ def test_backup_requires_a_world_directory(tmp_path: Path) -> None:
         make_archive(server, tmp_path / "data")
 
     assert not (tmp_path / "data" / "backups").exists()
+
+
+def test_backup_honors_configured_level_name(tmp_path: Path) -> None:
+    """Paper-style servers with level-name=survival keep suffixed dimension
+    folders that the vanilla world* convention would miss."""
+
+    server = tmp_path / "server"
+    for name in ("survival", "survival_nether", "survival_the_end", "world", "plugins"):
+        (server / name).mkdir(parents=True)
+        (server / name / "marker.dat").write_bytes(b"data")
+    (server / "server.properties").write_text(
+        "#Minecraft server properties\nlevel-name=survival\nmotd=Home\n",
+        encoding="utf-8",
+    )
+
+    result = make_archive(server, tmp_path / "data")
+
+    assert result.included_paths == (
+        "survival",
+        "survival_nether",
+        "survival_the_end",
+        "world",
+    )
+
+
+def test_backup_ignores_unsafe_level_name(tmp_path: Path) -> None:
+    server = tmp_path / "server"
+    (server / "world").mkdir(parents=True)
+    (server / "world" / "level.dat").write_bytes(b"data")
+    (server / "server.properties").write_text(
+        "level-name=../escape\n", encoding="utf-8"
+    )
+
+    result = make_archive(server, tmp_path / "data")
+
+    assert result.included_paths == ("world",)

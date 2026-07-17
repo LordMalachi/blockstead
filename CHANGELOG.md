@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Protect worlds whose folder comes from a custom `level-name` (including
+  Paper's suffixed dimension folders) instead of only the vanilla `world*`
+  convention.
+- Verify restores against the checksum recorded in Blockstead's database, not
+  only the manifest beside the archive, and reject manifests whose world list
+  points at parent or hidden paths.
+
+- Add a validated raw editor for `server.properties` behind an Advanced
+  section: secret values never reach the browser, every problem is reported
+  with its line number, and each save is revision-checked, snapshotted, and
+  atomically applied.
+
 - Write a manifest with a SHA-256 checksum beside every world backup and show
   the verification state in the Backup Center.
 - Add a staged, verified restore workflow: preview what a restore will replace,

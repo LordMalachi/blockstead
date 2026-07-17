@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
-import type { SettingEntry, SettingsApplyResult, SettingsPreview, SettingsView } from "../../api/client";
+import type { RawSettingsApplyResult, RawSettingsPreview, RawSettingsView, SettingEntry, SettingsApplyResult, SettingsPreview, SettingsView } from "../../api/client";
 import { SettingsPanel } from "./SettingsPanel";
 
 const entries: SettingEntry[] = [
@@ -65,4 +65,81 @@ test("previews a typed diff and applies it with a recovery snapshot", async () =
     "/api/v1/profiles/profile-1/settings",
     expect.objectContaining({ method: "PUT" }),
   ));
+});
+
+const RAW_CONTENT = "# family server\nmotd=Home server\nrcon.password=••••••••\n";
+const RAW_REVISION = "c".repeat(64);
+const rawView: RawSettingsView = {
+  present: true,
+  editable: true,
+  problem: null,
+  revision: RAW_REVISION,
+  content: RAW_CONTENT,
+  secret_keys: ["rcon.password"],
+};
+const rawValid: RawSettingsPreview = {
+  revision: RAW_REVISION,
+  valid: true,
+  problems: [],
+  no_changes: false,
+  changed_known: [{ key: "motd", label: "Server list message", category: "Players", before: "Home server", after: "Neighbors welcome", restart_required: true }],
+  removed_known: [],
+  other_lines_changed: false,
+  restart_required: true,
+};
+const rawApplied: RawSettingsApplyResult = {
+  snapshot_name: "raw-snapshot.properties",
+  previous_revision: RAW_REVISION,
+  revision: "d".repeat(64),
+  changed_known: rawValid.changed_known,
+  removed_known: [],
+  other_lines_changed: false,
+  restart_required: true,
+  view: appliedView,
+};
+
+function rawFetchMock(preview: RawSettingsPreview) {
+  return vi.fn((url: string, init?: RequestInit) => {
+    if (url.endsWith("/settings/raw/preview")) return response(preview);
+    if (url.endsWith("/settings/raw") && init?.method === "PUT") return response(rawApplied);
+    if (url.endsWith("/settings/raw")) return response(rawView);
+    return response(view);
+  });
+}
+
+test("raw editor hides secrets, validates, and saves with a recovery copy", async () => {
+  const fetchMock = rawFetchMock(rawValid);
+  renderPanel(fetchMock);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Open raw editor" }));
+  const editor = await screen.findByLabelText("server.properties content");
+  expect(editor).toHaveValue(RAW_CONTENT);
+  expect(screen.getByText(/appear as •••••••• and stay unchanged/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Save file" })).toBeDisabled();
+
+  fireEvent.change(editor, { target: { value: RAW_CONTENT.replace("Home server", "Neighbors welcome") } });
+  fireEvent.click(screen.getByRole("button", { name: "Check changes" }));
+
+  expect(await screen.findByText(/Checks passed/)).toBeVisible();
+  expect(screen.getByText(/Changes Server list message/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Save file" }));
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/settings/raw",
+    expect.objectContaining({ method: "PUT" }),
+  ));
+  expect(await screen.findByText(/Recovery snapshot raw-snapshot\.properties/)).toBeVisible();
+});
+
+test("raw editor lists validation problems and blocks saving", async () => {
+  const invalid: RawSettingsPreview = { ...rawValid, valid: false, problems: ["Line 2: Player limit must be at least 1."], changed_known: [] };
+  renderPanel(rawFetchMock(invalid));
+
+  fireEvent.click(await screen.findByRole("button", { name: "Open raw editor" }));
+  const editor = await screen.findByLabelText("server.properties content");
+  fireEvent.change(editor, { target: { value: "max-players=-5\n" } });
+  fireEvent.click(screen.getByRole("button", { name: "Check changes" }));
+
+  expect(await screen.findByText("Line 2: Player limit must be at least 1.")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Save file" })).toBeDisabled();
 });

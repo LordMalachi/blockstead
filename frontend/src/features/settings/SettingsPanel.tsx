@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type SettingChange, type SettingEntry, type SettingsApplyResult, type SettingsPreview, type SettingsView } from "../../api/client";
+import { api, type RawSettingsApplyResult, type RawSettingsPreview, type RawSettingsView, type SettingChange, type SettingEntry, type SettingsApplyResult, type SettingsPreview, type SettingsView } from "../../api/client";
 import { Button } from "../../components/Button";
 
 type DraftValue = string | boolean;
@@ -20,6 +20,69 @@ function inputFor(entry: SettingEntry, value: DraftValue, set: (value: DraftValu
   if (entry.type === "boolean") return <label className="setting-toggle"><input type="checkbox" aria-label={entry.label} checked={value === true} onChange={event => set(event.target.checked)} /><span>{value === true ? "On" : "Off"}</span></label>;
   if (entry.options.length) return <select aria-label={entry.label} value={String(value)} onChange={event => set(event.target.value)}>{entry.options.map(option => <option key={option} value={option}>{option[0].toUpperCase() + option.slice(1)}</option>)}</select>;
   return <input aria-label={entry.label} type={entry.type === "integer" ? "number" : "text"} min={entry.minimum ?? undefined} max={entry.maximum ?? undefined} value={String(value)} onChange={event => set(event.target.value)} />;
+}
+
+function RawEditor({ profileId, onSaved }: { profileId: string; onSaved: (result: RawSettingsApplyResult) => void }) {
+  const cache = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState<string | null>(null);
+  const raw = useQuery({
+    queryKey: ["settings-raw", profileId],
+    queryFn: () => api<RawSettingsView>(`/profiles/${profileId}/settings/raw`),
+    enabled: open,
+  });
+  useEffect(() => { setOpen(false); setText(null); }, [profileId]);
+  const view = raw.data;
+  const content = text ?? view?.content ?? "";
+  const check = useMutation({
+    mutationFn: (payload: { revision: string; content: string }) => api<RawSettingsPreview>(`/profiles/${profileId}/settings/raw/preview`, { method: "POST", body: JSON.stringify(payload) }),
+  });
+  const save = useMutation({
+    mutationFn: (payload: { revision: string; content: string }) => api<RawSettingsApplyResult>(`/profiles/${profileId}/settings/raw`, { method: "PUT", body: JSON.stringify(payload) }),
+    onSuccess: result => {
+      setOpen(false);
+      setText(null);
+      check.reset();
+      void cache.invalidateQueries({ queryKey: ["settings-raw", profileId] });
+      onSaved(result);
+    },
+    onError: () => void cache.invalidateQueries({ queryKey: ["settings-raw", profileId] }),
+  });
+  const checked = check.data && check.variables?.content === content ? check.data : null;
+
+  function close() { setOpen(false); setText(null); check.reset(); save.reset(); }
+
+  return <section className="raw-editor" aria-label="Advanced raw editor">
+    <div className="section-heading"><div><p className="eyebrow">Advanced</p><h3>Raw file editor</h3></div><span>Recovery protected</span></div>
+    {!open && <>
+      <p className="muted-note">Edit the complete server.properties file. Every save is validated first and creates a private recovery snapshot; hidden secret values never reach the browser.</p>
+      <div className="settings-actions"><Button className="button--secondary" onClick={() => setOpen(true)}>Open raw editor</Button></div>
+    </>}
+    {open && (raw.isLoading
+      ? <p className="empty-note">Loading server.properties…</p>
+      : !view?.editable
+        ? <><p className="empty-note">{view?.problem ?? "This file cannot be edited right now."}</p><div className="settings-actions"><Button className="button--quiet" onClick={close}>Close</Button></div></>
+        : <>
+          {view.secret_keys.length > 0 && <p className="muted-note">Hidden values ({view.secret_keys.join(", ")}) appear as •••••••• and stay unchanged unless you type a new value over them.</p>}
+          <textarea className="raw-editor__text" aria-label="server.properties content" rows={14} spellCheck={false} value={content} onChange={event => { setText(event.target.value); save.reset(); }} />
+          <div className="settings-actions">
+            <Button className="button--secondary" disabled={check.isPending} onClick={() => { if (view.revision) check.mutate({ revision: view.revision, content }); }}>{check.isPending ? "Checking…" : "Check changes"}</Button>
+            <Button disabled={!checked?.valid || checked.no_changes || save.isPending} onClick={() => { if (view.revision) save.mutate({ revision: view.revision, content }); }}>{save.isPending ? "Saving safely…" : "Save file"}</Button>
+            <Button className="button--quiet" disabled={save.isPending} onClick={close}>Close</Button>
+          </div>
+          {checked && !checked.valid && <ul className="raw-problems" aria-label="Validation problems">{checked.problems.map(problem => <li key={problem} className="error">{problem}</li>)}</ul>}
+          {checked?.valid && (checked.no_changes
+            ? <p className="muted-note">Nothing has changed yet.</p>
+            : <p className="success" role="status">
+                Checks passed.
+                {checked.changed_known.length > 0 && ` Changes ${checked.changed_known.map(change => change.label).join(", ")}.`}
+                {checked.removed_known.length > 0 && ` Removes ${checked.removed_known.join(", ")}.`}
+                {checked.other_lines_changed && " Other lines changed."}
+                {checked.restart_required && " Takes effect after the server restarts."}
+              </p>)}
+          {(check.error || save.error) && <p className="error" role="alert">{check.error?.message ?? save.error?.message}</p>}
+        </>)}
+  </section>;
 }
 
 export function SettingsPanel({ profileId, running }: { profileId: string; running: boolean }) {
@@ -97,6 +160,10 @@ export function SettingsPanel({ profileId, running }: { profileId: string; runni
       {apply.error && <p className="error" role="alert">{apply.error.message}</p>}
       <div className="settings-actions"><Button disabled={apply.isPending} onClick={() => apply.mutate(reviewRequest)}>{apply.isPending ? "Saving safely…" : "Apply changes"}</Button><Button className="button--quiet" disabled={apply.isPending} onClick={() => { setReviewRequest(null); preview.reset(); }}>Keep editing</Button></div>
     </section>}
-    <p className="muted-note">Comments, unknown keys, and ordering are preserved. Every write creates a private recovery snapshot. Advanced raw editing remains a later step.</p>
+    <p className="muted-note">Comments, unknown keys, and ordering are preserved. Every write creates a private recovery snapshot.</p>
+    <RawEditor profileId={profileId} onSaved={result => {
+      cache.setQueryData(["settings", profileId], result.view);
+      setNotice(`Raw file saved. Recovery snapshot ${result.snapshot_name} was created.${running && result.restart_required ? " Restart the server when convenient to apply it." : ""}`);
+    }} />
   </section>;
 }

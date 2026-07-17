@@ -36,8 +36,8 @@ remain available without dominating normal server care.
 | --- | --- | --- |
 | 0. Visual foundation | Complete | Cohesive responsive UI, sidebar navigation, clearer server controls, and improved first-run experience |
 | 1. Server workspace navigation | Complete | Profile-aware server workspaces, a server-card landing page, and routed tools |
-| 2. Backup Center | In progress | Manual and scheduled backups, history, retention, verification, and staged restore |
-| 3. Guided settings editor | In progress | Safe typed editing with search, validation, diff preview, and automatic snapshots |
+| 2. Backup Center | Complete | Manual and scheduled backups, history, manifests, checksums, retention, verification, and staged restore |
+| 3. Guided settings editor | Complete | Safe typed editing with search, validation, diff preview, automatic snapshots, and a validated raw editor |
 | 4. Owner-focused overview | Planned | Useful server health, player, backup, schedule, storage, and update information |
 | 5. Automation upgrade | Planned | Weekly schedules, readable action sequences, previews, and execution history |
 | 6. Activity and notifications | Planned | Human-readable audit history and important operational alerts |
@@ -64,7 +64,6 @@ Blockstead already provides:
 
 The main limitations to address are:
 
-- advanced server settings still require a raw editor or direct file access;
 - the schedule panel is basic, with a single daily start and stop time;
 - metrics show current values rather than useful history or trends;
 - operational events exist internally but are not presented as an activity feed;
@@ -149,7 +148,7 @@ Home
 
 ## Milestone 2: Backup Center
 
-**Status: In progress**
+**Status: Complete**
 
 ### Why
 
@@ -183,7 +182,7 @@ normal maintenance rather than exist only as a scheduled side effect.
 
 ## Milestone 3: guided settings editor
 
-**Status: In progress**
+**Status: Complete**
 
 ### Why
 
@@ -202,7 +201,7 @@ cover normal ownership tasks without forcing the user into a raw file editor.
 - [x] Show a diff and pending restart summary before applying changes.
 - [x] Create an automatic configuration snapshot before every write.
 - [x] Use revisions or optimistic concurrency to prevent stale overwrites.
-- [ ] Add an advanced raw editor with validation and a recovery copy.
+- [x] Add an advanced raw editor with validation and a recovery copy.
 
 ### Acceptance criteria
 
@@ -356,6 +355,79 @@ Before marking any milestone complete:
 
 ## Progress log
 
+- **2026-07-17 — Linux and Minecraft compatibility pass.** Reviewed the new
+  Backup Center and raw editor against real server layouts rather than the
+  test fixture. Backups now read `level-name` from `server.properties`
+  (validated against the guided editor's safe pattern) and protect those
+  folders plus the vanilla `world*` convention, covering Paper's
+  `survival`/`survival_nether`/`survival_the_end` style layouts that the old
+  glob missed entirely; an unsafe `level-name` is ignored. Restore
+  verification now also requires the manifest checksum to equal the SHA-256
+  Blockstead recorded in its own database at creation time, so a
+  consistently rewritten archive-plus-manifest pair in the backup folder is
+  still refused — relevant because the managed Minecraft process runs as the
+  same service account. Manifest world lists that point at parent, hidden,
+  or path-separated names are rejected before any rename can occur. The raw
+  editor is covered by a byte-for-byte round-trip test of a file exactly as
+  vanilla writes it: timestamp comments, `\uXXXX` escapes, empty values such
+  as `level-seed=` and `rcon.password=` (an empty secret is not redacted),
+  and JSON-valued keys like `generator-settings={}`. Verification: strict
+  backend lint and type checks, 146 backend tests, frontend tests, the
+  Playwright workflow against the real backend, and `git diff --check`.
+  Follow-up: restoring a backup whose recorded world folders no longer match
+  the server's current `level-name` restores the folders faithfully but the
+  preview does not yet warn about the mismatch.
+- **2026-07-17 — Guided settings editor complete (advanced raw editor).** Added
+  the validated raw editor for `server.properties`, closing Milestone 3. The
+  raw view returns the complete file with secret-bearing values (password,
+  secret, token keys) replaced by a •••••••• placeholder, so secrets never
+  reach the browser; on save, untouched placeholders are swapped back to the
+  real values from the current file, a placeholder with no original is
+  refused, and a newly typed secret value is written. Preview validation
+  reports every problem with its line number — malformed lines, empty or
+  repeated keys, control characters, typed range and option violations for
+  known settings, and the allowlist cross-rule — and summarizes changed and
+  removed known settings plus whether other lines changed. Saving reuses the
+  guided editor's protections: SHA-256 revision conflict detection, a private
+  recovery snapshot of the original bytes, and an fsynced atomic replacement
+  that re-checks the source did not change. The Settings page gains an
+  Advanced section with the editor, check-before-save flow, and problem list;
+  a successful save refreshes the guided view. Verification: strict backend
+  lint and type checks, 141 backend tests (excluding the known local
+  Python 3.10 conflict in `test_version.py`) including secret round-trip,
+  orphan placeholder, invalid content, stale revision, and no-change refusal
+  cases, frontend lint, 28 frontend tests, production build, the Playwright
+  workflow against the real backend, regenerated documentation screenshots
+  with visual review, and `git diff --check`. Follow-up: recovery snapshots
+  can be created but not yet browsed or restored from the dashboard; that
+  belongs to the Milestone 7 file workspace.
+- **2026-07-17 — Backup Center complete.** Every backup now writes a manifest
+  beside its archive (profile, distribution, Minecraft version, included and
+  excluded paths, application version, SHA-256), both atomically; a backup
+  whose manifest cannot be written is treated as failed. Restores are staged
+  and verified: the preview endpoint confirms the checksum, lists the world
+  folders that will be replaced, and checks free disk with a margin; the
+  restore endpoint refuses while the server runs, a backup is in progress, or
+  another restore holds the profile, rejects archives containing traversal,
+  absolute paths, links, or members outside the recorded worlds, extracts into
+  a staging directory without preserving archive attributes, swaps worlds by
+  atomic rename, keeps the replaced folders as `world.pre-restore-<stamp>`,
+  and walks completed swaps back if a rename fails. Starting a server is
+  refused during its restore. Per-profile retention (count, age, total size —
+  defaults keep 10) runs after each manual and scheduled backup and via the
+  new policy endpoints; expired records stay in history and the newest
+  completed backup on disk always survives. The Backup Center adds the restore
+  review, retention form, and expired badges; the overview shows a Last backup
+  card with never/stale warnings. Verification: strict backend lint and type
+  checks, 135 backend tests (excluding the known local Python 3.10 conflict in
+  `test_version.py`) including hostile-archive, tampered-checksum,
+  failed-swap-rollback, interrupted-backup, and retention cases, frontend
+  lint, 26 frontend tests, production build, the Playwright workflow against
+  the real backend, regenerated documentation screenshots with visual review,
+  and `git diff --check`. Follow-ups: pre-restore folders accumulate until the
+  owner removes them (a cleanup action belongs in the Files workspace),
+  `loader_version` in manifests stays null until profiles record it, and the
+  restore UI is covered by unit and API tests but not the e2e flow.
 - **2026-07-17 — Linux Mint ease-of-use pass complete.** Split the README into
   an owner-facing setup guide and moved the full specification to
   `docs/product-spec.md` (contributor and agent documents now point there).

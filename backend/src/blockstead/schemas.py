@@ -84,6 +84,11 @@ class SettingChangeRequest(BaseModel):
     value: str | int | bool
 
 
+class RawSettingsUpdateRequest(BaseModel):
+    revision: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    content: str = Field(max_length=1_000_000)
+
+
 class SettingsUpdateRequest(BaseModel):
     revision: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
     changes: list[SettingChangeRequest] = Field(min_length=1, max_length=32)

@@ -56,8 +56,7 @@ function respond(body: unknown) {
 }
 
 function renderPanel({ records = [completed], policy = defaultPolicy, preview = verifiedPreview, running = false }: Handlers = {}) {
-  vi.stubGlobal("fetch", vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     if (url.endsWith("/backup-policy") && method === "GET") return Promise.resolve(respond(policy));
     if (url.endsWith("/backup-policy") && method === "PUT") return Promise.resolve(respond({ ...policy, expired_now: 1 }));

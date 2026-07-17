@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import tarfile
 from dataclasses import dataclass
@@ -75,6 +76,51 @@ def _sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
+#: The safe shape Blockstead accepts for a configured world folder name; it
+#: mirrors the guided editor's level-name rule and contains no glob or path
+#: metacharacters.
+_LEVEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+_PROPERTIES_LIMIT = 1_000_000
+
+
+def _configured_level_name(server_directory: Path) -> str | None:
+    """The level-name from server.properties, when present and safely shaped."""
+
+    path = server_directory / "server.properties"
+    try:
+        if not path.is_file() or path.stat().st_size > _PROPERTIES_LIMIT:
+            return None
+        text = path.read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "!")) or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        if key.strip() == "level-name":
+            value = value.strip()
+            return value if _LEVEL_NAME.fullmatch(value) else None
+    return None
+
+
+def _world_roots(server_directory: Path) -> list[Path]:
+    """World folders to protect: level-name based (Paper adds suffixed
+    dimension folders) plus the vanilla ``world*`` convention."""
+
+    prefixes = {"world"}
+    level_name = _configured_level_name(server_directory)
+    if level_name:
+        prefixes.add(level_name)
+    roots = {
+        path
+        for prefix in prefixes
+        for path in server_directory.glob(f"{prefix}*")
+        if path.is_dir() and not path.is_symlink()
+    }
+    return sorted(roots, key=lambda path: path.name)
+
+
 def create_backup_archive(
     profile_id: str,
     server_directory: Path,
@@ -88,14 +134,7 @@ def create_backup_archive(
     application_version: str,
     trigger: str,
 ) -> BackupArchive:
-    roots = sorted(
-        (
-            path
-            for path in server_directory.glob("world*")
-            if path.is_dir() and not path.is_symlink()
-        ),
-        key=lambda path: path.name,
-    )
+    roots = _world_roots(server_directory)
     if not roots:
         raise BackupError("No world directory was found for this server.")
 
@@ -188,9 +227,19 @@ def _load_manifest(manifest_path: Path) -> dict[str, object]:
 
 
 def verify_backup_archive(
-    destination_root: Path, profile_id: str, file_name: str, manifest_name: str
+    destination_root: Path,
+    profile_id: str,
+    file_name: str,
+    manifest_name: str,
+    expected_sha256: str | None = None,
 ) -> dict[str, object]:
-    """Confirm the archive matches its manifest; returns the manifest."""
+    """Confirm the archive matches its manifest; returns the manifest.
+
+    ``expected_sha256`` is the checksum Blockstead recorded in its own
+    database when the backup was created. Requiring it to match means a
+    rewritten archive-plus-manifest pair in the backup folder still cannot
+    pass verification.
+    """
 
     archive_path = _stored_file(destination_root, profile_id, file_name)
     manifest_path = _stored_file(destination_root, profile_id, manifest_name)
@@ -202,6 +251,11 @@ def verify_backup_archive(
         or not isinstance(described.get("sha256"), str)
     ):
         raise RestoreError("This backup's manifest has an unsupported format.")
+    if expected_sha256 is not None and described["sha256"] != expected_sha256:
+        raise RestoreError(
+            "This backup's manifest does not match Blockstead's records "
+            "and will not be restored."
+        )
     if not archive_path.is_file():
         raise RestoreError("This backup's archive file no longer exists.")
     size_bytes = archive_path.stat().st_size
@@ -243,7 +297,16 @@ def _manifest_roots(manifest: dict[str, object]) -> tuple[str, ...]:
     if (
         not isinstance(included, list)
         or not included
-        or not all(isinstance(item, str) and item and "/" not in item for item in included)
+        or not all(
+            isinstance(item, str)
+            # A tampered manifest must not be able to point the world swap at
+            # a parent, hidden, or nested path.
+            and item
+            and not item.startswith(".")
+            and "/" not in item
+            and "\\" not in item
+            for item in included
+        )
     ):
         raise RestoreError("This backup's manifest has an unsupported format.")
     return tuple(included)
@@ -255,8 +318,11 @@ def plan_restore(
     file_name: str,
     manifest_name: str,
     server_directory: Path,
+    expected_sha256: str | None = None,
 ) -> RestorePlan:
-    manifest = verify_backup_archive(destination_root, profile_id, file_name, manifest_name)
+    manifest = verify_backup_archive(
+        destination_root, profile_id, file_name, manifest_name, expected_sha256
+    )
     roots = _manifest_roots(manifest)
     archive_path = _stored_file(destination_root, profile_id, file_name)
     total_bytes = 0
@@ -304,10 +370,18 @@ def perform_restore(
     manifest_name: str,
     server_directory: Path,
     now: datetime,
+    expected_sha256: str | None = None,
 ) -> RestoreResult:
     """Extract to staging, validate, then swap worlds while preserving originals."""
 
-    plan = plan_restore(destination_root, profile_id, file_name, manifest_name, server_directory)
+    plan = plan_restore(
+        destination_root,
+        profile_id,
+        file_name,
+        manifest_name,
+        server_directory,
+        expected_sha256,
+    )
     archive_path = _stored_file(destination_root, profile_id, file_name)
     staging = server_directory / _STAGING_NAME
     if staging.exists():

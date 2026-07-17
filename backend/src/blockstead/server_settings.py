@@ -207,6 +207,37 @@ class SettingsApplyResult(BaseModel):
     view: SettingsView
 
 
+class RawSettingsView(BaseModel):
+    present: bool
+    editable: bool
+    problem: str | None
+    revision: str | None
+    content: str | None
+    secret_keys: list[str]
+
+
+class RawSettingsPreview(BaseModel):
+    revision: str
+    valid: bool
+    problems: list[str]
+    no_changes: bool
+    changed_known: list[SettingDiff]
+    removed_known: list[str]
+    other_lines_changed: bool
+    restart_required: bool
+
+
+class RawSettingsApplyResult(BaseModel):
+    snapshot_name: str
+    previous_revision: str
+    revision: str
+    changed_known: list[SettingDiff]
+    removed_known: list[str]
+    other_lines_changed: bool
+    restart_required: bool
+    view: SettingsView
+
+
 def _read_limited(path: Path) -> bytes | None:
     try:
         if not path.is_file() or path.stat().st_size > MAX_FILE_BYTES:
@@ -274,6 +305,259 @@ def read_settings(server_directory: Path) -> SettingsView:
         revision=_revision(raw),
         settings=settings,
         other_keys=other,
+    )
+
+
+SECRET_PLACEHOLDER = "••••••••"  # noqa: S105  # display mask, not a credential
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _is_secret(key: str) -> bool:
+    lowered = key.lower()
+    return any(marker in lowered for marker in SECRET_MARKERS)
+
+
+def _split_line(content: str) -> tuple[str, str] | None:
+    stripped = content.strip()
+    if not stripped or stripped.startswith(("#", "!")) or "=" not in stripped:
+        return None
+    key, _, value = stripped.partition("=")
+    return key.strip(), value.strip()
+
+
+def _lines_with_endings(text: str) -> list[tuple[str, str]]:
+    lines = []
+    for line in text.splitlines(keepends=True):
+        ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+        lines.append((line[: -len(ending)] if ending else line, ending))
+    return lines
+
+
+def read_raw_settings(server_directory: Path) -> RawSettingsView:
+    """The complete file for advanced editing, with secret values hidden."""
+
+    raw = _read_limited(server_directory / "server.properties")
+    if raw is None:
+        return RawSettingsView(
+            present=False,
+            editable=False,
+            problem="No readable server.properties file was found in this profile folder.",
+            revision=None,
+            content=None,
+            secret_keys=[],
+        )
+    revision = _revision(raw)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return RawSettingsView(
+            present=True,
+            editable=False,
+            problem="server.properties is not valid UTF-8, so raw editing was refused.",
+            revision=revision,
+            content=None,
+            secret_keys=[],
+        )
+    secret_keys: list[str] = []
+    output: list[str] = []
+    for content, ending in _lines_with_endings(text):
+        parsed = _split_line(content)
+        if parsed and _is_secret(parsed[0]) and parsed[1]:
+            equals = content.index("=")
+            content = f"{content[: equals + 1]}{SECRET_PLACEHOLDER}"
+            if parsed[0] not in secret_keys:
+                secret_keys.append(parsed[0])
+        output.append(content + ending)
+    return RawSettingsView(
+        present=True,
+        editable=True,
+        problem=None,
+        revision=revision,
+        content="".join(output),
+        secret_keys=sorted(secret_keys),
+    )
+
+
+def _restore_secrets(original_text: str, submitted: str, problems: list[str]) -> str:
+    """Swap hidden placeholders back to the real values from the current file."""
+
+    originals: dict[str, list[str]] = {}
+    for line in original_text.splitlines():
+        parsed = _split_line(line)
+        if parsed and _is_secret(parsed[0]) and parsed[1]:
+            originals.setdefault(parsed[0], []).append(parsed[1])
+    output: list[str] = []
+    for number, (content, ending) in enumerate(_lines_with_endings(submitted), start=1):
+        parsed = _split_line(content)
+        if parsed and _is_secret(parsed[0]) and parsed[1] == SECRET_PLACEHOLDER:
+            remaining = originals.get(parsed[0])
+            if remaining:
+                equals = content.index("=")
+                content = f"{content[: equals + 1]}{remaining.pop(0)}"
+            else:
+                problems.append(
+                    f"Line {number}: the hidden value for {parsed[0]} is not available. "
+                    "Enter a real value or remove the line."
+                )
+        output.append(content + ending)
+    return "".join(output)
+
+
+def _validate_raw_text(text: str) -> tuple[dict[str, str], list[str]]:
+    problems: list[str] = []
+    if _CONTROL_CHARACTERS.search(text):
+        problems.append("The file contains control characters that are not allowed.")
+    values: dict[str, str] = {}
+    for number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "!")):
+            continue
+        if "=" not in stripped:
+            problems.append(f"Line {number} is not a key=value setting or a # comment.")
+            continue
+        key, _, value = stripped.partition("=")
+        key = key.strip()
+        if not key:
+            problems.append(f"Line {number} is missing a setting name before '='.")
+            continue
+        if key in values:
+            problems.append(f"Line {number} repeats the setting {key}.")
+            continue
+        values[key] = value.strip()
+        definition = KNOWN_SETTINGS.get(key)
+        if definition is None:
+            continue
+        typed = _typed_value(definition.type, value.strip())
+        if typed is None:
+            expectation = (
+                "true or false" if definition.type == "boolean" else "a whole number"
+            )
+            problems.append(f"Line {number}: {definition.label} must be {expectation}.")
+            continue
+        try:
+            _validate_value(key, typed)
+        except SettingsValidationError as exc:
+            problems.append(f"Line {number}: {exc}")
+    if (
+        _typed_value("boolean", values.get("enforce-whitelist", "")) is True
+        and _typed_value("boolean", values.get("white-list", "")) is False
+    ):
+        problems.append(
+            "Immediate allowlist enforcement requires the allowlist to be enabled."
+        )
+    return values, problems
+
+
+def _raw_summary(
+    original_text: str, original_values: dict[str, str], restored: str
+) -> tuple[list[SettingDiff], list[str], bool]:
+    new_values = _values(restored)
+    changed = [
+        SettingDiff(
+            key=key,
+            label=definition.label,
+            category=definition.category,
+            before=_typed_value(definition.type, original_values[key])
+            if key in original_values
+            else None,
+            after=after,
+            restart_required=definition.restart_required,
+        )
+        for key, definition in KNOWN_SETTINGS.items()
+        if key in new_values
+        and (after := _typed_value(definition.type, new_values[key])) is not None
+        and after
+        != (
+            _typed_value(definition.type, original_values[key])
+            if key in original_values
+            else None
+        )
+    ]
+    removed = [
+        key
+        for key in KNOWN_SETTINGS
+        if key in original_values and key not in new_values
+    ]
+
+    def other_lines(text: str) -> list[str]:
+        kept = []
+        for line in text.splitlines():
+            parsed = _split_line(line)
+            if parsed and parsed[0] in KNOWN_SETTINGS:
+                continue
+            kept.append(line.rstrip("\r"))
+        return kept
+
+    other_changed = other_lines(original_text) != other_lines(restored)
+    return changed, removed, other_changed
+
+
+def _plan_raw_update(
+    server_directory: Path, expected_revision: str, content: str
+) -> tuple[Path, bytes, str, RawSettingsPreview]:
+    path, raw, text, values = _source(server_directory)
+    current_revision = _revision(raw)
+    if current_revision != expected_revision:
+        raise SettingsConflictError(
+            "server.properties changed after it was opened. Reload settings and review again."
+        )
+    problems: list[str] = []
+    restored = _restore_secrets(text, content, problems)
+    if restored and not restored.endswith(("\n", "\r")):
+        restored += "\r\n" if "\r\n" in text else "\n"
+    _, more_problems = _validate_raw_text(restored)
+    problems.extend(more_problems)
+    changed, removed, other_changed = _raw_summary(text, values, restored)
+    preview = RawSettingsPreview(
+        revision=current_revision,
+        valid=not problems,
+        problems=problems,
+        no_changes=restored.rstrip("\r\n") == text.rstrip("\r\n"),
+        changed_known=changed,
+        removed_known=removed,
+        other_lines_changed=other_changed,
+        restart_required=bool(
+            any(change.restart_required for change in changed) or removed or other_changed
+        ),
+    )
+    return path, raw, restored, preview
+
+
+def preview_raw_settings(
+    server_directory: Path, expected_revision: str, content: str
+) -> RawSettingsPreview:
+    return _plan_raw_update(server_directory, expected_revision, content)[3]
+
+
+def apply_raw_settings(
+    server_directory: Path,
+    snapshot_root: Path,
+    profile_id: str,
+    expected_revision: str,
+    content: str,
+) -> RawSettingsApplyResult:
+    path, raw, restored, preview = _plan_raw_update(
+        server_directory, expected_revision, content
+    )
+    if preview.problems:
+        raise SettingsValidationError(" ".join(preview.problems))
+    if preview.no_changes:
+        raise SettingsValidationError("Nothing changed in server.properties.")
+
+    snapshot_name = _write_snapshot(snapshot_root, profile_id, raw)
+    _replace_atomically(server_directory, path, raw, restored.encode("utf-8"))
+
+    view = read_settings(server_directory)
+    assert view.revision is not None
+    return RawSettingsApplyResult(
+        snapshot_name=snapshot_name,
+        previous_revision=preview.revision,
+        revision=view.revision,
+        changed_known=preview.changed_known,
+        removed_known=preview.removed_known,
+        other_lines_changed=preview.other_lines_changed,
+        restart_required=preview.restart_required,
+        view=view,
     )
 
 
@@ -416,19 +700,7 @@ def _updated_text(text: str, changes: dict[str, SettingValue]) -> str:
     return "".join(output)
 
 
-def apply_settings_update(
-    server_directory: Path,
-    snapshot_root: Path,
-    profile_id: str,
-    expected_revision: str,
-    requested: dict[str, SettingValue],
-) -> SettingsApplyResult:
-    path, raw, text, preview, validated = _plan_update(
-        server_directory, expected_revision, requested
-    )
-    if not preview.changes:
-        raise SettingsValidationError("No setting values changed.")
-
+def _write_snapshot(snapshot_root: Path, profile_id: str, raw: bytes) -> str:
     snapshot_directory = snapshot_root / "settings-snapshots" / profile_id
     snapshot_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     snapshot_directory.chmod(0o700)
@@ -440,8 +712,12 @@ def apply_settings_update(
         handle.write(raw)
         handle.flush()
         os.fsync(handle.fileno())
+    return snapshot_name
 
-    updated = _updated_text(text, validated).encode("utf-8")
+
+def _replace_atomically(
+    server_directory: Path, path: Path, raw: bytes, updated: bytes
+) -> None:
     staging = server_directory / f".server.properties.{uuid4().hex}.tmp"
     try:
         with staging.open("xb") as handle:
@@ -457,6 +733,24 @@ def apply_settings_update(
     except (OSError, SettingsConflictError):
         staging.unlink(missing_ok=True)
         raise
+
+
+def apply_settings_update(
+    server_directory: Path,
+    snapshot_root: Path,
+    profile_id: str,
+    expected_revision: str,
+    requested: dict[str, SettingValue],
+) -> SettingsApplyResult:
+    path, raw, text, preview, validated = _plan_update(
+        server_directory, expected_revision, requested
+    )
+    if not preview.changes:
+        raise SettingsValidationError("No setting values changed.")
+
+    snapshot_name = _write_snapshot(snapshot_root, profile_id, raw)
+    updated = _updated_text(text, validated).encode("utf-8")
+    _replace_atomically(server_directory, path, raw, updated)
 
     view = read_settings(server_directory)
     assert view.revision is not None
