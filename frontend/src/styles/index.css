@@ -232,6 +232,13 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
 .extension-row span, .extension-row small { display: block; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }
 .row-actions { display: flex; flex-wrap: wrap; gap: .25rem; justify-content: flex-end; }
 .catalog-tools, .modpack-tools { border-top: 1px solid var(--line); padding-top: var(--space-3); }
+.shared-map-card { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(14rem,.8fr); gap: var(--space-3); margin-top: var(--space-3); padding: var(--space-3); border: 1px solid color-mix(in srgb, var(--brand) 38%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--brand) 7%, var(--surface)); }
+.shared-map-card h3 { margin: .15rem 0 .45rem; }
+.shared-map-card p { margin: 0; }
+.shared-map-card small { display: block; margin-top: .55rem; color: var(--muted); line-height: 1.45; }
+.shared-map-action { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: .45rem; padding: var(--space-2); border-left: 1px solid var(--line); }
+.shared-map-action small { margin-top: 0; }
+.shared-map-network-note { grid-column: 1 / -1; padding-top: var(--space-2); border-top: 1px solid var(--line); color: var(--muted); font-size: .82rem; }
 .catalog-results { display: grid; gap: .6rem; margin-top: var(--space-3); }
 .catalog-results article { display: flex; align-items: start; justify-content: space-between; gap: var(--space-3); border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: var(--space-3); }
 .catalog-results p { color: var(--muted); font-size: .84rem; margin: .2rem 0; }
@@ -264,7 +271,8 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
   .sidebar nav a { display: flex; white-space: nowrap; min-height: 2.4rem; padding: .5rem .7rem; }
   .sidebar nav a.active::before { inset: auto .7rem -.55rem; width: auto; height: 3px; }
   .hero { min-height: 0; }
-  .player-lists, .readiness-grid, .extension-columns, .catalog-tools, .modpack-tools { grid-template-columns: 1fr; }
+  .player-lists, .readiness-grid, .extension-columns, .catalog-tools, .modpack-tools, .shared-map-card { grid-template-columns: 1fr; }
+  .shared-map-action { border-left: 0; border-top: 1px solid var(--line); padding-inline: 0; }
   .summary-label, .brand-copy small { display: none; }
 }
 

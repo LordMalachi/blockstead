@@ -67,6 +67,28 @@ The main limitations to address are:
 - metrics show current values rather than useful history or trends;
 - operational events exist internally but are not presented as an activity feed.
 
+## Focused enhancement: shared browser map
+
+**Status: In progress**
+
+Blockstead uses [squaremap](docs/shared-map.md) as its curated shared-map
+recommendation for Paper, Fabric, and NeoForge profiles. It is a lightweight 2D
+server-side map that players share through a browser without installing a
+client mod.
+
+- [x] Compare shared-map choices and record the product decision.
+- [x] Add one-click installation through the compatibility-filtered,
+      checksum-verified Modrinth workflow.
+- [x] Recognize active and disabled squaremap jars without offering duplicate
+      installation.
+- [x] Show the default map address while the Minecraft server is running.
+- [x] Explain that Blockstead does not open the Linux firewall or router.
+- [ ] Read squaremap's generated bind address and port instead of assuming its
+      defaults.
+- [ ] Offer a backed-up low-resource profile that caps normal and background
+      rendering at one thread.
+- [ ] Check reachability and show map health before calling it available.
+
 ## Milestone 1: server workspace navigation
 
 **Status: Next**

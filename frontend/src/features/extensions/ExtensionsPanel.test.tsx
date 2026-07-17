@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
 import { ExtensionsPanel } from "./ExtensionsPanel";
@@ -14,9 +14,11 @@ const inventory: ExtensionsView = {
 };
 
 function renderPanel(stopped = true) {
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(inventory), { status: 200, headers: { "Content-Type": "application/json" } })));
+  const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(inventory), { status: 200, headers: { "Content-Type": "application/json" } }));
+  vi.stubGlobal("fetch", fetch);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}><ExtensionsPanel profileId="profile-1" stopped={stopped} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><ExtensionsPanel profileId="profile-1" stopped={stopped} /></QueryClientProvider>);
+  return fetch;
 }
 
 test("shows installed extension metadata and inventory warnings", async () => {
@@ -33,4 +35,17 @@ test("locks file changes while the server is active", async () => {
   expect(screen.getByRole("button", { name: "Disable" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Upload" })).toBeDisabled();
   expect(screen.getByText("Stop the server before changing extension files.")).toBeVisible();
+});
+
+test("installs the curated squaremap project through the verified extension endpoint", async () => {
+  const fetch = renderPanel();
+  fireEvent.click(await screen.findByRole("button", { name: "Install shared map" }));
+
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/extensions/install",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ project_id: "squaremap" }),
+    }),
+  ));
 });
