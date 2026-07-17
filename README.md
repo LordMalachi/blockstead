@@ -54,6 +54,11 @@ Blockstead manages the process around them.
 Everything else — Python, Node.js, Java 21, and the rest — is checked by the
 installer, which offers to install any missing piece for you.
 
+Docker Engine or Docker Desktop with Compose is an alternative to the native
+Linux installation. The container image includes the dashboard runtime and
+Java 21; Minecraft worlds and Blockstead data live in persistent Docker
+volumes.
+
 ## Install on Linux Mint
 
 1. Open **Terminal** and download Blockstead. Replace the example URL with the
@@ -106,6 +111,40 @@ plugins, edit loader configuration, and create or restore backups. These actions
 require authentication and CSRF protection; risky file changes are staged, checked
 for stale revisions, restricted to the selected profile, and given recovery copies
 where practical. Blockstead never exposes a general-purpose shell in the browser.
+
+## Run with Docker Compose
+
+Docker is optional. It is a convenient app wrapper on Linux, macOS, or Windows
+when you would rather keep Blockstead and Java out of the host operating system.
+
+```bash
+cp docker.env.example docker.env
+docker compose --env-file docker.env up --build -d
+```
+
+Then open <http://127.0.0.1:8765>. The Compose setup publishes Minecraft on
+port `25565` for LAN players, keeps the dashboard local to this computer, runs
+Blockstead as an unprivileged user, and stores state in two named volumes:
+
+| Volume | Contents |
+| --- | --- |
+| `blockstead-data` | Accounts, settings, audit records, and backups |
+| `blockstead-servers` | Server profiles, worlds, mods, packs, and configuration |
+
+Stop Minecraft from the dashboard before rebuilding or taking the container
+down. `docker compose down` keeps both volumes. **Do not run
+`docker compose down -v` unless you intend to delete Blockstead's data and all
+managed Minecraft servers.**
+
+```bash
+docker compose logs -f blockstead
+docker compose --env-file docker.env build --pull
+docker compose --env-file docker.env up -d
+```
+
+LAN dashboard access, existing-world imports, extra ports used by mods, volume
+backup guidance, and container limitations are covered in the
+[Docker guide](docs/docker.md).
 
 ## Everyday use
 
@@ -244,12 +283,14 @@ screenshots with `npm --prefix frontend run screenshots`. Read
 | [update.md](update.md) | Current milestone roadmap and progress log |
 | [docs/architecture.md](docs/architecture.md) | How the backend and frontend fit together |
 | [docs/threat-model.md](docs/threat-model.md) | Security boundaries and assumptions |
+| [docs/docker.md](docs/docker.md) | Docker Compose setup, storage, networking, and upgrades |
 | [docs/linux-mint-release-checklist.md](docs/linux-mint-release-checklist.md) | Manual acceptance testing before a release |
 | [CHANGELOG.md](CHANGELOG.md) | Notable changes per release |
 
 ## Legal notes
 
-Blockstead does not bundle or download Minecraft server software on its own,
-and it never accepts the Minecraft EULA for you. Blockstead is an independent
-project with no affiliation with Mojang, Microsoft, PaperMC, Fabric, or
-NeoForged.
+Blockstead does not bundle Minecraft server software, mods, or packs, and it
+never accepts the Minecraft EULA for you. When asked, it downloads selected
+server and extension files from their official or Modrinth sources. Blockstead
+is an independent project with no affiliation with Mojang, Microsoft, PaperMC,
+Fabric, QuiltMC, Forge, NeoForged, or Modrinth.

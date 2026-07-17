@@ -27,6 +27,7 @@ Everyday commands:
   logs [-f] [lines]    Show recent dashboard messages (-f follows live)
   doctor               Check for common problems and suggest fixes
   url                  Print the dashboard address
+  launch               Start the service (if stopped) and open the dashboard
 
 Service control (need sudo):
   start                Start the dashboard service
@@ -383,6 +384,55 @@ cmd_doctor() {
   (( problems == 0 )) || exit 1
 }
 
+cmd_launch() {
+  local url state ready
+  url=$(dashboard_url)
+  state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
+
+  if [[ $state == active ]]; then
+    if [[ -n ${DISPLAY:-} || -n ${WAYLAND_DISPLAY:-} ]]; then
+      xdg-open "$url"
+    else
+      echo "Blockstead dashboard is running at: $url"
+    fi
+    exit 0
+  fi
+
+  if [[ -n ${DISPLAY:-} || -n ${WAYLAND_DISPLAY:-} ]] && command -v zenity >/dev/null; then
+    if zenity --question --title="Blockstead" \
+      --text="The Blockstead Minecraft Dashboard service is not running.\n\nWould you like to start it now?" \
+      --ok-label="Start Service" --cancel-label="Cancel" --width=350; then
+      
+      if pkexec systemctl start "$SERVICE"; then
+        ready=false
+        for _ in {1..20}; do
+          if [[ $(systemctl is-active "$SERVICE" 2>/dev/null || true) == active ]]; then
+            ready=true
+            break
+          fi
+          sleep 0.5
+        done
+        
+        if [[ $ready == true ]]; then
+          xdg-open "$url"
+        else
+          zenity --error --title="Blockstead" --text="Blockstead service was started but did not become active in time. Check status with:\nblockstead doctor"
+          exit 1
+        fi
+      else
+        zenity --error --title="Blockstead" --text="Failed to start the Blockstead service or authorization was cancelled."
+        exit 1
+      fi
+    else
+      exit 0
+    fi
+  else
+    echo "Blockstead service is not running."
+    echo "Start it with: sudo blockstead start"
+    exit 1
+  fi
+}
+
 # --- dispatch ---------------------------------------------------------------
 
 command=${1:-help}
@@ -391,6 +441,7 @@ case $command in
   status)      cmd_status "$@" ;;
   logs)        cmd_logs "$@" ;;
   url)         dashboard_url ;;
+  launch)      cmd_launch "$@" ;;
   start)       cmd_start "$@" ;;
   stop)        cmd_stop "$@" ;;
   restart)     cmd_restart "$@" ;;

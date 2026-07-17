@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Install Blockstead
+Comment=Install or update the Blockstead Minecraft dashboard
+Exec=bash -c 'DIR="%k"; DIR="${DIR#file://}"; DIR="$(dirname "$DIR")"; "$DIR/scripts/gui-install-wrapper.sh"'
+Icon=system-software-install
+Terminal=false
+Categories=System;

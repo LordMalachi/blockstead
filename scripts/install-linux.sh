@@ -303,8 +303,20 @@ trap - ERR INT TERM
 install -o root -g root -m 0755 "$ROOT/packaging/bin/blockstead" "$CLI_PATH"
 install -d -o root -g root -m 0755 "$(dirname "$ICON_PATH")"
 install -o root -g root -m 0644 "$ROOT/packaging/icons/blockstead.svg" "$ICON_PATH"
-sed "s|@DASHBOARD_URL@|$health_url|" "$ROOT/packaging/desktop/blockstead.desktop" >"$DESKTOP_PATH"
-chmod 0644 "$DESKTOP_PATH"
+install -o root -g root -m 0644 "$ROOT/packaging/desktop/blockstead.desktop" "$DESKTOP_PATH"
+
+# Install a desktop launcher shortcut for the user for easy graphical access
+if [[ -n "${SUDO_USER:-}" ]]; then
+  USER_DESKTOP=$(runuser -u "$SUDO_USER" -- xdg-user-dir DESKTOP 2>/dev/null || echo "")
+  if [[ -n "$USER_DESKTOP" && -d "$USER_DESKTOP" ]]; then
+    DESKTOP_ICON="$USER_DESKTOP/blockstead.desktop"
+    echo "Installing launcher shortcut to $DESKTOP_ICON..."
+    install -o "$SUDO_USER" -g "$SUDO_USER" -m 0755 "$ROOT/packaging/desktop/blockstead.desktop" "$DESKTOP_ICON"
+    if command -v gio >/dev/null; then
+      runuser -u "$SUDO_USER" -- gio set "$DESKTOP_ICON" metadata::trusted true || true
+    fi
+  fi
+fi
 if command -v update-desktop-database >/dev/null; then
   update-desktop-database -q /usr/share/applications || true
 fi

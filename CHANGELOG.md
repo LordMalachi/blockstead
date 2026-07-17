@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add an optional Docker Compose app wrapper with a multi-stage dashboard build,
+  Java 21 runtime, automatic database migrations, non-root execution, dropped
+  capabilities, persistent data/server volumes, health checks, and graceful
+  container shutdown documentation.
 - Add dashboard-driven Vanilla, Fabric, Forge, Quilt, NeoForge, and Paper
   profile creation from official metadata and downloads; persist exact loader
   versions and run required official loader installers without a shell inside

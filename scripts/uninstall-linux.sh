@@ -95,6 +95,12 @@ fi
 
 systemctl disable --now "$SERVICE" 2>/dev/null || true
 rm -f "$UNIT_PATH" "$POWER_HELPER" "$SUDOERS_PATH" "$CLI_PATH" "$DESKTOP_PATH" "$ICON_PATH"
+if [[ -n "${SUDO_USER:-}" ]]; then
+  USER_DESKTOP=$(runuser -u "$SUDO_USER" -- xdg-user-dir DESKTOP 2>/dev/null || echo "")
+  if [[ -n "$USER_DESKTOP" && -d "$USER_DESKTOP" ]]; then
+    rm -f "$USER_DESKTOP/blockstead.desktop"
+  fi
+fi
 rmdir /usr/lib/blockstead 2>/dev/null || true
 rm -rf "$APP_DIR"
 systemctl daemon-reload

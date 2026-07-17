@@ -1,0 +1,32 @@
+name: blockstead
+
+services:
+  blockstead:
+    build:
+      context: .
+    image: blockstead:local
+    restart: unless-stopped
+    stop_grace_period: 45s
+    environment:
+      BLOCKSTEAD_BIND_HOST: 0.0.0.0
+      BLOCKSTEAD_PORT: 8765
+      BLOCKSTEAD_DATA_DIR: /var/lib/blockstead
+      BLOCKSTEAD_SERVER_ROOT: /srv/minecraft
+      BLOCKSTEAD_STATIC_DIR: /opt/blockstead/frontend/dist
+      BLOCKSTEAD_SECURE_COOKIES: "${BLOCKSTEAD_SECURE_COOKIES:-false}"
+      BLOCKSTEAD_ALLOWED_ORIGINS: "${BLOCKSTEAD_ALLOWED_ORIGINS:-http://127.0.0.1:8765,http://localhost:8765}"
+    ports:
+      - "${BLOCKSTEAD_DASHBOARD_BIND:-127.0.0.1}:${BLOCKSTEAD_DASHBOARD_PORT:-8765}:8765"
+      - "${MINECRAFT_BIND:-0.0.0.0}:${MINECRAFT_PORT:-25565}:25565"
+    volumes:
+      - blockstead-data:/var/lib/blockstead
+      - blockstead-servers:/srv/minecraft
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  blockstead-data:
+  blockstead-servers:
+
