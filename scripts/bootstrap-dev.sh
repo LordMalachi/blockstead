@@ -4,6 +4,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 command -v python3 >/dev/null || { echo "Python is required." >&2; exit 1; }
 command -v node >/dev/null || { echo "Node.js is required." >&2; exit 1; }
 python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), "Blockstead requires Python 3.12.x"'
+python3 -c 'import venv, ensurepip' >/dev/null 2>&1 \
+  || { echo "Python cannot create virtual environments here. On Ubuntu-based systems: sudo apt install python3-venv" >&2; exit 1; }
 python3 -m venv "$root/.venv"
 "$root/.venv/bin/python" -m pip install --upgrade pip
 "$root/.venv/bin/python" -m pip install -e "$root/backend[dev]"

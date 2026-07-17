@@ -5,6 +5,18 @@ Mint 22.3 system. Record edition, architecture, kernel, Python, Java, browser,
 Blockstead revision, tester, and date with the results.
 
 - [ ] Fresh install shows its complete path and permission plan.
+- [ ] On a system missing packages (`python3-venv`, `nodejs`, `npm`, `curl`,
+      Java), the installer lists them, offers `apt` installation, and succeeds
+      after accepting; declining a required package aborts with the exact
+      command to run.
+- [ ] After install, `blockstead status`, `blockstead doctor`, `blockstead
+      logs`, and `blockstead url` work, and the "Blockstead" menu entry opens
+      the dashboard in the default browser.
+- [ ] `blockstead doctor` reports the stopped service, a busy port (with the
+      program's name), missing Java, and low disk space with actionable text.
+- [ ] `sudo blockstead update` from the recorded clone pulls, reinstalls, and
+      reports "nothing to do" when already current; a dirty or non-git folder
+      produces the documented guidance instead of a half-update.
 - [ ] Service user is unprivileged and the unit passes `systemd-analyze verify`.
 - [ ] Service starts at boot and binds only to `127.0.0.1` by default.
 - [ ] First admin, login, logout, and session invalidation work.
@@ -25,6 +37,11 @@ Blockstead revision, tester, and date with the results.
       process is still running.
 - [ ] Uninstall removes the application/service while preserving configuration,
       private data, worlds, and backups by default; reinstall reuses them.
+- [ ] Uninstall also removes the terminal helper, menu entry, and icon;
+      `--purge` removes configuration, data, logs, and the service account
+      while leaving `/srv/minecraft`; `--remove-minecraft` requires the typed
+      phrase and removes worlds; every variant refuses while a managed
+      Minecraft process runs.
 - [ ] Hardened unit permits Java, networking, configured imports, and backups.
 
 Attach command output and observations to the release record. Do not mark Linux

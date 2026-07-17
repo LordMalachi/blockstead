@@ -4,6 +4,7 @@ set -euo pipefail
 APP_DIR=/opt/blockstead
 CONFIG_DIR=/etc/blockstead
 DATA_DIR=/var/lib/blockstead
+LOG_DIR=/var/log/blockstead
 SERVER_ROOT=/srv/minecraft
 DATABASE=$DATA_DIR/blockstead.db
 ROLLBACK_DIR=$DATA_DIR/update-backups/previous
@@ -11,16 +12,14 @@ SERVICE=blockstead.service
 UNIT_PATH=/etc/systemd/system/$SERVICE
 POWER_HELPER=/usr/lib/blockstead/blockstead-power
 SUDOERS_PATH=/etc/sudoers.d/blockstead-power
+CLI_PATH=/usr/local/bin/blockstead
+DESKTOP_PATH=/usr/share/applications/blockstead.desktop
+ICON_PATH=/usr/share/icons/hicolor/scalable/apps/blockstead.svg
+SOURCE_RECORD=$CONFIG_DIR/install-source
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ ${EUID} -ne 0 ]]; then echo "Run this installer with sudo." >&2; exit 1; fi
 if [[ $(uname -s) != Linux ]]; then echo "Blockstead deployment requires Linux." >&2; exit 1; fi
-for command in python3 npm node systemctl curl runuser; do
-  command -v "$command" >/dev/null \
-    || { echo "Missing required command: $command" >&2; exit 1; }
-done
-python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' \
-  || { echo "Python 3.12.x is required." >&2; exit 1; }
 
 assume_yes=false
 case ${1:-} in
@@ -28,6 +27,65 @@ case ${1:-} in
   --yes) assume_yes=true ;;
   *) echo "Usage: sudo ./scripts/install-linux.sh [--yes]" >&2; exit 2 ;;
 esac
+
+# systemd and runuser cannot be meaningfully installed here; everything else
+# missing is offered as a normal apt installation below.
+command -v systemctl >/dev/null \
+  || { echo "This system does not use systemd, which Blockstead requires." >&2; exit 1; }
+command -v runuser >/dev/null \
+  || { echo "Missing required command: runuser (part of util-linux)." >&2; exit 1; }
+
+required_packages=()
+recommended_packages=()
+command -v python3 >/dev/null || required_packages+=(python3 python3-venv)
+if command -v python3 >/dev/null && ! python3 -c 'import venv, ensurepip' >/dev/null 2>&1; then
+  required_packages+=(python3-venv)
+fi
+command -v node >/dev/null || required_packages+=(nodejs)
+command -v npm >/dev/null || required_packages+=(npm)
+command -v curl >/dev/null || required_packages+=(curl)
+command -v java >/dev/null || recommended_packages+=(openjdk-21-jre-headless)
+
+if (( ${#required_packages[@]} > 0 || ${#recommended_packages[@]} > 0 )); then
+  echo "Blockstead needs some system packages that are not installed yet."
+  if (( ${#required_packages[@]} > 0 )); then
+    echo "  Required:    ${required_packages[*]}"
+  fi
+  if (( ${#recommended_packages[@]} > 0 )); then
+    echo "  Recommended: ${recommended_packages[*]} (Minecraft itself needs Java 21)"
+  fi
+  if ! command -v apt-get >/dev/null; then
+    echo "Install them with your package manager, then run this installer again." >&2
+    exit 1
+  fi
+  install_packages=true
+  if [[ $assume_yes == false ]]; then
+    read -r -p "Install them now with apt? [Y/n] " answer
+    if [[ $answer =~ ^[Nn] ]]; then install_packages=false; fi
+  fi
+  if [[ $install_packages == true ]]; then
+    apt-get update
+    apt-get install -y "${required_packages[@]}" "${recommended_packages[@]}"
+  elif (( ${#required_packages[@]} > 0 )); then
+    echo "Blockstead cannot continue without: ${required_packages[*]}" >&2
+    echo "Install them with: sudo apt install ${required_packages[*]}" >&2
+    exit 1
+  else
+    echo "Continuing without Java. Install it before starting a Minecraft server:"
+    echo "  sudo apt install openjdk-21-jre-headless"
+  fi
+fi
+
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)' \
+  || { echo "Blockstead needs Python 3.12, which is standard on Linux Mint 22." >&2
+       echo "This system reports: $(python3 --version 2>&1)" >&2; exit 1; }
+node_major=$(node --version | sed 's/^v//' | cut -d. -f1)
+if (( node_major < 18 )); then
+  echo "Blockstead needs Node.js 18 or newer to build its dashboard." >&2
+  echo "This system reports Node.js $(node --version)." >&2
+  echo "On Linux Mint 22, 'sudo apt install nodejs npm' provides a new enough version." >&2
+  exit 1
+fi
 
 new_version=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' "$ROOT/backend/pyproject.toml")
 old_version="not installed"
@@ -54,10 +112,13 @@ if [[ $assume_yes == false ]]; then
   cat <<EOF
 Blockstead will $action.
 
-  Application:     $APP_DIR
-  Configuration:   $CONFIG_DIR/blockstead.env
-  Private data:    $DATA_DIR
-  Managed servers: $SERVER_ROOT
+  Application:      $APP_DIR
+  Configuration:    $CONFIG_DIR/blockstead.env
+  Private data:     $DATA_DIR
+  Application logs: $LOG_DIR
+  Managed servers:  $SERVER_ROOT
+  Terminal helper:  $CLI_PATH
+  Menu entry:       "Blockstead" in the applications menu
 
 Configuration, administrator data, backups, and Minecraft server folders are
 preserved during updates. Stop any running Minecraft server from the dashboard
@@ -71,7 +132,7 @@ fi
 if ! id -u blockstead >/dev/null 2>&1; then
   useradd --system --home-dir "$DATA_DIR" --create-home --shell /usr/sbin/nologin blockstead
 fi
-install -d -o blockstead -g blockstead -m 0750 "$DATA_DIR" "$SERVER_ROOT"
+install -d -o blockstead -g blockstead -m 0750 "$DATA_DIR" "$LOG_DIR" "$SERVER_ROOT"
 install -d -o root -g blockstead -m 0750 "$CONFIG_DIR"
 
 if [[ ! -f $CONFIG_DIR/blockstead.env ]]; then
@@ -182,6 +243,7 @@ install -d -o root -g root -m 0755 "$APP_DIR" "$APP_DIR/frontend"
 cp -a "$ROOT/backend" "$APP_DIR/backend"
 cp -a "$ROOT/frontend/dist" "$APP_DIR/frontend/dist"
 cp -a "$ROOT/packaging" "$APP_DIR/packaging"
+cp -a "$ROOT/scripts" "$APP_DIR/scripts"
 printf '%s\n' "$new_version" >"$APP_DIR/VERSION"
 
 python3 -m venv "$APP_DIR/venv"
@@ -235,6 +297,21 @@ if [[ $dashboard_type != text/html* ]]; then
 fi
 
 trap - ERR INT TERM
+
+# Conveniences are installed only after the new release proved healthy, so a
+# rolled-back update keeps its previous helper, menu entry, and source record.
+install -o root -g root -m 0755 "$ROOT/packaging/bin/blockstead" "$CLI_PATH"
+install -d -o root -g root -m 0755 "$(dirname "$ICON_PATH")"
+install -o root -g root -m 0644 "$ROOT/packaging/icons/blockstead.svg" "$ICON_PATH"
+sed "s|@DASHBOARD_URL@|$health_url|" "$ROOT/packaging/desktop/blockstead.desktop" >"$DESKTOP_PATH"
+chmod 0644 "$DESKTOP_PATH"
+if command -v update-desktop-database >/dev/null; then
+  update-desktop-database -q /usr/share/applications || true
+fi
+printf '%s\n' "$ROOT" >"$SOURCE_RECORD"
+chown root:blockstead "$SOURCE_RECORD"
+chmod 0640 "$SOURCE_RECORD"
+
 if [[ $mode == update ]]; then
   result="Blockstead was updated from $old_version to $new_version"
 else
@@ -250,5 +327,11 @@ First steps:
   3. Confirm its eula.txt contains eula=true, then import that folder in the dashboard.
   4. Select the profile and choose Start server.
 
-Use 'sudo journalctl -u $SERVICE -f' to view dashboard logs.
+"Blockstead" in the applications menu opens the dashboard. From any terminal:
+
+  blockstead status         Is everything running, and where do I open it?
+  blockstead doctor         Check for common problems and suggest fixes
+  blockstead logs           Show recent dashboard messages
+  sudo blockstead update    Download and install the newest Blockstead
+  sudo blockstead uninstall Remove Blockstead (keeps worlds and settings)
 EOF

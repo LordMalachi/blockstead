@@ -3,9 +3,11 @@
 Last updated: 2026-07-17
 
 This document explains the next Blockstead UI and product upgrades and tracks
-their implementation. The [README](README.md) remains the full product
-specification, while [docs/implementation-plan.md](docs/implementation-plan.md)
-records the original milestone plan.
+their implementation. The full product specification lives in
+[docs/product-spec.md](docs/product-spec.md), the owner-facing setup guide is
+the [README](README.md), and
+[docs/implementation-plan.md](docs/implementation-plan.md) records the
+original milestone plan.
 
 ## Product direction
 
@@ -354,6 +356,25 @@ Before marking any milestone complete:
 
 ## Progress log
 
+- **2026-07-17 — Linux Mint ease-of-use pass complete.** Split the README into
+  an owner-facing setup guide and moved the full specification to
+  `docs/product-spec.md` (contributor and agent documents now point there).
+  The installer checks for missing system packages — including `python3-venv`
+  and Java 21 — and offers to install them through `apt`, explains Python and
+  Node.js version problems in plain language, creates `/var/log/blockstead`,
+  and records its source folder. Added a `blockstead` terminal helper
+  (`status`, `logs`, `doctor`, `url`, lifecycle, `update`, `uninstall`,
+  `version`), a "Blockstead" applications-menu entry with an original icon,
+  `scripts/update-linux.sh` behind `sudo blockstead update`, and `--purge` /
+  `--remove-minecraft` uninstall tiers gated by a typed confirmation and the
+  managed-process check. Conveniences install only after the health check
+  passes, so rollback keeps the previous set. Verification: `bash -n` and
+  shellcheck (0.11.0, clean at style severity) across all shell scripts, CLI
+  dispatch and error-path smoke tests, markdown link check, YAML validation of
+  the new CI packaging job, and `git diff --check`. Follow-up: run the new
+  installer, doctor, update, and uninstall checklist items on a clean Linux
+  Mint 22.3 system; `desktop-file-validate` runs in CI but has not run
+  locally.
 - **2026-07-17 — Guided settings editor core complete.** Replaced the read-only
   settings table with grouped Gameplay, Players, World, Network, and Performance
   controls, searchable labels and descriptions, constrained choices, numeric

@@ -41,3 +41,10 @@ jobs:
       - run: npm ci --prefix frontend
       - run: npx --prefix frontend playwright install --with-deps chromium
       - run: npm run e2e --prefix frontend
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck desktop-file-utils
+      - run: shellcheck scripts/*.sh packaging/bin/blockstead packaging/blockstead-power
+      - run: desktop-file-validate packaging/desktop/blockstead.desktop

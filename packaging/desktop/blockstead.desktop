@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Blockstead
+GenericName=Minecraft server dashboard
+Comment=Open the Blockstead dashboard in your browser
+Exec=xdg-open @DASHBOARD_URL@
+Icon=blockstead
+Terminal=false
+Categories=Game;Network;
+Keywords=Minecraft;server;dashboard;backup;

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Rewrite the README as an owner-facing Linux Mint guide and move the full
+  product specification to `docs/product-spec.md`.
+- Teach the Linux installer to check for missing system packages (including
+  `python3-venv` and Java 21) and offer to install them through `apt` before
+  changing anything, and to explain Python and Node.js version problems in
+  plain language.
+- Add a `blockstead` terminal helper with `status`, `logs`, `doctor`, `url`,
+  `start`/`stop`/`restart`, `update`, `uninstall`, and `version` commands,
+  installed only after the new release passes its health check.
+- Add a "Blockstead" applications-menu entry and icon that open the dashboard.
+- Add `scripts/update-linux.sh` and `sudo blockstead update` for one-command
+  updates from the recorded installation folder.
+- Create `/var/log/blockstead` at install time and keep a copy of the
+  maintenance scripts in `/opt/blockstead` so uninstall and update work even
+  if the downloaded folder is gone.
+- Add `--purge` and `--remove-minecraft` tiers to the uninstaller with a typed
+  confirmation before deleting worlds, and refuse to uninstall while a managed
+  Minecraft process is running.
+- Add a CI packaging job that shellchecks every shell script and validates the
+  desktop entry.
+- Make `./scripts/bootstrap-dev.sh` explain the missing `python3-venv` package
+  instead of failing partway through.
 - Make the Linux installer safely handle in-place updates with version
   detection, a fresh virtual environment, Alembic migration bootstrap, health
   verification, and automatic application/database rollback.

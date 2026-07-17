@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Blockstead">
+  <!-- Original Blockstead artwork: a block-built homestead on forest green. -->
+  <rect x="4" y="4" width="120" height="120" rx="18" fill="#2f5d3a"/>
+  <rect x="4" y="4" width="120" height="120" rx="18" fill="none" stroke="#254a2e" stroke-width="4"/>
+  <!-- roof -->
+  <rect x="56" y="30" width="16" height="10" fill="#8a5a3b"/>
+  <rect x="44" y="40" width="40" height="10" fill="#8a5a3b"/>
+  <rect x="32" y="50" width="64" height="10" fill="#8a5a3b"/>
+  <!-- walls -->
+  <rect x="40" y="60" width="48" height="38" fill="#e9dfc8"/>
+  <!-- door -->
+  <rect x="58" y="74" width="12" height="24" fill="#6b4226"/>
+  <!-- windows -->
+  <rect x="46" y="68" width="8" height="8" fill="#3f7a4c"/>
+  <rect x="74" y="68" width="8" height="8" fill="#3f7a4c"/>
+  <!-- ground -->
+  <rect x="24" y="98" width="80" height="8" fill="#254a2e"/>
+</svg>

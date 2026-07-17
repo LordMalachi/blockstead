@@ -1,0 +1,407 @@
+#!/usr/bin/env bash
+# Blockstead terminal helper.
+#
+# Installed to /usr/local/bin/blockstead by scripts/install-linux.sh so a
+# server owner can check, update, and remove Blockstead without memorizing
+# systemctl or journalctl commands. Minecraft servers themselves are started
+# and stopped from the dashboard, not from this helper.
+set -euo pipefail
+
+APP_DIR=/opt/blockstead
+CONFIG_DIR=/etc/blockstead
+ENV_FILE=$CONFIG_DIR/blockstead.env
+SOURCE_RECORD=$CONFIG_DIR/install-source
+DATA_DIR=/var/lib/blockstead
+SERVER_ROOT=/srv/minecraft
+SERVICE=blockstead.service
+UNIT_PATH=/etc/systemd/system/$SERVICE
+
+usage() {
+  cat <<'EOF'
+Blockstead — friendly commands for the dashboard service.
+
+Usage: blockstead <command>
+
+Everyday commands:
+  status               Is the dashboard running, and where do I open it?
+  logs [-f] [lines]    Show recent dashboard messages (-f follows live)
+  doctor               Check for common problems and suggest fixes
+  url                  Print the dashboard address
+
+Service control (need sudo):
+  start                Start the dashboard service
+  stop                 Stop the dashboard service
+  restart              Restart the dashboard service
+
+Maintenance (need sudo):
+  update [--yes]       Download and install the newest Blockstead
+  uninstall [--purge] [--remove-minecraft] [--yes]
+                       Remove Blockstead; worlds and settings are kept
+                       unless you pass the extra flags
+
+Other:
+  version              Show the installed Blockstead version
+  help                 Show this help
+
+Minecraft servers are started and stopped from the dashboard in your browser.
+Run "blockstead url" to see its address.
+EOF
+}
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+require_root() {
+  [[ $EUID -eq 0 ]] || die "This command changes the system. Run it with sudo: sudo blockstead $1"
+}
+
+env_value() {
+  local key=$1 default=$2 line=""
+  if [[ -r $ENV_FILE ]]; then
+    line=$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -n 1 || true)
+  fi
+  if [[ -n $line ]]; then
+    printf '%s\n' "${line#*=}"
+  else
+    printf '%s\n' "$default"
+  fi
+}
+
+dashboard_url() {
+  local bind port host
+  bind=$(env_value BLOCKSTEAD_BIND_HOST 127.0.0.1)
+  port=$(env_value BLOCKSTEAD_PORT 8765)
+  case $bind in
+    :: | ::1) host='[::1]' ;;
+    0.0.0.0 | 127.0.0.1 | localhost) host=127.0.0.1 ;;
+    *) host=$bind ;;
+  esac
+  printf 'http://%s:%s\n' "$host" "$port"
+}
+
+installed_version() {
+  if [[ -f $APP_DIR/VERSION ]]; then
+    cat "$APP_DIR/VERSION"
+  else
+    printf '%s\n' ""
+  fi
+}
+
+health_json() {
+  # Prints the health endpoint body, or nothing when unreachable.
+  curl --fail --silent --max-time 3 "$(dashboard_url)/api/v1/health" 2>/dev/null || true
+}
+
+health_field() {
+  # health_field <json> <field>
+  python3 -c 'import json, sys
+try:
+    print(json.loads(sys.argv[1]).get(sys.argv[2], ""))
+except Exception:
+    print("")' "$1" "$2" 2>/dev/null || true
+}
+
+cmd_status() {
+  local version state enabled url health
+  version=$(installed_version)
+  if [[ ! -d $APP_DIR ]]; then
+    echo "Blockstead is not installed on this computer."
+    echo "To install it, run sudo ./scripts/install-linux.sh from a Blockstead folder."
+    exit 1
+  fi
+  echo "Blockstead ${version:-(version unknown)}"
+
+  state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
+  enabled=$(systemctl is-enabled "$SERVICE" 2>/dev/null || true)
+  case $state in
+    active)
+      if [[ $enabled == enabled ]]; then
+        echo "  Service:   running (starts automatically with Linux)"
+      else
+        echo "  Service:   running (does NOT start with Linux; fix: sudo systemctl enable $SERVICE)"
+      fi
+      ;;
+    inactive | failed)
+      echo "  Service:   stopped (start it with: sudo blockstead start)"
+      ;;
+    *)
+      echo "  Service:   not installed as a service (run the installer again)"
+      ;;
+  esac
+
+  url=$(dashboard_url)
+  health=$(health_json)
+  if [[ -n $health ]]; then
+    echo "  Dashboard: open $url in your browser"
+  elif [[ $state == active ]]; then
+    echo "  Dashboard: the service is running but $url is not answering"
+    echo "             (check: blockstead doctor)"
+  else
+    echo "  Dashboard: not reachable while the service is stopped"
+  fi
+  if [[ -e $ENV_FILE && ! -r $ENV_FILE && $EUID -ne 0 ]]; then
+    echo "  Note: run with sudo to read the exact configured address."
+  fi
+}
+
+cmd_logs() {
+  local follow=false lines=100 arg
+  for arg in "$@"; do
+    case $arg in
+      -f | --follow) follow=true ;;
+      '' ) ;;
+      *[!0-9]*) die "Usage: blockstead logs [-f] [lines]" ;;
+      *) lines=$arg ;;
+    esac
+  done
+  if [[ $follow == true ]]; then
+    echo "Following live dashboard messages. Press Ctrl+C to stop."
+    journalctl -u "$SERVICE" -f
+  else
+    journalctl -u "$SERVICE" -n "$lines" --no-pager
+    if [[ $EUID -ne 0 ]]; then
+      echo
+      echo "If nothing appeared above, try: sudo blockstead logs"
+    fi
+  fi
+}
+
+cmd_start() {
+  require_root start
+  systemctl start "$SERVICE"
+  echo "The Blockstead dashboard is starting."
+  echo "Open $(dashboard_url) in your browser."
+}
+
+cmd_stop() {
+  require_root stop
+  echo "Stopping the Blockstead dashboard."
+  echo "A running Minecraft server will be asked to stop safely first."
+  systemctl stop "$SERVICE"
+  echo "Stopped. Start it again with: sudo blockstead start"
+}
+
+cmd_restart() {
+  require_root restart
+  echo "Restarting the Blockstead dashboard."
+  echo "A running Minecraft server will be asked to stop safely first."
+  systemctl restart "$SERVICE"
+  echo "Restarted. Open $(dashboard_url) in your browser."
+}
+
+cmd_update() {
+  require_root update
+  local src=""
+  if [[ -f $SOURCE_RECORD ]]; then
+    src=$(<"$SOURCE_RECORD")
+  fi
+  if [[ -n $src && -x $src/scripts/update-linux.sh ]]; then
+    exec "$src/scripts/update-linux.sh" "$@"
+  fi
+  cat >&2 <<EOF
+Blockstead cannot find the folder it was installed from
+(${src:-no location was recorded}).
+
+To update:
+  1. Download or clone the newest Blockstead release.
+  2. Open a terminal in that folder.
+  3. Run: sudo ./scripts/install-linux.sh
+
+The installer recognizes the existing installation and keeps your settings,
+administrator accounts, backups, and Minecraft folders.
+EOF
+  exit 1
+}
+
+cmd_uninstall() {
+  require_root uninstall
+  local script="" src="" tmp
+  if [[ -x $APP_DIR/scripts/uninstall-linux.sh ]]; then
+    script=$APP_DIR/scripts/uninstall-linux.sh
+  elif [[ -f $SOURCE_RECORD ]]; then
+    src=$(<"$SOURCE_RECORD")
+    if [[ -n $src && -x $src/scripts/uninstall-linux.sh ]]; then
+      script=$src/scripts/uninstall-linux.sh
+    fi
+  fi
+  [[ -n $script ]] || die "Could not find the Blockstead uninstaller.
+Download a Blockstead release and run: sudo ./scripts/uninstall-linux.sh"
+  # Run from a copy so removing /opt/blockstead cannot pull the script out
+  # from under the running shell.
+  tmp=$(mktemp -d)
+  cp "$script" "$tmp/uninstall-linux.sh"
+  exec bash "$tmp/uninstall-linux.sh" "$@"
+}
+
+cmd_version() {
+  local version
+  version=$(installed_version)
+  [[ -n $version ]] || die "Blockstead is not installed on this computer."
+  printf '%s\n' "$version"
+}
+
+# --- doctor ---------------------------------------------------------------
+
+problems=0
+notes=0
+
+ok()      { printf '[ OK ]  %s\n' "$1"; }
+note()    { printf '[NOTE]  %s\n' "$1"; [[ -n ${2:-} ]] && printf '        %s\n' "$2"; notes=$((notes + 1)); }
+problem() { printf '[FIX ]  %s\n' "$1"; [[ -n ${2:-} ]] && printf '        %s\n' "$2"; problems=$((problems + 1)); }
+
+check_free_space() {
+  local label=$1 path=$2 avail_kb avail_gb
+  [[ -d $path ]] || return 0
+  avail_kb=$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {print $4}' || true)
+  [[ -n $avail_kb ]] || return 0
+  avail_gb=$((avail_kb / 1024 / 1024))
+  if (( avail_kb < 2 * 1024 * 1024 )); then
+    problem "$label ($path) has only ${avail_gb} GB free." \
+      "Minecraft worlds and backups need room. Free some disk space."
+  else
+    ok "$label has ${avail_gb} GB free."
+  fi
+}
+
+cmd_doctor() {
+  require_root doctor
+  local version state enabled url health hversion ctype port busy java_line java_major count
+
+  echo "Checking this Blockstead installation…"
+  echo
+
+  if [[ ! -d $APP_DIR ]]; then
+    problem "Blockstead is not installed." \
+      "Run sudo ./scripts/install-linux.sh from a Blockstead folder."
+    echo
+    echo "1 problem found."
+    exit 1
+  fi
+  version=$(installed_version)
+  ok "Blockstead ${version:-unknown} is installed at $APP_DIR."
+
+  if [[ -f $ENV_FILE ]]; then
+    ok "Settings file exists at $ENV_FILE."
+  else
+    problem "The settings file $ENV_FILE is missing, so the service cannot start." \
+      "Run the installer again: sudo ./scripts/install-linux.sh"
+  fi
+
+  if [[ -f $UNIT_PATH ]]; then
+    ok "The system service is installed."
+  else
+    problem "The system service file is missing." \
+      "Run the installer again: sudo ./scripts/install-linux.sh"
+  fi
+
+  enabled=$(systemctl is-enabled "$SERVICE" 2>/dev/null || true)
+  if [[ $enabled == enabled ]]; then
+    ok "The dashboard starts automatically when Linux starts."
+  else
+    note "The dashboard will NOT start automatically after a reboot." \
+      "Fix: sudo systemctl enable $SERVICE"
+  fi
+
+  state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
+  url=$(dashboard_url)
+  port=$(env_value BLOCKSTEAD_PORT 8765)
+  if [[ $state == active ]]; then
+    ok "The dashboard service is running."
+    health=$(health_json)
+    if [[ -n $health ]]; then
+      ok "The dashboard answers at $url."
+      hversion=$(health_field "$health" version)
+      if [[ -n $version && -n $hversion && $version != "$hversion" ]]; then
+        note "The running dashboard ($hversion) is older than the installed files ($version)." \
+          "Restart it: sudo blockstead restart"
+      fi
+      ctype=$(curl --fail --silent --output /dev/null --max-time 3 --write-out '%{content_type}' "$url/" 2>/dev/null || true)
+      if [[ $ctype == text/html* ]]; then
+        ok "The dashboard page loads in a browser."
+      else
+        problem "The service answers, but no dashboard page is being served." \
+          "Look at recent messages: sudo blockstead logs"
+      fi
+    else
+      problem "The service is running but $url does not answer." \
+        "Look at recent messages: sudo blockstead logs"
+    fi
+  else
+    problem "The dashboard service is not running." \
+      "Start it with: sudo blockstead start — then run doctor again."
+    busy=$(ss -ltnpH "sport = :$port" 2>/dev/null || true)
+    if [[ -n $busy ]]; then
+      holder=$(printf '%s\n' "$busy" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | head -n 1)
+      problem "Another program (${holder:-unknown}) is already using port $port, which will block startup." \
+        "Stop that program, or change BLOCKSTEAD_PORT in $ENV_FILE."
+    fi
+  fi
+
+  if command -v java >/dev/null 2>&1; then
+    java_line=$(java -version 2>&1 | head -n 1 || true)
+    java_major=$(printf '%s\n' "$java_line" | sed -n 's/.*"\([0-9]*\)[.\"].*/\1/p')
+    if [[ -n $java_major && $java_major -ge 21 ]]; then
+      ok "Java $java_major is installed (new enough for current Minecraft)."
+    else
+      note "Java is installed but looks older than Java 21 ($java_line)." \
+        "Modern Minecraft needs Java 21: sudo apt install openjdk-21-jre-headless"
+    fi
+  else
+    note "Java is not installed. The dashboard works, but Minecraft itself needs Java 21." \
+      "Install it with: sudo apt install openjdk-21-jre-headless"
+  fi
+
+  check_free_space "Blockstead data disk" "$DATA_DIR"
+  if [[ $(df -Pk "$SERVER_ROOT" 2>/dev/null | awk 'NR==2 {print $1}') != $(df -Pk "$DATA_DIR" 2>/dev/null | awk 'NR==2 {print $1}') ]]; then
+    check_free_space "Minecraft disk" "$SERVER_ROOT"
+  fi
+
+  local bind
+  bind=$(env_value BLOCKSTEAD_BIND_HOST 127.0.0.1)
+  if [[ $bind == 127.0.0.1 || $bind == ::1 || $bind == localhost ]]; then
+    ok "The dashboard is private to this computer (recommended)."
+  else
+    note "The dashboard is reachable from other devices on your network (bind: $bind)." \
+      "That is fine if you chose it. Keep your administrator password strong."
+  fi
+
+  count=$(journalctl -u "$SERVICE" -n 200 --no-pager -q 2>/dev/null | grep -ciE '\berror\b|traceback' || true)
+  if [[ -n $count && $count -gt 0 ]]; then
+    note "$count recent log line(s) mention errors." \
+      "Read them with: sudo blockstead logs"
+  else
+    ok "No errors in the recent dashboard messages."
+  fi
+
+  echo
+  if (( problems == 0 && notes == 0 )); then
+    echo "Everything looks good."
+  elif (( problems == 0 )); then
+    echo "No problems found. $notes note(s) above are worth a look."
+  else
+    echo "$problems problem(s) need attention; the lines marked [FIX ] say what to do."
+  fi
+  (( problems == 0 )) || exit 1
+}
+
+# --- dispatch ---------------------------------------------------------------
+
+command=${1:-help}
+shift || true
+case $command in
+  status)      cmd_status "$@" ;;
+  logs)        cmd_logs "$@" ;;
+  url)         dashboard_url ;;
+  start)       cmd_start "$@" ;;
+  stop)        cmd_stop "$@" ;;
+  restart)     cmd_restart "$@" ;;
+  update)      cmd_update "$@" ;;
+  uninstall)   cmd_uninstall "$@" ;;
+  doctor)      cmd_doctor "$@" ;;
+  version)     cmd_version "$@" ;;
+  help | --help | -h) usage ;;
+  *)
+    printf 'Unknown command: %s\n\n' "$command" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

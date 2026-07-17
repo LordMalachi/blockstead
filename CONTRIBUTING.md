@@ -1,6 +1,7 @@
 # Contributing
 
-Read `README.md`, `docs/architecture.md`, and `docs/threat-model.md` first.
+Read `docs/product-spec.md`, `docs/architecture.md`, and
+`docs/threat-model.md` first; `README.md` is the owner-facing setup guide.
 Never commit Minecraft jars, worlds, secrets, or real player data.
 
 Use `./scripts/bootstrap-dev.sh`, then `./scripts/test.sh`. Changes to security
