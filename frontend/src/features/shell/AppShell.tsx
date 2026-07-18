@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useMatch } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, clearCsrf, type ProcessState, type Profile } from "../../api/client";
+import { BrandMark } from "../../components/BrandMark";
 import { Button } from "../../components/Button";
 import { NavIcon } from "../../components/NavIcon";
 import { StatusBadge } from "../../components/StatusBadge";
@@ -49,7 +50,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
 
   return <div className="app-shell">
     <header className="topbar">
-      <NavLink className="brand" to="/servers" aria-label="Blockstead home"><span className="brand-mark" aria-hidden="true"><span>B</span></span><span className="brand-copy">Blockstead<small>Minecraft server care</small></span></NavLink>
+      <NavLink className="brand" to="/servers" aria-label="Blockstead home"><BrandMark /><span className="brand-copy">Blockstead<small>Minecraft server care</small></span></NavLink>
       {scope && <div className="server-summary"><span className="summary-label">{scope.profile.name}</span><StatusBadge state={scope.state} /></div>}
       <Button className={`button--quiet sign-out${scope ? "" : " sign-out--alone"}`} onClick={() => void logout()}>Sign out</Button>
     </header>
@@ -69,7 +70,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
       </aside>
       <main id="main">
         <Outlet />
-        <footer className="app-footer"><span className="brand-mark brand-mark--small" aria-hidden="true"><span>B</span></span><p><strong>Blockstead</strong><br />Quiet, local care for your Minecraft world.</p></footer>
+        <footer className="app-footer"><BrandMark small /><p><strong>Blockstead</strong><br />Quiet, local care for your Minecraft world.</p></footer>
       </main>
     </div>
   </div>;

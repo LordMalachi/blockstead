@@ -5,6 +5,15 @@ Mint 22.3 system. Record edition, architecture, kernel, Python, Java, browser,
 Blockstead revision, tester, and date with the results.
 
 - [ ] Fresh install shows its complete path and permission plan.
+- [ ] After extracting a release, double-clicking `Install Blockstead` shows a
+      branded confirmation and progress window without opening a terminal,
+      requests administrator authorization through PolicyKit, installs the
+      desktop/menu launcher for the initiating user, and opens the healthy
+      dashboard automatically.
+- [ ] Cancelling either the installer confirmation or PolicyKit authorization
+      makes no partial system changes and reports cancellation clearly.
+- [ ] When Zenity or PolicyKit is unavailable, the graphical wrapper falls back
+      to a visible terminal installer with safely quoted paths.
 - [ ] On a system missing packages (`python3-venv`, `nodejs`, `npm`, `curl`,
       Java), the installer lists them, offers `apt` installation, and succeeds
       after accepting; declining a required package aborts with the exact
@@ -12,6 +21,11 @@ Blockstead revision, tester, and date with the results.
 - [ ] After install, `blockstead status`, `blockstead doctor`, `blockstead
       logs`, and `blockstead url` work, and the "Blockstead" menu entry opens
       the dashboard in the default browser.
+- [ ] Clicking the Blockstead icon while the service is stopped requests
+      authorization, starts it, waits for the health endpoint, and opens only
+      after the dashboard is ready; a failed start shows actionable guidance.
+- [ ] The Blockstead app icon renders cleanly in the menu, on the desktop, and
+      as the browser favicon at small and large sizes.
 - [ ] `blockstead doctor` reports the stopped service, a busy port (with the
       program's name), missing Java, and low disk space with actionable text.
 - [ ] `sudo blockstead update` from the recorded clone pulls, reinstalls, and

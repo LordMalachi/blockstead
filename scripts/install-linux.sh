@@ -305,20 +305,41 @@ install -d -o root -g root -m 0755 "$(dirname "$ICON_PATH")"
 install -o root -g root -m 0644 "$ROOT/packaging/icons/blockstead.svg" "$ICON_PATH"
 install -o root -g root -m 0644 "$ROOT/packaging/desktop/blockstead.desktop" "$DESKTOP_PATH"
 
-# Install a desktop launcher shortcut for the user for easy graphical access
-if [[ -n "${SUDO_USER:-}" ]]; then
-  USER_DESKTOP=$(runuser -u "$SUDO_USER" -- xdg-user-dir DESKTOP 2>/dev/null || echo "")
+# Install a desktop launcher for the person who started either the sudo or the
+# graphical PolicyKit installer. Environment input is accepted only when it
+# resolves to a real, non-root local account.
+DESKTOP_USER=${BLOCKSTEAD_INSTALL_USER:-${SUDO_USER:-}}
+if [[ -z $DESKTOP_USER && ${PKEXEC_UID:-} =~ ^[0-9]+$ ]]; then
+  DESKTOP_USER=$(getent passwd "$PKEXEC_UID" | cut -d: -f1 || true)
+fi
+if [[ -n $DESKTOP_USER ]] && id "$DESKTOP_USER" >/dev/null 2>&1 \
+    && [[ $(id -u "$DESKTOP_USER") -ne 0 ]]; then
+  DESKTOP_GROUP=$(id -gn "$DESKTOP_USER")
+  DESKTOP_HOME=$(getent passwd "$DESKTOP_USER" | cut -d: -f6)
+  USER_DESKTOP=""
+  if command -v xdg-user-dir >/dev/null; then
+    USER_DESKTOP=$(runuser -u "$DESKTOP_USER" -- env HOME="$DESKTOP_HOME" \
+      xdg-user-dir DESKTOP 2>/dev/null || true)
+  fi
+  if [[ -z $USER_DESKTOP && -d $DESKTOP_HOME/Desktop ]]; then
+    USER_DESKTOP=$DESKTOP_HOME/Desktop
+  fi
   if [[ -n "$USER_DESKTOP" && -d "$USER_DESKTOP" ]]; then
     DESKTOP_ICON="$USER_DESKTOP/blockstead.desktop"
     echo "Installing launcher shortcut to $DESKTOP_ICON..."
-    install -o "$SUDO_USER" -g "$SUDO_USER" -m 0755 "$ROOT/packaging/desktop/blockstead.desktop" "$DESKTOP_ICON"
+    install -o "$DESKTOP_USER" -g "$DESKTOP_GROUP" -m 0755 \
+      "$ROOT/packaging/desktop/blockstead.desktop" "$DESKTOP_ICON"
     if command -v gio >/dev/null; then
-      runuser -u "$SUDO_USER" -- gio set "$DESKTOP_ICON" metadata::trusted true || true
+      runuser -u "$DESKTOP_USER" -- env HOME="$DESKTOP_HOME" \
+        gio set "$DESKTOP_ICON" metadata::trusted true || true
     fi
   fi
 fi
 if command -v update-desktop-database >/dev/null; then
   update-desktop-database -q /usr/share/applications || true
+fi
+if command -v gtk-update-icon-cache >/dev/null; then
+  gtk-update-icon-cache -q /usr/share/icons/hicolor || true
 fi
 printf '%s\n' "$ROOT" >"$SOURCE_RECORD"
 chown root:blockstead "$SOURCE_RECORD"
@@ -334,10 +355,10 @@ cat <<EOF
 $result and is ready at $health_url
 
 First steps:
-  1. Create your Blockstead administrator account if this is a new installation.
-  2. Place a legitimately obtained server folder under $SERVER_ROOT.
-  3. Confirm its eula.txt contains eula=true, then import that folder in the dashboard.
-  4. Select the profile and choose Start server.
+  1. Open Blockstead and create your administrator account.
+  2. Create a Vanilla, Fabric, Forge, Quilt, NeoForge, or Paper server in the dashboard,
+     or import an existing folder from $SERVER_ROOT.
+  3. Review and accept the Minecraft EULA, then choose Start server.
 
 "Blockstead" in the applications menu opens the dashboard. From any terminal:
 

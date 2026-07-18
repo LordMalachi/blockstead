@@ -47,4 +47,4 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y shellcheck desktop-file-utils
       - run: shellcheck scripts/*.sh packaging/bin/blockstead packaging/blockstead-power
-      - run: desktop-file-validate packaging/desktop/blockstead.desktop
+      - run: desktop-file-validate packaging/desktop/blockstead.desktop "Install Blockstead.desktop"

@@ -1,3 +1,5 @@
+<img src="packaging/icons/blockstead.svg" alt="Blockstead icon" width="88" align="right">
+
 # Blockstead
 
 > A friendly, local dashboard for running a Minecraft: Java Edition server at home.
@@ -46,7 +48,8 @@ Blockstead manages the process around them.
 
 - A Linux Mint 22.x computer (or a compatible Ubuntu-based system) that can
   stay powered on while players should be able to join.
-- An account on that computer that can use `sudo`.
+- An administrator account on that computer. Linux asks for its password once
+  during installation.
 - A legally obtained Minecraft: Java Edition server folder, or the intention to
   create one. You must accept
   [Minecraft's EULA](https://www.minecraft.net/en-us/eula) yourself.
@@ -61,34 +64,24 @@ volumes.
 
 ## Install on Linux Mint
 
-1. Open **Terminal** and download Blockstead. Replace the example URL with the
-   repository you are installing from if needed:
+The normal installation does not require a terminal:
 
-   ```bash
-   sudo apt install -y git
-   git clone https://github.com/YOUR-ACCOUNT/blockstead.git
-   cd blockstead
-   ```
+1. Choose **Code → Download ZIP** on the Blockstead repository page.
+2. Open the downloaded ZIP and extract the `blockstead` folder.
+3. Open that folder and double-click **Install Blockstead**. If Linux Mint asks
+   whether to trust or launch it, choose **Trust and Launch**.
+4. Choose **Install** and enter your administrator password when Linux asks.
 
-   (No GitHub account? Use **Code → Download ZIP** on the repository page,
-   extract it, and open a terminal in the extracted folder instead.)
+The installer checks the computer, installs any missing requirements, shows a
+progress window, adds the Blockstead app icon, and opens the dashboard when it
+is ready. Keep the extracted folder: opening **Install Blockstead** from a newer
+download safely updates the existing installation.
 
-2. Run the installer. It shows exactly what it will change, asks before
-   touching anything, and offers to install missing system packages:
+For a terminal-based installation or automation, use:
 
-   ```bash
-   sudo ./scripts/install-linux.sh
-   ```
-
-3. When it says it is ready, open **Blockstead** from the applications menu,
-   or browse to:
-
-   ```text
-   http://127.0.0.1:8765
-   ```
-
-Keep the downloaded `blockstead` folder afterwards — `sudo blockstead update`
-uses it to fetch new versions.
+```bash
+sudo bash ./scripts/install-linux.sh
+```
 
 ### First run
 
@@ -151,6 +144,10 @@ backup guidance, and container limitations are covered in the
 Day to day you only need the dashboard: start and stop the server, watch the
 live log, manage players, create backups, and set the daily **Schedule**. The
 computer just needs to stay on (or wake on its schedule, where supported).
+
+Click the **Blockstead** icon on the desktop or in the applications menu to
+open it. The icon starts the dashboard service if necessary, waits until it is
+ready, and then opens the correct address in your default browser.
 
 For the occasional check-up, the installer adds a `blockstead` command to the
 terminal:

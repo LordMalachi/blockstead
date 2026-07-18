@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Make Linux Mint setup graphical from end to end: a branded install launcher
+  uses PolicyKit authorization and visible progress, installs the app shortcut
+  for the initiating desktop user, and opens the dashboard automatically.
+- Make the Blockstead app icon a reliable one-click entry point that starts a
+  stopped service, waits for application health, and opens the browser; add
+  consistent pixel-homestead artwork throughout the dashboard, desktop, and
+  browser favicon.
 - Add an optional Docker Compose app wrapper with a multi-stage dashboard build,
   Java 21 runtime, automatic database migrations, non-root execution, dropped
   capabilities, persistent data/server volumes, health checks, and graceful

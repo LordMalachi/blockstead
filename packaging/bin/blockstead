@@ -15,6 +15,7 @@ DATA_DIR=/var/lib/blockstead
 SERVER_ROOT=/srv/minecraft
 SERVICE=blockstead.service
 UNIT_PATH=/etc/systemd/system/$SERVICE
+ICON_PATH=/usr/share/icons/hicolor/scalable/apps/blockstead.svg
 
 usage() {
   cat <<'EOF'
@@ -385,50 +386,60 @@ cmd_doctor() {
 }
 
 cmd_launch() {
-  local url state ready
+  local url state ready=false
   url=$(dashboard_url)
   state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
 
-  if [[ $state == active ]]; then
-    if [[ -n ${DISPLAY:-} || -n ${WAYLAND_DISPLAY:-} ]]; then
-      xdg-open "$url"
-    else
-      echo "Blockstead dashboard is running at: $url"
+  if [[ $state != active ]]; then
+    if [[ -z ${DISPLAY:-} && -z ${WAYLAND_DISPLAY:-} ]]; then
+      echo "Blockstead is installed, but its dashboard service is stopped."
+      echo "Start it with: sudo blockstead start"
+      exit 1
     fi
-    exit 0
+    if ! command -v pkexec >/dev/null; then
+      if command -v zenity >/dev/null; then
+        zenity --error --title="Blockstead could not start" --window-icon="$ICON_PATH" \
+          --text="The dashboard service is stopped and graphical authorization is unavailable.\n\nRun <tt>sudo blockstead start</tt> once in a terminal." --width=450
+      fi
+      exit 1
+    fi
+    if ! pkexec systemctl start "$SERVICE"; then
+      if command -v zenity >/dev/null; then
+        zenity --error --title="Blockstead could not start" --window-icon="$ICON_PATH" \
+          --text="Authorization was cancelled or the dashboard service could not start.\n\nRun <tt>sudo blockstead doctor</tt> for details." --width=450
+      fi
+      exit 1
+    fi
   fi
 
-  if [[ -n ${DISPLAY:-} || -n ${WAYLAND_DISPLAY:-} ]] && command -v zenity >/dev/null; then
-    if zenity --question --title="Blockstead" \
-      --text="The Blockstead Minecraft Dashboard service is not running.\n\nWould you like to start it now?" \
-      --ok-label="Start Service" --cancel-label="Cancel" --width=350; then
-      
-      if pkexec systemctl start "$SERVICE"; then
-        ready=false
-        for _ in {1..20}; do
-          if [[ $(systemctl is-active "$SERVICE" 2>/dev/null || true) == active ]]; then
-            ready=true
-            break
-          fi
-          sleep 0.5
-        done
-        
-        if [[ $ready == true ]]; then
-          xdg-open "$url"
-        else
-          zenity --error --title="Blockstead" --text="Blockstead service was started but did not become active in time. Check status with:\nblockstead doctor"
-          exit 1
-        fi
-      else
-        zenity --error --title="Blockstead" --text="Failed to start the Blockstead service or authorization was cancelled."
-        exit 1
-      fi
-    else
-      exit 0
+  for _ in {1..30}; do
+    if [[ -n $(health_json) ]]; then
+      ready=true
+      break
     fi
+    sleep 0.5
+  done
+
+  if [[ $ready != true ]]; then
+    if command -v zenity >/dev/null && [[ -n ${DISPLAY:-}${WAYLAND_DISPLAY:-} ]]; then
+      zenity --error --title="Blockstead is taking too long" --window-icon="$ICON_PATH" \
+        --text="The dashboard did not become ready.\n\nRun <tt>sudo blockstead doctor</tt> for a guided check." --width=450
+    else
+      echo "The Blockstead dashboard did not become ready at $url" >&2
+      echo "Check it with: sudo blockstead doctor" >&2
+    fi
+    exit 1
+  fi
+
+  if [[ -z ${DISPLAY:-} && -z ${WAYLAND_DISPLAY:-} ]]; then
+    echo "Blockstead dashboard is running at: $url"
+  elif command -v xdg-open >/dev/null; then
+    xdg-open "$url" >/dev/null 2>&1
+  elif command -v gio >/dev/null; then
+    gio open "$url" >/dev/null 2>&1
   else
-    echo "Blockstead service is not running."
-    echo "Start it with: sudo blockstead start"
+    echo "Blockstead is running, but no browser opener was found."
+    echo "Open this address in your browser: $url"
     exit 1
   fi
 }

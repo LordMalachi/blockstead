@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { api, setCsrf, type Session } from "../../api/client";
+import { BrandMark } from "../../components/BrandMark";
 import { Button } from "../../components/Button";
 import "./setup.css";
 
@@ -19,7 +20,7 @@ export function AuthPage({ setup, onSuccess }: { setup: boolean; onSuccess: () =
   }
   return <main className="auth-shell">
     <section className="auth-intro" aria-label="About Blockstead">
-      <a className="auth-brand" href="/" aria-label="Blockstead home"><span className="brand-mark" aria-hidden="true"><span>B</span></span><span>Blockstead</span></a>
+      <a className="auth-brand" href="/" aria-label="Blockstead home"><BrandMark /><span>Blockstead</span></a>
       <div className="auth-intro__copy">
         <p className="eyebrow">Your world. Your machine.</p>
         <h2>Run your Minecraft server with confidence.</h2>
@@ -30,7 +31,7 @@ export function AuthPage({ setup, onSuccess }: { setup: boolean; onSuccess: () =
     </section>
     <section className="auth-panel">
       <div className="auth-card" aria-labelledby="auth-title">
-        <div className="auth-card__mobile-brand"><span className="brand-mark" aria-hidden="true"><span>B</span></span><strong>Blockstead</strong></div>
+        <div className="auth-card__mobile-brand"><BrandMark /><strong>Blockstead</strong></div>
         <p className="eyebrow">{setup ? "Let’s get you settled" : "Local server care"}</p>
         <h1 id="auth-title">{setup ? "Welcome to Blockstead" : "Welcome back"}</h1>
         <p>{setup ? "Create the administrator for this machine. You’ll add your server on the next screen." : "Sign in to manage your Minecraft server."}</p>
