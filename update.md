@@ -1,6 +1,6 @@
 # Blockstead upgrade plan and progress
 
-Last updated: 2026-07-17
+Last updated: 2026-07-19
 
 This document explains the next Blockstead UI and product upgrades and tracks
 their implementation. The full product specification lives in
@@ -38,8 +38,8 @@ remain available without dominating normal server care.
 | 1. Server workspace navigation | Complete | Profile-aware server workspaces, a server-card landing page, and routed tools |
 | 2. Backup Center | Complete | Manual and scheduled backups, history, manifests, checksums, retention, verification, and staged restore |
 | 3. Guided settings editor | Complete | Safe typed editing with search, validation, diff preview, automatic snapshots, and a validated raw editor |
-| 4. Owner-focused overview | Planned | Useful server health, player, backup, schedule, storage, and update information |
-| 5. Automation upgrade | Planned | Weekly schedules, readable action sequences, previews, and execution history |
+| 4. Owner-focused overview | Complete | Live player capacity, join address, sampled health trends, protection and schedule status, warnings, and recent activity |
+| 5. Automation upgrade | Next | Weekly schedules, readable action sequences, previews, and execution history |
 | 6. Activity and notifications | Planned | Human-readable audit history and important operational alerts |
 | 7. Safe file workspace | Planned | Restricted editing, uploads, downloads, archives, and recovery protection |
 | 8. Player and mobile improvements | Planned | Online-player insights, quicker actions, and installable mobile-friendly access |
@@ -64,13 +64,17 @@ Blockstead already provides:
   Paper, plus revision-safe editing of generated loader configuration files;
 - a responsive visual system and guided first-run experience;
 - a server-card landing page and a routed, bookmarkable workspace per server.
+- an owner-focused overview with the join IP and port, live player capacity,
+  uptime, backup and schedule status, health history, actionable warnings, and
+  recent activity.
 
 The main limitations to address are:
 
 - the schedule panel is basic, with a single daily start and stop time;
-- metrics show current values rather than useful history or trends;
-- operational events exist internally but are not presented as an activity feed;
-- online player counts are not available, so server cards show allowlist size.
+- the full Activity workspace and configurable notifications are not built yet;
+- server cards still show allowlist size rather than polling every server;
+- TPS, MSPT, and update availability remain hidden until a reliable capability
+  supplies them.
 
 ## Focused enhancement: shared browser map
 
@@ -215,7 +219,7 @@ cover normal ownership tasks without forcing the user into a raw file editor.
 
 ## Milestone 4: owner-focused overview
 
-**Status: Planned**
+**Status: Complete**
 
 ### Why
 
@@ -225,14 +229,15 @@ questions.
 
 ### Work checklist
 
-- [ ] Show online players and maximum capacity.
-- [ ] Show CPU, memory, disk, and world-size history with modest sparklines.
-- [ ] Show TPS or MSPT only when a reliable capability provides it.
-- [ ] Show uptime, server address, and a copy action.
-- [ ] Show last backup and next scheduled operation.
-- [ ] Surface readiness, crash, storage, and update warnings as an action list.
-- [ ] Add recent activity without turning the page into a full log viewer.
-- [ ] Move PID, exit code, and raw host information into diagnostics.
+- [x] Show online players and maximum capacity.
+- [x] Show CPU, memory, disk, and world-size history with modest sparklines.
+- [x] Show TPS or MSPT only when a reliable capability provides it.
+- [x] Show uptime, server address, and a copy action.
+- [x] Show last backup and next scheduled operation.
+- [x] Surface readiness, crash, storage, and update warnings as an action list;
+      update warnings remain omitted until Blockstead has a reliable update source.
+- [x] Add recent activity without turning the page into a full log viewer.
+- [x] Move PID, exit code, and raw host information into diagnostics.
 
 ### Acceptance criteria
 
@@ -358,6 +363,23 @@ Before marking any milestone complete:
 
 ## Progress log
 
+- **2026-07-19 — Owner-focused overview complete.** Replaced the diagnostic-first
+  overview tiles with the information a home server owner needs: live player
+  count and capacity from the local Minecraft Java status protocol, uptime,
+  verified-backup age, the next scheduled operation, and the configured join
+  host and port with a copy action. Wildcard-bound servers prefer the hostname
+  used to open Blockstead or a detected LAN address; loopback-only binds are
+  called out, and the UI explains that Blockstead does not change firewall or
+  router rules. A profile-scoped overview endpoint records once-per-minute CPU,
+  memory, disk, process-memory, and recognized-world-size samples, keeps seven
+  days, and returns recent history for restrained sparklines. Readiness, crash,
+  low-storage, stale or missing-backup, and local-bind warnings link to their
+  recovery pages; recent audit events stay concise. PID, exit code, bind detail,
+  and raw process memory moved into collapsed diagnostics. TPS, MSPT, and update
+  availability are omitted because no reliable capability supplies them yet.
+  Verification: strict backend lint and type checks, 160 Python 3.12 tests, 33
+  frontend tests, production build, the real-backend Playwright lifecycle flow,
+  refreshed documentation screenshots with visual review, and diff hygiene.
 - **2026-07-17 — Linux and Minecraft compatibility pass.** Reviewed the new
   Backup Center and raw editor against real server layouts rather than the
   test fixture. Backups now read `level-name` from `server.properties`

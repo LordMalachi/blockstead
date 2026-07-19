@@ -5,7 +5,7 @@ import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -25,7 +25,7 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Scope
@@ -65,7 +65,15 @@ from .mod_configs import (
     read_mod_config,
     write_mod_config,
 )
-from .models import Administrator, AuditEvent, BackupRecord, LoginSession, Profile, Schedule
+from .models import (
+    Administrator,
+    AuditEvent,
+    BackupRecord,
+    LoginSession,
+    MetricSample,
+    Profile,
+    Schedule,
+)
 from .modpacks import (
     MAX_MRPACK_BYTES,
     ModpackError,
@@ -75,6 +83,13 @@ from .modpacks import (
 )
 from .modrinth import ModrinthError, plan_install
 from .modrinth import search as modrinth_search
+from .overview import (
+    join_details,
+    minecraft_status,
+    next_schedule_operation,
+    read_properties,
+    world_size,
+)
 from .process import InvalidTransition, ProcessManager
 from .provisioning import (
     USER_AGENT,
@@ -181,8 +196,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         follow_redirects=True,
     )
 
+    metrics_task: asyncio.Task[None] | None = None
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        nonlocal metrics_task
         engine = factory.kw["bind"]
         Base.metadata.create_all(engine)
         with factory() as db:
@@ -195,7 +213,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 record.completed_at = datetime.now(timezone.utc)  # noqa: UP017
             db.commit()
         scheduler.begin()
+        metrics_task = asyncio.create_task(metrics_loop())
         yield
+        if metrics_task is not None:
+            metrics_task.cancel()
+            try:
+                await metrics_task
+            except asyncio.CancelledError:
+                pass
+            metrics_task = None
         await scheduler.close()
         await manager.close()
         await http_client.aclose()
@@ -207,6 +233,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.active_profile_id = None
     # Profiles with a restore in flight; starting or backing up one is refused.
     restoring_profiles: set[str] = set()
+
+    def collect_metric_sample(profile: Profile, *, include_process: bool) -> MetricSample:
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage(str(config.data_dir))
+        process_memory: int | None = None
+        pid = manager.snapshot()["pid"] if include_process else None
+        if isinstance(pid, int):
+            try:
+                process_memory = psutil.Process(pid).memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        try:
+            directory = canonical_child(Path(profile.server_directory), config.server_root)
+            size = world_size(directory)
+        except (ValueError, OSError):
+            size = None
+        return MetricSample(
+            profile_id=profile.id,
+            cpu_percent=psutil.cpu_percent(interval=None),
+            memory_percent=memory.percent,
+            disk_percent=disk.percent,
+            process_memory_bytes=process_memory,
+            world_size_bytes=size,
+        )
+
+    def sample_active_profile() -> None:
+        profile_id = app.state.active_profile_id
+        if not isinstance(profile_id, str):
+            return
+        with factory() as db:
+            profile = db.get(Profile, profile_id)
+            if profile is None:
+                return
+            db.add(collect_metric_sample(profile, include_process=True))
+            cutoff = datetime.now(timezone.utc) - timedelta(days=7)  # noqa: UP017
+            db.execute(delete(MetricSample).where(MetricSample.created_at < cutoff))
+            db.commit()
+
+    async def metrics_loop() -> None:
+        while True:
+            try:
+                await asyncio.to_thread(sample_active_profile)
+            except Exception:
+                log.exception("Could not record an overview metric sample")
+            await asyncio.sleep(60)
 
     def get_db() -> Iterator[Session]:
         with factory() as db:
@@ -1345,6 +1416,275 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "extension_directory": extension,
             "extension_directory_present": bool(extension)
             and (directory / str(extension)).is_dir(),
+        }
+
+    @app.get("/api/v1/profiles/{profile_id}/overview")
+    async def profile_overview(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        properties = read_properties(directory)
+        active = app.state.active_profile_id == profile.id
+        snapshot = manager.snapshot()
+        state = str(snapshot["state"]) if active else "STOPPED"
+        if state.startswith("ProcessState."):
+            state = state.removeprefix("ProcessState.")
+
+        latest_sample = db.scalar(
+            select(MetricSample)
+            .where(MetricSample.profile_id == profile.id)
+            .order_by(MetricSample.created_at.desc())
+            .limit(1)
+        )
+        now_utc = datetime.now(timezone.utc)  # noqa: UP017
+        latest_at = latest_sample.created_at if latest_sample else None
+        if latest_at is not None and latest_at.tzinfo is None:
+            latest_at = latest_at.replace(tzinfo=timezone.utc)  # noqa: UP017
+        if latest_at is None or now_utc - latest_at >= timedelta(seconds=50):
+            sample = await asyncio.to_thread(
+                collect_metric_sample, profile, include_process=active
+            )
+            db.add(sample)
+            db.commit()
+
+        samples = list(
+            reversed(
+                db.scalars(
+                    select(MetricSample)
+                    .where(MetricSample.profile_id == profile.id)
+                    .order_by(MetricSample.created_at.desc())
+                    .limit(72)
+                ).all()
+            )
+        )
+
+        def sample_payload(sample: MetricSample) -> dict[str, object]:
+            created = sample.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)  # noqa: UP017
+            return {
+                "at": created.astimezone(timezone.utc).isoformat(),  # noqa: UP017
+                "cpu_percent": sample.cpu_percent,
+                "memory_percent": sample.memory_percent,
+                "disk_percent": sample.disk_percent,
+                "process_memory_bytes": sample.process_memory_bytes,
+                "world_size_bytes": sample.world_size_bytes,
+            }
+
+        live_sample = samples[-1]
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage(str(config.data_dir))
+        uptime: float | None = None
+        if active and manager.started_at is not None:
+            uptime = max(0.0, (now_utc - manager.started_at).total_seconds())
+
+        join = join_details(properties, request.url.hostname)
+        status = await minecraft_status(properties) if active and state == "RUNNING" else None
+        configured_max = 20
+        try:
+            possible_max = int(properties.get("max-players", "20"))
+            if 1 <= possible_max <= 1000:
+                configured_max = possible_max
+        except ValueError:
+            pass
+        players = status or {"online": None, "max": configured_max, "sample": []}
+        players["available"] = status is not None
+
+        backup = db.scalar(
+            select(BackupRecord)
+            .where(
+                BackupRecord.profile_id == profile.id,
+                BackupRecord.status == "completed",
+            )
+            .order_by(BackupRecord.created_at.desc())
+            .limit(1)
+        )
+        schedule = db.scalar(select(Schedule).where(Schedule.profile_id == profile.id))
+        next_operation = (
+            next_schedule_operation(
+                schedule.enabled,
+                schedule.start_time,
+                schedule.stop_time,
+                datetime.now().astimezone(),
+            )
+            if schedule
+            else None
+        )
+
+        warnings: list[dict[str, str]] = []
+        if state in {"CRASHED", "DEGRADED"}:
+            warnings.append(
+                {
+                    "code": "server-state",
+                    "title": "Server needs attention",
+                    "detail": str(snapshot["reason"]),
+                    "to": f"/servers/{profile.id}/console",
+                    "severity": "danger",
+                }
+            )
+        if disk.percent >= 90:
+            warnings.append(
+                {
+                    "code": "disk-space",
+                    "title": "Storage is running low",
+                    "detail": f"The Blockstead data disk is {disk.percent:.0f}% full.",
+                    "to": "/system",
+                    "severity": "danger" if disk.percent >= 95 else "warning",
+                }
+            )
+        if backup is None:
+            warnings.append(
+                {
+                    "code": "backup-missing",
+                    "title": "This world has not been backed up",
+                    "detail": "Create a verified backup before making important changes.",
+                    "to": f"/servers/{profile.id}/backups",
+                    "severity": "warning",
+                }
+            )
+        else:
+            backup_at = backup.created_at
+            if backup_at.tzinfo is None:
+                backup_at = backup_at.replace(tzinfo=timezone.utc)  # noqa: UP017
+            if now_utc - backup_at > timedelta(days=7):
+                warnings.append(
+                    {
+                        "code": "backup-stale",
+                        "title": "The latest backup is over a week old",
+                        "detail": "Create a fresh backup to keep recovery current.",
+                        "to": f"/servers/{profile.id}/backups",
+                        "severity": "warning",
+                    }
+                )
+        if join["local_only"]:
+            warnings.append(
+                {
+                    "code": "local-bind",
+                    "title": "Only this computer can join",
+                    "detail": "The server is bound to a loopback address in server.properties.",
+                    "to": f"/servers/{profile.id}/settings",
+                    "severity": "warning",
+                }
+            )
+
+        info = DISTRIBUTIONS.get(profile.distribution, DISTRIBUTIONS["unknown"])
+        required = None if profile.is_fixture else required_java_major(profile.minecraft_version)
+        runtimes = [] if profile.is_fixture else discover_java_runtimes()
+        selected = find_java(required, runtimes)
+        launch_problem: str | None = None
+        if not profile.is_fixture:
+            if profile.distribution == "unknown":
+                launch_problem = "The server distribution was not recognized."
+            else:
+                try:
+                    launch_arguments(profile.distribution, directory)
+                except LaunchPlanError as exc:
+                    launch_problem = str(exc)
+        if launch_problem:
+            warnings.append(
+                {
+                    "code": "launch-files",
+                    "title": "Launcher needs attention",
+                    "detail": launch_problem,
+                    "to": f"/servers/{profile.id}/overview#readiness",
+                    "severity": "warning",
+                }
+            )
+        if not profile.is_fixture and selected is None:
+            warnings.append(
+                {
+                    "code": "java-runtime",
+                    "title": f"Java {required or 'runtime'} is needed",
+                    "detail": "Install a compatible Java runtime before starting this server.",
+                    "to": f"/servers/{profile.id}/overview#readiness",
+                    "severity": "warning",
+                }
+            )
+        if not profile.is_fixture and not eula_accepted(directory):
+            warnings.append(
+                {
+                    "code": "eula",
+                    "title": "Minecraft EULA acceptance is required",
+                    "detail": "Review and accept the EULA before the first launch.",
+                    "to": f"/servers/{profile.id}/overview#readiness",
+                    "severity": "warning",
+                }
+            )
+
+        category_links = {
+            "manual_backup": "backups",
+            "backup_restore": "backups",
+            "backup_policy": "backups",
+            "server_start": "console",
+            "server_restart": "console",
+            "console_command": "console",
+            "player_action": "players",
+            "settings_update": "settings",
+            "settings_raw_update": "settings",
+            "schedule_update": "schedule",
+            "extension_install": "mods",
+            "extension_toggle": "mods",
+            "extension_delete": "mods",
+            "extension_upload": "mods",
+            "mod_config_update": "mods",
+        }
+        activity: list[dict[str, str]] = []
+        events = db.scalars(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(50))
+        for event in events:
+            if profile.id not in event.safe_detail and profile.name not in event.safe_detail:
+                continue
+            created = event.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)  # noqa: UP017
+            section = category_links.get(event.category, "overview")
+            activity.append(
+                {
+                    "id": event.id,
+                    "category": event.category,
+                    "result": event.result,
+                    "detail": event.safe_detail,
+                    "created_at": created.astimezone(timezone.utc).isoformat(),  # noqa: UP017
+                    "to": f"/servers/{profile.id}/{section}",
+                }
+            )
+            if len(activity) == 5:
+                break
+
+        backup_payload_value = backup_payload(backup) if backup else None
+        current_metrics: dict[str, object] = sample_payload(live_sample)
+        current_metrics.update(
+            {
+                "memory_used_bytes": memory.used,
+                "memory_total_bytes": memory.total,
+                "disk_used_bytes": disk.used,
+                "disk_total_bytes": disk.total,
+            }
+        )
+        return {
+            "state": {
+                "value": state,
+                "reason": snapshot["reason"] if active else "This server is not running.",
+                "uptime_seconds": uptime,
+            },
+            "join": join,
+            "players": players,
+            "metrics": {
+                "current": current_metrics,
+                "history": [sample_payload(sample) for sample in samples],
+            },
+            "last_backup": backup_payload_value,
+            "next_operation": next_operation,
+            "warnings": warnings,
+            "activity": activity,
+            "capabilities": {
+                "tps": False,
+                "mspt": False,
+                "distribution_label": info.label,
+            },
         }
 
     @app.get("/api/v1/system/metrics")

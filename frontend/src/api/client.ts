@@ -20,6 +20,20 @@ export interface PlayerFile { present: boolean; readable: boolean; players: Play
 export interface PlayersView { allowlist: PlayerFile; operators: PlayerFile; bans: PlayerFile }
 export type PlayerAction = "whitelist_add" | "whitelist_remove" | "op" | "deop" | "ban" | "pardon"
 export interface SystemMetrics { cpu_percent: number; memory: { total_bytes: number; used_bytes: number; percent: number }; disk: { total_bytes: number; used_bytes: number; percent: number }; process: { uptime_seconds: number | null; memory_bytes: number | null } }
+export interface OverviewMetricPoint { at: string; cpu_percent: number; memory_percent: number; disk_percent: number; process_memory_bytes: number | null; world_size_bytes: number | null }
+export interface OverviewWarning { code: string; title: string; detail: string; to: string; severity: "warning" | "danger" }
+export interface OverviewActivity { id: string; category: string; result: string; detail: string; created_at: string; to: string }
+export interface ProfileOverview {
+  state: { value: ProcessState["state"]; reason: string; uptime_seconds: number | null };
+  join: { host: string; port: number; address: string; bind_address: string | null; candidate_hosts: string[]; local_only: boolean };
+  players: { online: number | null; max: number; sample: string[]; available: boolean };
+  metrics: { current: OverviewMetricPoint & { memory_used_bytes: number; memory_total_bytes: number; disk_used_bytes: number; disk_total_bytes: number }; history: OverviewMetricPoint[] };
+  last_backup: BackupRecord | null;
+  next_operation: { label: string; at: string } | null;
+  warnings: OverviewWarning[];
+  activity: OverviewActivity[];
+  capabilities: { tps: boolean; mspt: boolean; distribution_label: string };
+}
 export interface Schedule { id: string; profile_id: string; enabled: boolean; start_time: string | null; stop_time: string | null; backup_before_stop: boolean; power_off_after_stop: boolean; wake_time: string | null }
 export interface BackupRecord { id: string; profile_id: string; status: "in_progress" | "completed" | "failed" | "expired"; method: "world_archive"; trigger: "manual" | "schedule"; file_name: string | null; size_bytes: number | null; duration_ms: number | null; sha256: string | null; included_paths: string[]; archive_available: boolean; result: string; created_at: string; completed_at: string | null }
 export interface RestorePreview { backup_id: string; verified: boolean; sha256: string; size_bytes: number; included_paths: string[]; worlds_replaced: string[]; required_bytes: number; available_bytes: number; backup_created_at: string | null; minecraft_version: string | null; can_restore: boolean; blockers: string[] }

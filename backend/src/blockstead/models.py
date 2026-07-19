@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -91,3 +91,19 @@ class BackupRecord(Base):
     result: Mapped[str] = mapped_column(Text, default="Backup is in progress.")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MetricSample(Base):
+    __tablename__ = "metric_samples"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), index=True
+    )
+    cpu_percent: Mapped[float] = mapped_column(Float)
+    memory_percent: Mapped[float] = mapped_column(Float)
+    disk_percent: Mapped[float] = mapped_column(Float)
+    process_memory_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    world_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )

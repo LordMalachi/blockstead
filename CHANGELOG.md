@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Replace the technical server overview with an owner-focused health page:
+  live Minecraft player capacity, uptime, backup protection, the next scheduled
+  operation, sampled CPU/memory/disk/world-size trends, actionable warnings,
+  recent activity, and collapsed diagnostics.
+- Show the Minecraft join host and configured port with a copy action, prefer a
+  detected LAN address for wildcard binds, and warn when the server is bound to
+  loopback without claiming firewall or router reachability.
 - Make Linux Mint setup graphical from end to end: a branded install launcher
   uses PolicyKit authorization and visible progress, installs the app shortcut
   for the initiating desktop user, and opens the dashboard automatically.
