@@ -4,6 +4,8 @@ export interface Profile { id: string; name: string; server_directory: string; d
 export interface ProcessState { state: "STOPPED" | "STARTING" | "RUNNING" | "STOPPING" | "CRASHED" | "DEGRADED" | "UNKNOWN"; pid: number | null; exit_code: number | null; reason: string; started_at?: string | null; profile_id?: string | null }
 export interface LogEvent { sequence: number; timestamp: string; line: string; profile_id: string | null }
 export interface ImportScan { canonical_path: string; distribution: string; minecraft_version: string | null; detected_files: string[]; is_fixture: boolean; plan: string[] }
+export interface ImportUploadStartResult { upload_id: string }
+export interface ImportUploadResult extends ImportScan { id: string; name: string }
 export type SettingCategory = "Gameplay" | "Players" | "World" | "Network" | "Performance"
 export type SettingValue = string | number | boolean
 export interface SettingEntry { key: string; label: string; category: SettingCategory; description: string; type: "string" | "integer" | "boolean"; value: SettingValue | null; minimum: number | null; maximum: number | null; options: string[]; restart_required: boolean }
@@ -57,6 +59,24 @@ let csrfToken = sessionStorage.getItem("blockstead_csrf") ?? "";
 export const setCsrf = (value: string) => { csrfToken = value; sessionStorage.setItem("blockstead_csrf", value); };
 export const clearCsrf = () => { csrfToken = ""; sessionStorage.removeItem("blockstead_csrf"); };
 export const getCsrf = () => csrfToken;
+
+/** POST a FormData body with upload progress, which fetch cannot report. */
+export function apiUpload<T>(path: string, form: FormData, onProgress?: (loadedBytes: number, totalBytes: number) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `/api/v1${path}`);
+    request.responseType = "json";
+    request.setRequestHeader("X-CSRF-Token", csrfToken);
+    if (onProgress) request.upload.onprogress = event => { if (event.lengthComputable) onProgress(event.loaded, event.total); };
+    request.onerror = () => reject(new Error("The upload could not reach Blockstead. Check that the dashboard is still running and try again."));
+    request.onload = () => {
+      const body = request.response as (ApiError & T) | null;
+      if (request.status >= 200 && request.status < 300) resolve(body as T);
+      else reject(new Error(body?.error?.recovery ? `${body.error.message} ${body.error.recovery}` : body?.error?.message ?? "Upload failed."));
+    };
+    request.send(form);
+  });
+}
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = init.method ?? "GET";

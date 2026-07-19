@@ -1,0 +1,4 @@
+# Folders created while exercising the browser upload import against the
+# fixtures server root: the e2e profile itself and any abandoned staging.
+e2e-upload-world*/
+.upload-*/

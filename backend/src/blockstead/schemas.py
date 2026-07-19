@@ -15,6 +15,15 @@ class ProfileCreate(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
 
 
+class ImportUploadStart(BaseModel):
+    directory_name: str = Field(min_length=1, max_length=64)
+
+
+class ImportUploadFinish(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    directory_name: str = Field(min_length=1, max_length=64)
+
+
 class CommandRequest(BaseModel):
     command: str = Field(min_length=1, max_length=32767)
 

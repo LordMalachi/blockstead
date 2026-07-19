@@ -30,7 +30,8 @@ Blockstead manages the process around them.
 
 - lists every server it looks after, and gives each one its own workspace with a
   bookmarkable page for the console, players, mods, schedule, and settings
-- imports an existing vanilla `server.jar` folder without moving or rewriting it
+- imports an existing vanilla `server.jar` folder from anywhere on the computer,
+  copying it in through the browser — no terminal or file moving required
 - starts, stops, restarts, and watches the managed server process
 - streams live server logs and sends one-line Minecraft console commands
 - safely edits common server settings with validation, diff review, and recovery snapshots
@@ -86,24 +87,27 @@ sudo bash ./scripts/install-linux.sh
 ### First run
 
 1. Create your Blockstead administrator account in the browser.
-2. Put your Minecraft server folder inside `/srv/minecraft/`, or create a new
-   Vanilla, Fabric, Forge, Quilt, NeoForge, or Paper profile in the dashboard.
-3. If importing an existing folder, use **Import** in the dashboard, review
-   the read-only import plan, and confirm.
-4. Review and explicitly accept the Minecraft EULA, then choose **Start server**.
+2. Create a new Vanilla, Fabric, Forge, Quilt, NeoForge, or Paper profile in
+   the dashboard — or bring an existing server: choose **Use an existing
+   server**, pick the server folder (on your Desktop, in Downloads, anywhere),
+   and Blockstead copies it into `/srv/minecraft/` for you. The original folder
+   is never changed, and you can delete it once the imported server runs.
+3. Review and explicitly accept the Minecraft EULA, then choose **Start server**.
    That's it — the dashboard, and any schedule you
    set, now survive reboots.
 
-### Read-only imports and managed writes
+### Imports and managed writes
 
-The **import scan** is intentionally read-only: scanning or recording an existing
-folder never changes it. After an administrator explicitly manages a profile,
-Blockstead can make narrowly scoped writes needed to operate it: create profiles,
-record EULA acceptance, update `server.properties`, install or disable mods and
-plugins, edit loader configuration, and create or restore backups. These actions
-require authentication and CSRF protection; risky file changes are staged, checked
-for stale revisions, restricted to the selected profile, and given recovery copies
-where practical. Blockstead never exposes a general-purpose shell in the browser.
+Importing copies your folder; it never edits the original. A folder that
+already lives in `/srv/minecraft/` can instead be recorded where it is with the
+read-only **scan**, which never changes it. After an administrator explicitly
+manages a profile, Blockstead can make narrowly scoped writes needed to operate
+it: create profiles, record EULA acceptance, update `server.properties`,
+install or disable mods and plugins, edit loader configuration, and create or
+restore backups. These actions require authentication and CSRF protection;
+risky file changes are staged, checked for stale revisions, restricted to the
+selected profile, and given recovery copies where practical. Blockstead never
+exposes a general-purpose shell in the browser.
 
 ## Run with Docker Compose
 

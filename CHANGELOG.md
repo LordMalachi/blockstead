@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Let the dashboard import an existing server folder from anywhere on the
+  computer: the browser uploads the chosen folder in batches with progress,
+  Blockstead copies it into the managed server root without touching the
+  original, and abandoned uploads are staged hidden and purged automatically.
+- Replace raw folder-scan errors (such as `[Errno 13] Permission denied`) with
+  plain-language guidance that names the server root and points to the new
+  upload option; scanning a folder already inside the server root remains
+  available as a read-only advanced path.
 - Replace the technical server overview with an owner-focused health page:
   live Minecraft player capacity, uptime, backup protection, the next scheduled
   operation, sampled CPU/memory/disk/world-size trends, actionable warnings,

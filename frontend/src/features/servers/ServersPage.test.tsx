@@ -31,6 +31,8 @@ test("shows one guided setup workflow at a time for the first server", async () 
   await userEvent.click(screen.getByRole("button", { name: /Use an existing server/ }));
   expect(screen.getByRole("heading", { name: "Import a server folder" })).toBeVisible();
   expect(screen.getByLabelText("Profile name")).toHaveValue("My Server");
+  expect(screen.getByLabelText("Server folder")).toHaveAttribute("webkitdirectory");
+  expect(screen.getByRole("button", { name: "Copy folder in" })).toBeDisabled();
   expect(screen.getByPlaceholderText("/srv/minecraft/my-server")).toBeRequired();
   expect(screen.queryByRole("heading", { name: "Create a configured profile" })).not.toBeInTheDocument();
 });

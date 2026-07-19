@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import secrets
+import shutil
 import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
@@ -57,7 +59,14 @@ from .extension_ops import (
     remove as remove_extension,
 )
 from .extensions import read_extensions
-from .import_scan import canonical_child, scan_server
+from .import_scan import (
+    UPLOAD_PREFIX,
+    canonical_child,
+    promote_staging,
+    purge_stale_uploads,
+    safe_relative_path,
+    scan_server,
+)
 from .java_runtime import discover_java_runtimes, find_java
 from .mod_configs import (
     ModConfigError,
@@ -92,6 +101,7 @@ from .overview import (
 )
 from .process import InvalidTransition, ProcessManager
 from .provisioning import (
+    DIRECTORY_PATTERN,
     USER_AGENT,
     ProvisionError,
     download_verified_file,
@@ -106,6 +116,8 @@ from .schemas import (
     Credentials,
     EulaRequest,
     ImportRequest,
+    ImportUploadFinish,
+    ImportUploadStart,
     InstallRequest,
     ModConfigUpdateRequest,
     ModpackInstallRequest,
@@ -450,13 +462,149 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin, _ = current(request, db)
         return {"username": admin.username}
 
+    def scan_error(exc: Exception) -> HTTPException:
+        """Turn folder-scan failures into plain-language guidance, never raw errno text."""
+        if isinstance(exc, PermissionError):
+            return HTTPException(
+                400,
+                "Blockstead is not allowed to read that folder — home folders are "
+                "private to your Linux account. Use the Import section's "
+                "'From this computer' option to upload the folder instead.",
+            )
+        if isinstance(exc, FileNotFoundError):
+            return HTTPException(
+                400,
+                "That folder was not found on this computer. Check the spelling, or "
+                "use the Import section's 'From this computer' option to upload it.",
+            )
+        if isinstance(exc, ValueError):
+            return HTTPException(400, str(exc))
+        return HTTPException(400, "That folder could not be read.")
+
     @app.post("/api/v1/imports/scan")
     def import_scan(payload: ImportRequest, request: Request, db: Db) -> dict[str, object]:
         mutation(request, db)
         try:
             return scan_server(Path(payload.path), config.server_root).model_dump()
         except (ValueError, OSError) as exc:
+            raise scan_error(exc) from exc
+
+    def upload_staging(upload_id: str) -> Path:
+        staging = config.server_root / f"{UPLOAD_PREFIX}{upload_id}"
+        if len(upload_id) != 32 or not upload_id.isalnum() or not staging.is_dir():
+            raise HTTPException(404, "That upload was not found or has expired.")
+        return staging
+
+    def abandon_upload(staging: Path) -> None:
+        shutil.rmtree(staging, ignore_errors=True)
+
+    @app.post("/api/v1/imports/uploads", status_code=201)
+    def import_upload_start(payload: ImportUploadStart, request: Request, db: Db) -> dict[str, str]:
+        mutation(request, db)
+        purge_stale_uploads(config.server_root)
+        if not DIRECTORY_PATTERN.match(payload.directory_name):
+            raise HTTPException(
+                400,
+                "Server folder names use lowercase letters, digits, dashes, and "
+                "underscores, and start with a letter or digit.",
+            )
+        if (config.server_root / payload.directory_name).exists():
+            raise HTTPException(
+                409,
+                f"A server folder named {payload.directory_name} already exists. "
+                "Choose a different name.",
+            )
+        token = secrets.token_hex(16)
+        (config.server_root / f"{UPLOAD_PREFIX}{token}").mkdir(mode=0o755)
+        return {"upload_id": token}
+
+    @app.post("/api/v1/imports/uploads/{upload_id}/files")
+    async def import_upload_files(
+        upload_id: str, files: list[UploadFile], request: Request, db: Db
+    ) -> dict[str, object]:
+        mutation(request, db)
+        staging = upload_staging(upload_id)
+        if len(files) > 1000:
+            raise HTTPException(400, "Send the upload in smaller batches of files.")
+        free_margin = 1 << 30
+        budget = psutil.disk_usage(str(config.server_root)).free - free_margin
+        written = 0
+        try:
+            for file in files:
+                destination = staging / safe_relative_path(file.filename or "")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with destination.open("wb") as output:
+                    while chunk := await file.read(1 << 20):
+                        written += len(chunk)
+                        if written > budget:
+                            raise HTTPException(
+                                409,
+                                "The computer does not have enough free disk space "
+                                "for this server folder. Free some space and start "
+                                "the import again.",
+                            )
+                        output.write(chunk)
+        except HTTPException:
+            abandon_upload(staging)
+            raise
+        except ValueError as exc:
+            abandon_upload(staging)
             raise HTTPException(400, str(exc)) from exc
+        except OSError as exc:
+            abandon_upload(staging)
+            raise HTTPException(
+                409, "The uploaded files could not be written. Start the import again."
+            ) from exc
+        return {"upload_id": upload_id, "received_files": len(files), "received_bytes": written}
+
+    @app.post("/api/v1/imports/uploads/{upload_id}/finish", status_code=201)
+    def import_upload_finish(
+        upload_id: str, payload: ImportUploadFinish, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        staging = upload_staging(upload_id)
+        if not DIRECTORY_PATTERN.match(payload.directory_name):
+            abandon_upload(staging)
+            raise HTTPException(400, "That server folder name cannot be used.")
+        if not any(staging.iterdir()):
+            abandon_upload(staging)
+            raise HTTPException(400, "The upload contained no files, so nothing was imported.")
+        target = config.server_root / payload.directory_name
+        try:
+            promote_staging(staging, target)
+        except ValueError as exc:
+            abandon_upload(staging)
+            raise HTTPException(409, str(exc)) from exc
+        except OSError as exc:
+            abandon_upload(staging)
+            raise HTTPException(
+                409, "The imported folder could not be moved into place. Try again."
+            ) from exc
+        result = scan_server(target, config.server_root)
+        profile = Profile(
+            name=payload.name.strip(),
+            server_directory=result.canonical_path,
+            distribution=result.distribution,
+            minecraft_version=result.minecraft_version,
+            loader_version=None,
+            is_fixture=result.is_fixture,
+        )
+        db.add(profile)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="profile_import",
+                result="success",
+                safe_detail=f"Imported an uploaded {result.distribution} server folder",
+            )
+        )
+        db.commit()
+        return {"id": profile.id, "name": profile.name, **result.model_dump()}
+
+    @app.delete("/api/v1/imports/uploads/{upload_id}", status_code=204)
+    def import_upload_cancel(upload_id: str, request: Request, db: Db) -> None:
+        mutation(request, db)
+        abandon_upload(upload_staging(upload_id))
 
     @app.get("/api/v1/profiles")
     def list_profiles(request: Request, db: Db) -> list[dict[str, object]]:
@@ -779,7 +927,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 canonical_child(Path(payload.path), config.server_root), config.server_root
             )
         except (ValueError, OSError) as exc:
-            raise HTTPException(400, str(exc)) from exc
+            raise scan_error(exc) from exc
         profile = Profile(
             name=payload.name.strip(),
             server_directory=result.canonical_path,

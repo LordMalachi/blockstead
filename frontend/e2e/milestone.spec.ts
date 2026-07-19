@@ -1,4 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 test("first admin imports and controls the owned fixture", async ({ page }) => {
   await page.goto("/");
@@ -10,7 +13,8 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
 
   await page.getByRole("button", { name: /Use an existing server/ }).click();
   await page.getByLabel("Profile name").fill("Vanilla test fixture");
-  await page.getByLabel("Server folder").fill("fixtures/servers/vanilla-fixture");
+  await page.getByText("The folder is already inside /srv/minecraft").click();
+  await page.getByLabel("Full path").fill("fixtures/servers/vanilla-fixture");
   await page.getByRole("button", { name: "Scan folder" }).click();
   await expect(page.getByRole("heading", { name: "Import plan" })).toBeVisible();
   await expect(page.getByText("Do not modify or launch imported files")).toBeVisible();
@@ -76,4 +80,37 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
   await expect(page).toHaveURL(`${workspace}/schedule`);
   await page.goForward();
   await expect(page).toHaveURL(`${workspace}/mods`);
+});
+
+test("a server folder from anywhere on the computer imports through the browser", async ({ page }) => {
+  // A previous run may have left the copied folder behind in the fixtures root.
+  rmSync(resolve(process.cwd(), "../fixtures/servers/e2e-upload-world"), { recursive: true, force: true });
+  const staging = mkdtempSync(join(tmpdir(), "blockstead-e2e-"));
+  const world = join(staging, "e2e-upload-world");
+  mkdirSync(join(world, "world"), { recursive: true });
+  writeFileSync(join(world, "server.properties"), "motd=Uploaded\n");
+  writeFileSync(join(world, "server.jar"), "jar");
+  writeFileSync(join(world, "world", "level.dat"), "level");
+
+  try {
+    await page.goto("/");
+    // The milestone test above already created the administrator; sign back in.
+    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await page.getByLabel("Username").fill("owner");
+    await page.getByLabel("Password").fill("correct horse battery staple");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
+
+    const importCard = page.locator("#import-server");
+    await importCard.getByLabel("Profile name").fill("E2E Upload World");
+    await importCard.getByLabel("Server folder").setInputFiles(world);
+    await expect(importCard.getByText(/Ready to copy/)).toBeVisible();
+    await importCard.getByRole("button", { name: "Copy folder in" }).click();
+
+    // The copied folder becomes a normal profile that opens its own workspace.
+    await expect(page).toHaveURL(/\/servers\/[^/]+\/overview$/, { timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: "E2E Upload World", level: 1 })).toBeVisible();
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
 });

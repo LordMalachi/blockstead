@@ -357,7 +357,7 @@ $result and is ready at $health_url
 First steps:
   1. Open Blockstead and create your administrator account.
   2. Create a Vanilla, Fabric, Forge, Quilt, NeoForge, or Paper server in the dashboard,
-     or import an existing folder from $SERVER_ROOT.
+     or import an existing server folder straight from this computer.
   3. Review and accept the Minecraft EULA, then choose Start server.
 
 "Blockstead" in the applications menu opens the dashboard. From any terminal:

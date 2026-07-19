@@ -19,7 +19,8 @@ test("captures documentation screenshots @docs", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
   await page.getByRole("button", { name: /Use an existing server/ }).click();
   await page.getByLabel("Profile name").fill("Vanilla test fixture");
-  await page.getByLabel("Server folder").fill("fixtures/servers/vanilla-fixture");
+  await page.getByText("The folder is already inside /srv/minecraft").click();
+  await page.getByLabel("Full path").fill("fixtures/servers/vanilla-fixture");
   await page.getByRole("button", { name: "Scan folder" }).click();
   await expect(page.getByRole("heading", { name: "Import plan" })).toBeVisible();
   await page.screenshot({ path: out("02-import-plan"), fullPage: true });

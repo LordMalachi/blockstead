@@ -15,7 +15,7 @@ const choices: Array<{
   {
     value: "import",
     title: "Use an existing server",
-    detail: "Keep your current world and files exactly where they are.",
+    detail: "Copy your world folder in from anywhere on this computer.",
   },
   {
     value: "modpack",

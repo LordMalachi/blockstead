@@ -1,9 +1,14 @@
 import json
-from pathlib import Path
+import shutil
+import time
+from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel
 
 from .distributions import detect_distribution
+
+UPLOAD_PREFIX = ".upload-"
+STALE_UPLOAD_SECONDS = 24 * 60 * 60
 
 
 class ImportScan(BaseModel):
@@ -20,9 +25,50 @@ def canonical_child(path: Path, allowed_root: Path) -> Path:
     candidate = path.resolve(strict=True)
     if not candidate.is_dir() or (candidate != root and root not in candidate.parents):
         raise ValueError(
-            "Server folder must be an existing directory inside the configured server root."
+            f"Blockstead can only scan folders inside {root}. To bring in a folder "
+            "from somewhere else on this computer, use the dashboard's Import "
+            "section to upload it instead."
         )
     return candidate
+
+
+def safe_relative_path(name: str) -> PurePosixPath:
+    """Turn an uploaded file's browser-supplied path into a safe relative path."""
+    if not name or "\\" in name or "\x00" in name:
+        raise ValueError("The upload contained a file with an unusable name.")
+    parts = [part for part in name.split("/") if part and part != "."]
+    if not parts or ".." in parts:
+        raise ValueError("The upload contained a file path that leaves the server folder.")
+    return PurePosixPath(*parts)
+
+
+def promote_staging(staging: Path, target: Path) -> None:
+    """Move a finished upload into place, unwrapping the folder the browser added.
+
+    Folder uploads arrive with every path prefixed by the chosen folder's own
+    name; when that single wrapper is all the staging area holds, its contents
+    become the server folder so the world sits at the top level.
+    """
+    entries = list(staging.iterdir())
+    source = staging
+    if len(entries) == 1 and entries[0].is_dir() and not entries[0].is_symlink():
+        source = entries[0]
+    if target.exists():
+        raise ValueError(f"A server folder named {target.name} already exists.")
+    source.rename(target)
+    if source != staging:
+        staging.rmdir()
+
+
+def purge_stale_uploads(root: Path, older_than_seconds: float = STALE_UPLOAD_SECONDS) -> None:
+    """Remove abandoned upload staging folders so they cannot accumulate."""
+    cutoff = time.time() - older_than_seconds
+    for entry in root.glob(f"{UPLOAD_PREFIX}*"):
+        try:
+            if entry.is_dir() and not entry.is_symlink() and entry.stat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            continue
 
 
 def scan_server(path: Path, allowed_root: Path) -> ImportScan:
