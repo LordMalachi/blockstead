@@ -41,6 +41,7 @@ from .backups import (
     perform_restore,
     plan_restore,
 )
+from .command_catalog import GuidedCommandRequest, catalog_payload, render_guided_command
 from .config import Settings
 from .db import Base, create_session_factory
 from .distributions import (
@@ -2005,6 +2006,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         db.commit()
         return {"status": "accepted"}
+
+    @app.get("/api/v1/profiles/{profile_id}/commands")
+    def guided_commands(profile_id: str, request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        if db.get(Profile, profile_id) is None:
+            raise HTTPException(404, "That profile was not found.")
+        return catalog_payload()
+
+    @app.post("/api/v1/server/guided-command", status_code=202)
+    async def guided_command(
+        payload: GuidedCommandRequest, request: Request, db: Db
+    ) -> dict[str, str]:
+        admin = mutation(request, db)
+        if db.get(Profile, payload.profile_id) is None:
+            raise HTTPException(404, "That profile was not found.")
+        if app.state.active_profile_id != payload.profile_id:
+            raise HTTPException(409, "Start this profile before sending it a command.")
+        try:
+            command, safety = render_guided_command(payload.command_id, payload.values)
+            if safety != "normal" and not payload.confirmed:
+                raise ValueError("Review and confirm this command before sending it.")
+            await manager.command(command)
+        except (InvalidTransition, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="guided_command",
+                result="accepted",
+                safe_detail=f"Sent guided command {payload.command_id}; values omitted",
+            )
+        )
+        db.commit()
+        return {"status": "accepted", "command": command}
 
     @app.post("/api/v1/server/restart", status_code=202)
     async def process_restart(payload: StartRequest, request: Request, db: Db) -> dict[str, object]:

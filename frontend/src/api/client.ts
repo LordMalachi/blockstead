@@ -21,6 +21,23 @@ export interface PlayerEntry { name: string; uuid: string | null; level: number 
 export interface PlayerFile { present: boolean; readable: boolean; players: PlayerEntry[] }
 export interface PlayersView { allowlist: PlayerFile; operators: PlayerFile; bans: PlayerFile }
 export type PlayerAction = "whitelist_add" | "whitelist_remove" | "op" | "deop" | "ban" | "pardon"
+export interface CommandOption { value: string; label: string; icon?: string }
+export interface CommandArgument {
+  key: string;
+  label: string;
+  kind: "text" | "player" | "integer" | "choice" | "resource" | "boolean";
+  required: boolean;
+  placeholder?: string;
+  source?: "players";
+  allow_selectors?: boolean;
+  options?: Array<string | CommandOption>;
+  suggestions?: number[];
+  minimum?: number;
+  maximum?: number;
+  max_length?: number;
+}
+export interface GuidedCommand { id: string; label: string; root: string; category: string; description: string; safety: "normal" | "caution" | "danger"; arguments: CommandArgument[] }
+export interface CommandCatalog { schema_version: number; revision: string; source: "curated" | "runtime"; complete: boolean; commands: GuidedCommand[] }
 export interface SystemMetrics { cpu_percent: number; memory: { total_bytes: number; used_bytes: number; percent: number }; disk: { total_bytes: number; used_bytes: number; percent: number }; process: { uptime_seconds: number | null; memory_bytes: number | null } }
 export interface OverviewMetricPoint { at: string; cpu_percent: number; memory_percent: number; disk_percent: number; process_memory_bytes: number | null; world_size_bytes: number | null }
 export interface OverviewWarning { code: string; title: string; detail: string; to: string; severity: "warning" | "danger" }

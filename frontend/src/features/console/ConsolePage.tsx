@@ -3,12 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type LogEvent } from "../../api/client";
 import { Button } from "../../components/Button";
 import { useServerScope } from "../servers/scope";
-
-const quickCommands = [
-  { label: "Who is online?", command: "list" },
-  { label: "Broadcast hello", command: "say Hello from Blockstead" },
-  { label: "Show allowlist", command: "whitelist list" },
-];
+import { CommandCenter } from "./CommandCenter";
 
 export function ConsolePage() {
   const scope = useServerScope();
@@ -47,8 +42,8 @@ export function ConsolePage() {
   return <section className="card console" id="console">
     <div className="section-heading"><div><p className="eyebrow">{scope.profile.name}</p><h2>Live server log</h2></div><span className="live-count"><i />{lines.length} lines</span></div>
     <div className="log" role="log" aria-live="polite">{lines.length ? lines.map(entry => <div key={entry.sequence}><time>{new Date(entry.timestamp).toLocaleTimeString()}</time><span>{entry.line}</span></div>) : <p className="empty">{scope.occupant ? `The log belongs to ${scope.occupant.name}, which is the server running right now.` : "Start this server to see its logs here."}</p>}</div>
-    <div className="quick-commands" aria-label="Guided commands">{quickCommands.map(item => <Button key={item.command} className="button--secondary button--small" disabled={!scope.running} onClick={() => send.mutate(item.command)}>{item.label}</Button>)}</div>
-    <form className="command" onSubmit={submit}><label htmlFor="command">Minecraft console command</label><div><input id="command" value={command} onChange={event => setCommand(event.target.value)} disabled={!scope.running} placeholder="give PlayerName minecraft:diamond 64" /><Button disabled={!scope.running}>Send command</Button></div><small>Any one-line vanilla Minecraft server command is sent to {scope.profile.name}—not to an operating-system shell.</small></form>
+    <CommandCenter profileId={scope.profile.id} running={scope.running} />
+    <details className="raw-command"><summary>Advanced raw command</summary><form className="command" onSubmit={submit}><label htmlFor="command">Minecraft console command</label><div><input id="command" value={command} onChange={event => setCommand(event.target.value)} disabled={!scope.running} placeholder="give PlayerName minecraft:diamond 64" /><Button disabled={!scope.running}>Send command</Button></div><small>Any one-line Minecraft server command is sent to {scope.profile.name}—not to an operating-system shell. Raw commands do not receive guided validation or warnings.</small></form></details>
     {notice && <p className="error" role="alert">{notice}</p>}
   </section>;
 }
