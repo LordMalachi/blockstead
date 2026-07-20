@@ -3,7 +3,9 @@ import getpass
 import sys
 from pathlib import Path
 
+from argon2.exceptions import Argon2Error
 from sqlalchemy import delete, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from .config import Settings
 from .db import create_session_factory
@@ -43,31 +45,40 @@ def reset_administrator_password(database_path: Path, password: str) -> str:
             f"No Blockstead database was found at {database_path}. Nothing was changed."
         )
 
-    password_hash = hash_password(password)
-    factory = create_session_factory(database_path)
-    with factory.begin() as db:
-        administrators = list(db.scalars(select(Administrator)).all())
-        if not administrators:
-            raise PasswordResetError(
-                "No administrator account exists yet. Create it in the Blockstead dashboard."
-            )
-        if len(administrators) != 1:
-            raise PasswordResetError(
-                "More than one administrator account exists, so recovery cannot safely choose one."
-            )
+    try:
+        password_hash = hash_password(password)
+        factory = create_session_factory(database_path)
+        with factory.begin() as db:
+            administrators = list(db.scalars(select(Administrator)).all())
+            if not administrators:
+                raise PasswordResetError(
+                    "No administrator account exists yet. Create it in the Blockstead dashboard."
+                )
+            if len(administrators) != 1:
+                raise PasswordResetError(
+                    "More than one administrator account exists, so recovery cannot safely "
+                    "choose one."
+                )
 
-        administrator = administrators[0]
-        administrator.password_hash = password_hash
-        db.execute(delete(LoginSession))
-        db.add(
-            AuditEvent(
-                admin_id=administrator.id,
-                category="security",
-                result="success",
-                safe_detail="Administrator password reset from the local system.",
+            administrator = administrators[0]
+            administrator.password_hash = password_hash
+            db.execute(delete(LoginSession))
+            db.add(
+                AuditEvent(
+                    admin_id=administrator.id,
+                    category="security",
+                    result="success",
+                    safe_detail="Administrator password reset from the local system.",
+                )
             )
-        )
-        username = administrator.username
+            username = administrator.username
+    except PasswordResetError:
+        raise
+    except (Argon2Error, OSError, SQLAlchemyError) as exc:
+        raise PasswordResetError(
+            "The Blockstead database could not be updated. Check the installation with "
+            "'sudo blockstead doctor', then try again. Nothing was changed."
+        ) from exc
     return username
 
 

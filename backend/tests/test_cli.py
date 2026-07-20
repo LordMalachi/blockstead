@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine, func, select
 
 from blockstead.cli import PasswordResetError, reset_administrator_password
@@ -79,3 +80,16 @@ def test_password_recovery_refuses_a_missing_database(tmp_path: Path) -> None:
         assert "No Blockstead database" in str(exc)
     else:
         raise AssertionError("missing database was accepted")
+
+
+def test_password_recovery_reports_a_damaged_database_safely(tmp_path: Path) -> None:
+    database = tmp_path / "blockstead.db"
+    database.write_text("this is not a sqlite database", encoding="utf-8")
+
+    with pytest.raises(PasswordResetError) as failure:
+        reset_administrator_password(database, "an entirely new password")
+
+    message = str(failure.value)
+    assert "could not be updated" in message
+    assert "sudo blockstead doctor" in message
+    assert "not a database" not in message

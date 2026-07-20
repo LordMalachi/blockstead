@@ -138,6 +138,7 @@ from .schemas import (
 from .security import (
     SESSION_COOKIE,
     LoginLimiter,
+    PasswordHashError,
     authenticate_request,
     create_session,
     digest,
@@ -256,6 +257,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.process_manager = manager
     app.state.diagnostics = diagnostics
     app.state.active_profile_id = None
+    app.state.websocket_auth_recheck_seconds = 5.0
     # Profiles with a restore in flight; starting or backing up one is refused.
     restoring_profiles: set[str] = set()
 
@@ -451,12 +453,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def login(payload: Credentials, request: Request, response: Response, db: Db) -> dict[str, str]:
         if request.headers.get("origin") not in config.origins:
             raise HTTPException(403, "This request came from an untrusted page.")
-        key = f"{request.client.host if request.client else 'unknown'}:{payload.username.lower()}"
-        limiter.check(key)
-        admin = db.scalar(select(Administrator).where(Administrator.username == payload.username))
-        if admin is None or not verify_password(admin.password_hash, payload.password):
+        client_host = request.client.host if request.client else "unknown"
+        key = f"{client_host}:{payload.username.casefold()}"
+        admin = db.scalar(
+            select(Administrator).where(
+                func.lower(Administrator.username) == payload.username.lower()
+            )
+        )
+        try:
+            password_valid = admin is not None and verify_password(
+                admin.password_hash, payload.password
+            )
+        except PasswordHashError as exc:
+            log.error("The stored administrator password hash could not be verified")
+            raise HTTPException(
+                500,
+                "The stored administrator password could not be read. Use the local password "
+                "recovery command shown on this page.",
+            ) from exc
+        if not password_valid:
             limiter.fail(key)
             raise HTTPException(401, "The username or password was not accepted.")
+        assert admin is not None
         limiter.clear(key)
         token, csrf = create_session(db, admin, config.session_hours)
         set_session_cookie(response, token)
@@ -2328,39 +2346,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.websocket("/api/v1/server/logs/ws")
     async def logs_socket(websocket: WebSocket) -> None:
+        def session_is_valid(token: str) -> bool:
+            with factory() as db:
+                session = db.scalar(
+                    select(LoginSession).where(LoginSession.token_hash == digest(token))
+                )
+                if session is None:
+                    return False
+                now = datetime.now(timezone.utc)  # noqa: UP017
+                if session.expires_at.replace(tzinfo=timezone.utc) <= now:  # noqa: UP017
+                    db.delete(session)
+                    db.commit()
+                    return False
+                return db.get(Administrator, session.admin_id) is not None
+
         origin = websocket.headers.get("origin")
         token = websocket.cookies.get(SESSION_COOKIE)
-        if origin not in config.origins or not token:
+        if origin not in config.origins or not token or not session_is_valid(token):
             await websocket.close(code=1008)
             return
-        with factory() as db:
-            session = db.scalar(
-                select(LoginSession).where(LoginSession.token_hash == digest(token))
-            )
-            now = datetime.now(timezone.utc)  # noqa: UP017
-            if (
-                session is None
-                or session.expires_at.replace(tzinfo=timezone.utc) <= now  # noqa: UP017
-                or db.get(Administrator, session.admin_id) is None
-            ):
-                await websocket.close(code=1008)
-                return
         await websocket.accept()
         subscription: asyncio.Task[None] | None = None
+        auth_watch: asyncio.Task[None] | None = None
+
+        async def close_when_session_ends() -> None:
+            while True:
+                await asyncio.sleep(float(app.state.websocket_auth_recheck_seconds))
+                if not await asyncio.to_thread(session_is_valid, token):
+                    await websocket.close(code=1008)
+                    return
+
         try:
             for event in manager.logs():
                 await websocket.send_json(event.__dict__)
             subscription = asyncio.create_task(
                 manager.subscribe(lambda event: websocket.send_json(event.__dict__))
             )
+            auth_watch = asyncio.create_task(close_when_session_ends())
             while (await websocket.receive())["type"] != "websocket.disconnect":
                 pass
         except (WebSocketDisconnect, RuntimeError):
             return
         finally:
-            if subscription is not None:
-                subscription.cancel()
-                await asyncio.gather(subscription, return_exceptions=True)
+            tasks = [task for task in (subscription, auth_watch) if task is not None]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     static_dir = resolve_static_dir(config.static_dir)
     if static_dir is None:

@@ -37,7 +37,7 @@ export function AuthPage({ setup, onSuccess }: { setup: boolean; onSuccess: () =
         <p>{setup ? "Create the administrator for this machine. You’ll add your server on the next screen." : "Sign in to manage your Minecraft server."}</p>
         {setup && <ol className="setup-steps"><li><span>1</span><div><strong>Create your account</strong><small>This is the local Blockstead administrator.</small></div></li><li><span>2</span><div><strong>Add your server folder</strong><small>Blockstead scans it without changing files.</small></div></li><li><span>3</span><div><strong>Review and start</strong><small>Accept the EULA, check readiness, and launch.</small></div></li></ol>}
         <form onSubmit={event => { void submit(event); }}>
-          <label>Username<input autoComplete="username" required minLength={3} value={username} onChange={e => setUsername(e.target.value)} placeholder="Your admin name" /></label>
+          <label>Username<input autoComplete="username" autoCapitalize="none" spellCheck={false} required minLength={3} value={username} onChange={e => setUsername(e.target.value)} placeholder="Your admin name" /></label>
           <label>Password<input type="password" autoComplete={setup ? "new-password" : "current-password"} required minLength={12} value={password} onChange={e => setPassword(e.target.value)} placeholder="12 characters or more" /></label>
           {error && <div className="error" role="alert">{error}</div>}
           <Button disabled={busy}>{busy ? "Working…" : setup ? "Create administrator" : "Sign in"}</Button>

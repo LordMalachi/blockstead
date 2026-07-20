@@ -7,6 +7,11 @@ class Credentials(BaseModel):
     username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
 
+    @field_validator("username", mode="before")
+    @classmethod
+    def normalize_username(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
 
 class ImportRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
