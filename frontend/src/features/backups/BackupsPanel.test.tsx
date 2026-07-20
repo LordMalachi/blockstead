@@ -73,17 +73,17 @@ test("shows persisted backup history", async () => {
   renderPanel();
 
   expect(await screen.findByText("Protected world.")).toBeVisible();
-  expect(screen.getByText("2.0 KB")).toBeVisible();
+  expect(screen.getAllByText("2.0 KB").length).toBeGreaterThan(0);
   expect(screen.getByText("1.5 s")).toBeVisible();
-  expect(screen.getByRole("button", { name: "Choose folder & back up" })).toBeEnabled();
-  expect(screen.getByRole("button", { name: "Restore…" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: /Restore backup from/ })).toBeEnabled();
 });
 
 test("explains live save handling and starts a manual backup", async () => {
   renderPanel({ records: [], running: true });
   expect(await screen.findByText(/briefly pause saving/i)).toBeVisible();
 
-  fireEvent.click(screen.getByRole("button", { name: "Choose folder & back up" }));
+  fireEvent.click(screen.getByRole("button", { name: "Back up now" }));
 
   await waitFor(() => expect(fetch).toHaveBeenCalledWith(
       "/api/v1/profiles/profile-1/backups",
@@ -93,7 +93,7 @@ test("explains live save handling and starts a manual backup", async () => {
 
 test("reviews a verified restore before performing it", async () => {
   renderPanel();
-  fireEvent.click(await screen.findByRole("button", { name: "Restore…" }));
+  fireEvent.click(await screen.findByRole("button", { name: /Restore backup from/ }));
 
   expect(await screen.findByText(/passed checksum verification/i)).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Restore this backup" }));
@@ -108,7 +108,7 @@ test("reviews a verified restore before performing it", async () => {
 
 test("keeps restore disabled while a blocker exists", async () => {
   renderPanel({ preview: { ...verifiedPreview, can_restore: false, blockers: ["Stop this server before restoring a backup."] } });
-  fireEvent.click(await screen.findByRole("button", { name: "Restore…" }));
+  fireEvent.click(await screen.findByRole("button", { name: /Restore backup from/ }));
 
   expect(await screen.findByText("Stop this server before restoring a backup.")).toBeVisible();
   expect(screen.getByRole("button", { name: "Restore this backup" })).toBeDisabled();
@@ -118,14 +118,14 @@ test("expired backups cannot be restored from history", async () => {
   renderPanel({ records: [{ ...completed, status: "expired", archive_available: false, result: "Protected world. Removed by the retention policy." }] });
 
   expect(await screen.findByText(/Removed by the retention policy/)).toBeVisible();
-  expect(screen.queryByRole("button", { name: "Restore…" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /Restore backup from/ })).toBeNull();
 });
 
 test("saves retention rules with blank meaning no limit", async () => {
   renderPanel();
   const count = await screen.findByLabelText(/Keep at most/);
   fireEvent.change(count, { target: { value: "3" } });
-  fireEvent.click(screen.getByRole("button", { name: "Save retention" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save backup settings" }));
 
   await waitFor(() => expect(fetch).toHaveBeenCalledWith(
     "/api/v1/profiles/profile-1/backup-policy",
@@ -139,7 +139,7 @@ test("saves retention rules with blank meaning no limit", async () => {
 
 test("saves approved redundant backup destinations", async () => {
   renderPanel();
-  fireEvent.click(await screen.findByText("Advanced redundant copies"));
+  fireEvent.click(await screen.findByText("Copies on another drive"));
   fireEvent.click(screen.getByLabelText(/Mirror every backup/));
   fireEvent.change(screen.getByLabelText("Destination folder"), {
     target: { value: "/media/backup-drive/minecraft" },
@@ -160,4 +160,42 @@ test("saves approved redundant backup destinations", async () => {
       }),
     }),
   ));
+});
+
+test("opens the backup guide and exposes verification help", async () => {
+  renderPanel();
+  const guide = await screen.findByRole("button", { name: "Open backup guide" });
+  fireEvent.click(guide);
+
+  expect(screen.getByRole("heading", { name: "From live world to safe restore" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Help: What makes a backup verified?" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Help: How backup retention works" })).toBeVisible();
+
+  fireEvent.click(screen.getByRole("button", { name: "Close guide" }));
+  await waitFor(() => expect(guide).toHaveFocus());
+});
+
+test("filters history and explains a missing completed archive", async () => {
+  renderPanel({ records: [
+    completed,
+    { ...completed, id: "backup-2", archive_available: false, result: "Archive was removed outside Blockstead." },
+  ] });
+
+  fireEvent.click(await screen.findByRole("button", { name: /Needs attention/ }));
+
+  expect(screen.getByText("archive missing")).toBeVisible();
+  expect(screen.getByText("The retained archive is no longer available.")).toBeVisible();
+  expect(screen.queryByText("Protected world.")).not.toBeInTheDocument();
+});
+
+test("returns focus to the selected restore point after cancelling review", async () => {
+  renderPanel();
+  const trigger = await screen.findByRole("button", { name: /Restore backup from/ });
+  trigger.focus();
+  fireEvent.click(trigger);
+
+  expect(await screen.findByRole("region", { name: "Restore review" })).toHaveFocus();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel restore" }));
+
+  await waitFor(() => expect(trigger).toHaveFocus());
 });

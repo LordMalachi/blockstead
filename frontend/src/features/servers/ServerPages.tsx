@@ -21,7 +21,7 @@ export function SchedulePage() {
 
 export function BackupsPage() {
   const scope = useServerScope();
-  return <BackupsPanel profileId={scope.profile.id} running={scope.running} />;
+  return <BackupsPanel profileId={scope.profile.id} running={scope.running} serverState={scope.state} />;
 }
 
 export function SettingsPage() {

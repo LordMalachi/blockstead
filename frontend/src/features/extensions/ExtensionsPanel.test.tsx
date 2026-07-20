@@ -54,13 +54,13 @@ test("shows installed extension metadata and inventory warnings", async () => {
   expect(await screen.findByText("Lithium")).toBeVisible();
   expect(screen.getByText("lithium.jar")).toBeVisible();
   expect(screen.getByText("This mod belongs on a client.")).toBeVisible();
-  expect(screen.getByRole("button", { name: "Disable" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Disable Lithium" })).toBeEnabled();
 });
 
 test("locks file changes while the server is active", async () => {
   renderPanel(false);
   expect(await screen.findByText("Lithium")).toBeVisible();
-  expect(screen.getByRole("button", { name: "Disable" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Disable Lithium" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Upload" })).toBeDisabled();
   expect(screen.getByText("Stop the server before changing extension files.")).toBeVisible();
 });
@@ -96,8 +96,8 @@ test("searches with filters, pages results, and installs a chosen version", asyn
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
   await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("offset=20"), expect.anything()));
 
-  fireEvent.click(screen.getByRole("button", { name: "Versions" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Install this version" }));
+  fireEvent.click(screen.getByRole("button", { name: "Show versions for Lithium" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Install version 2.0.0" }));
   await waitFor(() => expect(fetch).toHaveBeenCalledWith(
     "/api/v1/profiles/profile-1/extensions/install",
     expect.objectContaining({ method: "POST", body: JSON.stringify({ project_id: "proj-lithium", source: "modrinth", version_id: "ver-2" }) }),
@@ -109,7 +109,7 @@ test("checks for updates and applies one through the update endpoint", async () 
   fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
   expect(await screen.findByText("1 update available.")).toBeVisible();
 
-  fireEvent.click(screen.getByRole("button", { name: "Update to 2.0" }));
+  fireEvent.click(screen.getByRole("button", { name: "Update Lithium to 2.0" }));
   await waitFor(() => expect(fetch).toHaveBeenCalledWith(
     "/api/v1/profiles/profile-1/extensions/update",
     expect.objectContaining({ method: "POST", body: JSON.stringify({ file_name: "lithium.jar" }) }),
@@ -160,4 +160,41 @@ test("installs the curated squaremap project through the verified extension endp
       body: JSON.stringify({ project_id: "squaremap" }),
     }),
   ));
+});
+
+test("keeps discovery open while a running server protects file changes", async () => {
+  renderPanel(false);
+  const search = await screen.findByLabelText("Search server-compatible projects");
+  fireEvent.change(search, { target: { value: "lithium" } });
+
+  expect(screen.getByRole("button", { name: "Search" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+  expect(await screen.findByText("Performance mod.")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Install Lithium" })).toBeDisabled();
+});
+
+test("opens an in-page guide and exposes contextual help", async () => {
+  renderPanel();
+  const guide = await screen.findByRole("button", { name: "Open extension guide" });
+  fireEvent.click(guide);
+
+  expect(screen.getByRole("heading", { name: "A safe modding loop" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Help: How compatibility matching works" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Help: When to upload a jar manually" })).toBeVisible();
+
+  fireEvent.click(screen.getByRole("button", { name: "Close guide" }));
+  await waitFor(() => expect(guide).toHaveFocus());
+});
+
+test("moves focus through inline removal confirmation", async () => {
+  renderPanel();
+  const remove = await screen.findByRole("button", { name: "Remove Lithium" });
+  remove.focus();
+  fireEvent.click(remove);
+
+  expect(screen.getByRole("button", { name: "Permanently remove Lithium" })).toHaveFocus();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel removing Lithium" }));
+
+  expect(screen.getByRole("button", { name: "Remove Lithium" })).toHaveFocus();
 });

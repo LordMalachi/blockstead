@@ -19,7 +19,7 @@ const topics: HelpTopic[] = [
   { title: "Manage players", category: "Everyday care", summary: "Maintain the allowlist, operators, and bans through validated actions instead of editing player files by hand.", page: "players", action: "Open player tools" },
   { title: "Protect and restore a world", category: "Safety", summary: "Create verified backups, choose retention limits, preview a restore, and preserve the world being replaced.", page: "backups", action: "Open Backup Center" },
   { title: "Set a weekly routine", category: "Automation", summary: "Schedule starts and maintenance, back up before stopping, add one-time work, and preview every step before it runs.", page: "schedule", action: "Open scheduling" },
-  { title: "Install mods, plugins, and a shared map", category: "Extensions", summary: "Check compatibility, install verified Modrinth files, manage loader configuration, and set up squaremap without a client mod.", page: "mods", action: "Open mods and plugins" },
+  { title: "Install mods, plugins, and a shared map", category: "Extensions", summary: "Search compatible releases across connected catalogs, install verified files, manage your active loadout, and tune generated configuration safely.", page: "mods", action: "Open mods and plugins" },
   { title: "Change server settings", category: "Configuration", summary: "Use typed fields and a change preview, then rely on automatic recovery snapshots if a setting needs to be reversed.", page: "settings", action: "Open settings" },
   { title: "Diagnose a problem", category: "Support", summary: "Check computer health, Java discovery, recent errors, and save a redacted diagnostic report to share when asking for help.", page: null, action: "Open System" },
 ];
