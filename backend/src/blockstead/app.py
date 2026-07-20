@@ -44,6 +44,7 @@ from .backups import (
 from .command_catalog import GuidedCommandRequest, catalog_payload, render_guided_command
 from .config import Settings
 from .db import Base, create_session_factory
+from .diagnostics import attach_logging, build_report
 from .distributions import (
     DISTRIBUTIONS,
     LaunchPlanError,
@@ -201,6 +202,7 @@ class SpaStaticFiles(StaticFiles):
 def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or Settings()
     config.prepare()
+    diagnostics = attach_logging(config.data_dir)
     factory = create_session_factory(config.data_dir / "blockstead.db")
     manager = ProcessManager()
     limiter = LoginLimiter()
@@ -230,6 +232,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.commit()
         scheduler.begin()
         metrics_task = asyncio.create_task(metrics_loop())
+        log.info(
+            "Blockstead %s started; dashboard bound to %s:%s",
+            __version__,
+            config.bind_host,
+            config.port,
+        )
         yield
         if metrics_task is not None:
             metrics_task.cancel()
@@ -246,6 +254,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = config
     app.state.session_factory = factory
     app.state.process_manager = manager
+    app.state.diagnostics = diagnostics
     app.state.active_profile_id = None
     # Profiles with a restore in flight; starting or backing up one is refused.
     restoring_profiles: set[str] = set()
@@ -1869,6 +1878,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "process": process,
         }
 
+    def diagnostics_payload(db: Session) -> dict[str, object]:
+        return build_report(
+            config=config,
+            buffer=diagnostics,
+            server={**manager.snapshot(), "profile_id": app.state.active_profile_id},
+            static_dir=resolve_static_dir(config.static_dir),
+            db=db,
+        )
+
+    @app.get("/api/v1/system/diagnostics")
+    def system_diagnostics(request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        return diagnostics_payload(db)
+
+    @app.get("/api/v1/system/diagnostics/report")
+    def system_diagnostics_report(request: Request, db: Db) -> Response:
+        current(request, db)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")  # noqa: UP017
+        return Response(
+            content=json.dumps(diagnostics_payload(db), indent=2),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="blockstead-report-{stamp}.json"'
+            },
+        )
+
     @app.get("/api/v1/server/state")
     def process_state(request: Request, db: Db) -> dict[str, object]:
         current(request, db)
@@ -2147,6 +2182,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
+        log.info("Starting the %s server for profile %s", label, profile.name)
         db.add(
             AuditEvent(
                 admin_id=admin.id,
@@ -2229,6 +2265,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
+        log.info("Restarting the %s server for profile %s", label, profile.name)
         db.add(
             AuditEvent(
                 admin_id=admin.id,
@@ -2268,7 +2305,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
         if graceful:
+            log.info("Stopped the managed server")
             app.state.active_profile_id = None
+        else:
+            log.warning("The managed server did not stop before the timeout")
         return {
             **manager.snapshot(),
             "graceful": graceful,
@@ -2282,6 +2322,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await manager.force_stop()
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
+        log.warning("Force-stopped the managed server")
         app.state.active_profile_id = None
         return {**manager.snapshot(), "profile_id": None}
 

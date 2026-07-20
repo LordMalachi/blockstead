@@ -39,6 +39,23 @@ export interface CommandArgument {
 export interface GuidedCommand { id: string; label: string; root: string; category: string; description: string; safety: "normal" | "caution" | "danger"; arguments: CommandArgument[] }
 export interface CommandCatalog { schema_version: number; revision: string; source: "curated" | "runtime"; complete: boolean; commands: GuidedCommand[] }
 export interface SystemMetrics { cpu_percent: number; memory: { total_bytes: number; used_bytes: number; percent: number }; disk: { total_bytes: number; used_bytes: number; percent: number }; process: { uptime_seconds: number | null; memory_bytes: number | null } }
+export interface DiagnosticLogEntry { at: string; level: string; logger: string; message: string }
+export interface DiagnosticsReport {
+  report_version: number;
+  generated_at: string;
+  application: { version: string; python: string; platform: string };
+  settings: { bind_host: string; port: number; data_dir: string; server_root: string; secure_cookies: boolean; session_hours: number; allowed_origins: string[]; static_dir_present: boolean };
+  host: { cpu_percent: number; memory: { total_bytes: number; used_bytes: number; percent: number }; disk: { total_bytes: number; used_bytes: number; percent: number }; uptime_seconds: number };
+  java_runtimes: JavaRuntime[];
+  server: ProcessState;
+  profiles: Array<{ id: string; name: string; distribution: string; minecraft_version: string | null; loader_version: string | null; is_fixture: boolean; directory: string }>;
+  schedules: Array<{ profile_id: string; enabled: boolean; start_time: string | null; stop_time: string | null; weekdays: string }>;
+  recent_automation_runs: Array<{ trigger: string; action: string; status: string; detail: string; started_at: string }>;
+  recent_backups: Array<{ status: string; trigger: string; size_bytes: number | null; duration_ms: number | null; result: string; created_at: string }>;
+  audit_tail: Array<{ category: string; result: string; detail: string; created_at: string }>;
+  recent_errors: DiagnosticLogEntry[];
+  recent_log: DiagnosticLogEntry[];
+}
 export interface OverviewMetricPoint { at: string; cpu_percent: number; memory_percent: number; disk_percent: number; process_memory_bytes: number | null; world_size_bytes: number | null }
 export interface OverviewWarning { code: string; title: string; detail: string; to: string; severity: "warning" | "danger" }
 export interface OverviewActivity { id: string; category: string; result: string; detail: string; created_at: string; to: string }

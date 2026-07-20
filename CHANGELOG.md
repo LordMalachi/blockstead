@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add a downloadable diagnostic report: the System page now shows the software
+  settings, discovered Java runtimes, and recent warnings and errors, and can
+  save everything — host health, per-server summaries, recent operations, and
+  the application log — as one JSON file to attach when asking for help. Home
+  directory account names are removed from every path in the report, and
+  nothing leaves the computer unless the owner shares the file. Application
+  events now also persist to a small rotating log under the data directory.
+- Stop Alembic from disabling the application's loggers when database
+  migrations run in the same process, which silenced every later log message.
+
 - Return to the sign-in screen the moment the dashboard's session expires.
   Previously every poll failed silently and the overview kept showing its last
   fetched player count, uptime, and Running badge as if they were live.
