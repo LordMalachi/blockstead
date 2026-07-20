@@ -32,6 +32,12 @@ an allowed `Origin`. WebSockets require an unexpired authenticated cookie and
 allowed origin; no security value is placed in a loggable URL. Production
 errors use a stable envelope and omit tracebacks.
 
+Forgotten-password recovery is intentionally outside the HTTP surface. A
+person with local Linux administrator or Docker control can run the interactive
+recovery command, which replaces the Argon2id hash and revokes every existing
+session in one database transaction. Passwords are not accepted in process
+arguments, written to logs, or returned to the browser.
+
 ## Profile import
 
 The configured server root is canonicalized at startup. Requested paths must be

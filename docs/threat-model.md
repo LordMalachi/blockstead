@@ -22,6 +22,7 @@ service is trusted but runs unprivileged and has access only to configured roots
 | Path traversal / symlink escape | canonical allowed root and descendant checks; no mutation during scan | Future upload/restore code needs descriptor-relative operations where practical |
 | Command injection | no shell endpoint; exec argument arrays; console input goes only to managed stdin | Minecraft console commands are privileged and require auditing/confirmation |
 | Credential theft / brute force | Argon2id, opaque sessions, login throttling, redaction | In-memory rate limits reset; durable/IP-aware controls are future work |
+| Forgotten administrator password | interactive recovery restricted to local OS/Docker control; all sessions revoked; audit event recorded | A host or Docker administrator is trusted and can replace dashboard credentials |
 | Container escape / Docker control | non-root UID, all capabilities dropped, `no-new-privileges`, no Docker socket, no privileged mode | Managed Java mods share the container's access to mounted server and backup data; the container runtime remains part of the trusted computing base |
 | Accidental volume deletion | named volumes are independent of image/container lifecycle; prominent `down -v` warning | A Docker administrator can still irreversibly remove volumes; external volume backups are required |
 

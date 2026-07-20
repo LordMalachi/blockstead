@@ -1,9 +1,11 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .security import MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH
+
 
 class Credentials(BaseModel):
     username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
-    password: str = Field(min_length=12, max_length=256)
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
 
 
 class ImportRequest(BaseModel):

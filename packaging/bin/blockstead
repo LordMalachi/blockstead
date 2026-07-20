@@ -35,6 +35,9 @@ Service control (need sudo):
   stop                 Stop the dashboard service
   restart              Restart the dashboard service
 
+Account recovery (need sudo):
+  reset-password       Set a new dashboard administrator password
+
 Maintenance (need sudo):
   update [--yes]       Download and install the newest Blockstead
   uninstall [--purge] [--remove-minecraft] [--yes]
@@ -188,6 +191,21 @@ cmd_restart() {
   echo "A running Minecraft server will be asked to stop safely first."
   systemctl restart "$SERVICE"
   echo "Restarted. Open $(dashboard_url) in your browser."
+}
+
+cmd_reset_password() {
+  require_root reset-password
+  local configured_data database
+  configured_data=$(env_value BLOCKSTEAD_DATA_DIR "$DATA_DIR")
+  database=$configured_data/blockstead.db
+  [[ -x $APP_DIR/venv/bin/python ]] \
+    || die "Blockstead is not installed correctly. Run the installer again before resetting the password."
+  [[ -f $database ]] \
+    || die "No Blockstead database was found at $database. Nothing was changed."
+  # A dedicated pty lets getpass disable echo after dropping privileges; the
+  # caller's terminal device is commonly not openable by the service account.
+  runuser --pty -u blockstead -- "$APP_DIR/venv/bin/python" -m blockstead.cli \
+    reset-password --database "$database"
 }
 
 cmd_update() {
@@ -456,6 +474,7 @@ case $command in
   start)       cmd_start "$@" ;;
   stop)        cmd_stop "$@" ;;
   restart)     cmd_restart "$@" ;;
+  reset-password) cmd_reset_password "$@" ;;
   update)      cmd_update "$@" ;;
   uninstall)   cmd_uninstall "$@" ;;
   doctor)      cmd_doctor "$@" ;;

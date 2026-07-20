@@ -99,6 +99,25 @@ sudo bash ./scripts/install-linux.sh
    That's it — the dashboard, and any schedule you
    set, now survive reboots.
 
+### Recover a forgotten administrator password
+
+On the Linux computer running Blockstead, open a terminal and run:
+
+```bash
+sudo blockstead reset-password
+```
+
+Enter the new password twice when prompted. The password is hidden while you
+type and is never placed in shell history or a process argument. This recovery
+requires the computer's Linux administrator authorization, replaces the local
+Blockstead password, and signs out every existing dashboard session.
+
+For a Docker Compose installation, run this from the Blockstead folder instead:
+
+```bash
+docker compose exec blockstead blockstead reset-password
+```
+
 ### Imports and managed writes
 
 Importing copies your folder; it never edits the original. A folder that

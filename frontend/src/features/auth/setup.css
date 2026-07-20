@@ -43,3 +43,44 @@
   color: var(--muted);
   font-size: .68rem;
 }
+
+.recovery-help {
+  margin-top: var(--space-3);
+  padding: .8rem .9rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  background: var(--bg);
+  font-size: .78rem;
+}
+
+.recovery-help summary {
+  width: fit-content;
+  color: var(--brand);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.recovery-help p {
+  margin: .7rem 0 .45rem;
+}
+
+.recovery-help code {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font: 650 .74rem/1.55 "DM Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.recovery-help > code {
+  display: block;
+  padding: .6rem .7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.recovery-help small {
+  display: block;
+  margin-top: .7rem;
+  line-height: 1.5;
+}

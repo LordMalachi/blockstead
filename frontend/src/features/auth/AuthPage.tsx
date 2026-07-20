@@ -42,6 +42,13 @@ export function AuthPage({ setup, onSuccess }: { setup: boolean; onSuccess: () =
           {error && <div className="error" role="alert">{error}</div>}
           <Button disabled={busy}>{busy ? "Working…" : setup ? "Create administrator" : "Sign in"}</Button>
         </form>
+        {!setup && <details className="recovery-help">
+          <summary>Forgot your password?</summary>
+          <p>On the computer running Blockstead, open a terminal and run:</p>
+          <code>sudo blockstead reset-password</code>
+          <p>Using Docker Compose instead? Run <code>docker compose exec blockstead blockstead reset-password</code> from the Blockstead folder.</p>
+          <small>You’ll need control of that computer. Resetting the password signs out every existing Blockstead session.</small>
+        </details>}
         <p className="privacy-note"><span aria-hidden="true">◆</span> Blockstead stays on this computer unless you explicitly enable LAN access.</p>
       </div>
     </section>

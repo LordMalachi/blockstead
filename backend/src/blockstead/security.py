@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 from .models import Administrator, LoginSession
 
 SESSION_COOKIE = "blockstead_session"
+MIN_PASSWORD_LENGTH = 12
+MAX_PASSWORD_LENGTH = 256
 _hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
 
 

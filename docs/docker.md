@@ -22,6 +22,16 @@ Open <http://127.0.0.1:8765>, create the first administrator, and create a
 Vanilla, Fabric, Forge, Quilt, NeoForge, or Paper server in the dashboard. The
 container runs database migrations before starting the application.
 
+If the administrator password is forgotten, the person who controls Docker on
+the host can replace it without deleting any Blockstead data:
+
+```bash
+docker compose exec blockstead blockstead reset-password
+```
+
+The command prompts privately for the new password and signs out all existing
+dashboard sessions.
+
 The default published ports are:
 
 | Host port | Container port | Purpose | Default exposure |
@@ -129,4 +139,3 @@ time for that shutdown before Docker escalates.
   variant before Blockstead can start them.
 - Do not mount `/var/run/docker.sock` and do not run the service as privileged.
   Blockstead does not need either capability.
-

@@ -34,6 +34,9 @@ Blockstead revision, tester, and date with the results.
 - [ ] Service user is unprivileged and the unit passes `systemd-analyze verify`.
 - [ ] Service starts at boot and binds only to `127.0.0.1` by default.
 - [ ] First admin, login, logout, and session invalidation work.
+- [ ] Forgotten-password recovery is explained on the sign-in page, and
+      `sudo blockstead reset-password` prompts twice without echoing the password,
+      accepts the new password, rejects the old one, and invalidates existing sessions.
 - [ ] Fixture import is read-only; existing vanilla import plan makes no changes.
 - [ ] Start, readiness, live logs, command input, graceful stop, forced timeout,
       abnormal exit, and reboot reconciliation work.

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add forgotten-password recovery through `sudo blockstead reset-password` for
+  native installs and an equivalent interactive container command. Recovery
+  requires control of the host, never puts the password in command arguments,
+  records a safe audit event, and signs out every existing dashboard session.
 - Add a downloadable diagnostic report: the System page now shows the software
   settings, discovered Java runtimes, and recent warnings and errors, and can
   save everything — host health, per-server summaries, recent operations, and

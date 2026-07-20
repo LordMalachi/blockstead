@@ -336,6 +336,9 @@ The first implementation may use `.tar.gz`. Add `.tar.zst` only when packaging a
 - Session timeout.
 - Logout other sessions.
 - Password change.
+- Forgotten-password recovery gated by local operating-system or container-host control;
+  the recovery path must revoke every existing dashboard session and must not accept the
+  new password in command arguments.
 - Localhost binding by default.
 - Explicit LAN binding.
 - Trusted proxy configuration must be opt-in.
