@@ -156,6 +156,7 @@ from .server_settings import (
     preview_settings_update,
     read_raw_settings,
 )
+from .shared_map import read_shared_map
 
 log = logging.getLogger("blockstead.api")
 
@@ -1228,6 +1229,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "That profile was not found.")
         directory = profile_directory(profile_id, db)
         return read_extensions(directory, profile.distribution).model_dump()
+
+    @app.get("/api/v1/profiles/{profile_id}/shared-map")
+    def profile_shared_map(profile_id: str, request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        return read_shared_map(directory, profile.distribution).model_dump()
 
     def extension_context(profile_id: str, db: Session) -> tuple[Profile, Path]:
         profile = db.get(Profile, profile_id)

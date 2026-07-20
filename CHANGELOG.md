@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Read squaremap's generated web-server configuration and show its actual bind
+  address and port instead of always linking to the default port.
 - Add forgotten-password recovery through `sudo blockstead reset-password` for
   native installs and an equivalent interactive container command. Recovery
   requires control of the host, never puts the password in command arguments,

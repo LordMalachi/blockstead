@@ -92,7 +92,7 @@ client mod.
       installation.
 - [x] Show the default map address while the Minecraft server is running.
 - [x] Explain that Blockstead does not open the Linux firewall or router.
-- [ ] Read squaremap's generated bind address and port instead of assuming its
+- [x] Read squaremap's generated bind address and port instead of assuming its
       defaults.
 - [ ] Offer a backed-up low-resource profile that caps normal and background
       rendering at one thread.

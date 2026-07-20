@@ -35,11 +35,11 @@ test("locks installation while the server is active", () => {
   expect(screen.getByText("Stop the server before installing the map.")).toBeVisible();
 });
 
-test("shows the default browser map link once squaremap is installed", () => {
-  render(<SharedMapCard entries={[squaremap]} disabledEntries={[]} stopped={false} busy={false} install={vi.fn()} />);
+test("shows squaremap's configured browser map link once installed", () => {
+  render(<SharedMapCard entries={[squaremap]} disabledEntries={[]} map={{ config_present: true, config_path: "plugins/squaremap/config.yml", internal_webserver_enabled: true, bind: "0.0.0.0", port: 8123, problem: null }} stopped={false} busy={false} install={vi.fn()} />);
 
   expect(screen.getByText("Installed")).toBeVisible();
-  expect(screen.getByRole("link", { name: "Open default map address" })).toHaveAttribute("href", "http://localhost:8080");
+  expect(screen.getByRole("link", { name: "Open map address" })).toHaveAttribute("href", "http://localhost:8123");
   expect(screen.queryByRole("button", { name: "Install shared map" })).not.toBeInTheDocument();
 });
 

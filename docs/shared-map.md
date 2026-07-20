@@ -66,7 +66,7 @@ the existing checksum-verified Modrinth workflow, recognizes active and
 disabled installations, and shows the default browser address while the server
 is running.
 
-The next map-specific slice should read the generated configuration, offer a
-backed-up one-click low-resource profile, show the configured bind address and
-port instead of assuming defaults, and check whether the web endpoint is
-actually reachable before labeling the map available.
+Blockstead reads squaremap's bounded generated configuration for Paper and mod
+loaders and shows the configured bind address and port. The remaining
+map-specific work is a backed-up one-click low-resource profile and a web
+endpoint reachability check before labeling the map available.

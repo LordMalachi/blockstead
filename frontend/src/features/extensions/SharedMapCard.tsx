@@ -1,14 +1,14 @@
-import type { ExtensionEntry } from "../../api/client";
+import type { ExtensionEntry, SharedMapView } from "../../api/client";
 import { Button } from "../../components/Button";
 
 export const SHARED_MAP_PROJECT_ID = "squaremap";
 
-function defaultMapUrl(): string {
+function configuredMapUrl(port: number): string {
   const hostname = window.location.hostname || "server-address";
   const host = hostname.includes(":") && !hostname.startsWith("[")
     ? `[${hostname}]`
     : hostname;
-  return `http://${host}:8080`;
+  return `http://${host}:${port}`;
 }
 
 function isSquaremap(entry: ExtensionEntry): boolean {
@@ -19,19 +19,21 @@ function isSquaremap(entry: ExtensionEntry): boolean {
 export function SharedMapCard({
   entries,
   disabledEntries,
+  map,
   stopped,
   busy,
   install,
 }: {
   entries: ExtensionEntry[];
   disabledEntries: ExtensionEntry[];
+  map?: SharedMapView;
   stopped: boolean;
   busy: boolean;
   install: () => void;
 }) {
   const installed = entries.some(isSquaremap);
   const disabled = disabledEntries.some(isSquaremap);
-  const mapUrl = defaultMapUrl();
+  const mapUrl = configuredMapUrl(map?.port ?? 8080);
   const localAddress = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(window.location.hostname);
 
   return <aside className="shared-map-card" aria-labelledby="shared-map-title">
@@ -46,12 +48,17 @@ export function SharedMapCard({
         <strong>Installed</strong>
         {stopped
           ? <span>Start the server to open the map.</span>
-          : <a href={mapUrl} target="_blank" rel="noreferrer">Open default map address</a>}
+          : map?.internal_webserver_enabled === false
+            ? <span>squaremap's built-in web server is disabled.</span>
+            : <a href={mapUrl} target="_blank" rel="noreferrer">Open map address</a>}
         <small>
           {localAddress
             ? "For other players, replace localhost with this Linux server's LAN address."
-            : "This uses squaremap's default port, 8080. Change the link if you configure another port."}
+            : map?.config_present
+              ? `Configured on ${map.bind}:${map.port}.`
+              : "Waiting for squaremap to generate config.yml; using its default port, 8080."}
         </small>
+        {map?.problem && <small>{map.problem}</small>}
       </> : disabled ? <>
         <strong>Installed but disabled</strong>
         <span>Enable squaremap in the Disabled list below, then start the server.</span>

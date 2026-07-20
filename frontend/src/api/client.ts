@@ -84,6 +84,7 @@ export interface PrerequisitesView { distribution: string; label: string; minecr
 export interface ExtensionEntry { file_name: string; size_bytes: number; sha256: string | null; kind: "paper-plugin" | "fabric-mod" | "quilt-mod" | "neoforge-mod" | "forge-mod" | "unknown"; loaders: string[]; identifier: string | null; display_name: string | null; version: string | null; minecraft_constraint: string | null; environment: string | null; dependencies: string[]; readable: boolean }
 export interface ExtensionWarning { code: string; message: string; files: string[] }
 export interface ExtensionsView { directory: string | null; present: boolean; entries: ExtensionEntry[]; disabled_entries: ExtensionEntry[]; warnings: ExtensionWarning[]; truncated: boolean }
+export interface SharedMapView { config_present: boolean; config_path: string | null; internal_webserver_enabled: boolean; bind: string; port: number; problem: string | null }
 export interface CatalogProject { project_id: string; slug: string | null; title: string | null; description: string | null; downloads: number | null; icon_url?: string | null; author?: string | null; project_type?: string | null }
 export interface CatalogSearch { minecraft_version?: string | null; projects: CatalogProject[] }
 export interface ModpackInstallResult { id: string; name: string; directory: string; distribution: string; minecraft_version: string; loader_version: string | null; installed_files: number; override_files: number; skipped_unsupported: string[]; notes: string[]; eula_accepted: boolean }
