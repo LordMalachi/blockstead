@@ -5,6 +5,7 @@ import { expect, test } from "@playwright/test";
 const out = (name: string) => `../docs/screenshots/${name}.png`;
 
 test("captures documentation screenshots @docs", async ({ page }) => {
+  test.setTimeout(90_000);
   await page.setViewportSize({ width: 1360, height: 850 });
   // The stylesheet drops transitions under reduced motion, which keeps a capture from
   // catching a nav item mid-crossfade.
@@ -29,9 +30,6 @@ test("captures documentation screenshots @docs", async ({ page }) => {
 
   await page.getByRole("button", { name: "Start server" }).click();
   await expect(page.getByText("Running", { exact: true })).toBeVisible({ timeout: 5_000 });
-  await page.getByRole("link", { name: "Console" }).click();
-  await page.getByRole("button", { name: "Who is online?" }).click();
-  await expect(page.getByRole("log")).toContainText("players online");
 
   await page.getByRole("link", { name: "Overview" }).click();
   await expect(page.getByRole("heading", { name: "Server readiness" })).toBeVisible();
@@ -53,6 +51,14 @@ test("captures documentation screenshots @docs", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Guided settings" })).toBeVisible();
   await expect(page.getByLabel("Player limit")).toBeVisible();
   await page.screenshot({ path: out("06-settings") });
+
+  await page.getByRole("link", { name: "Schedule" }).click();
+  await expect(page.getByRole("heading", { name: "What Blockstead will do" })).toBeVisible();
+  await page.getByRole("button", { name: "Every night" }).click();
+  await page.getByRole("button", { name: "Save plan" }).click();
+  await expect(page.getByRole("status")).toContainText("Automation plan saved");
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: out("09-automation"), fullPage: true });
 
   await page.getByRole("link", { name: "System" }).click();
   await expect(page.getByRole("heading", { name: "System health" })).toBeVisible();

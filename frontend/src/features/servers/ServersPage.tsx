@@ -16,14 +16,10 @@ function folderFrom(value: string) { return value.toLowerCase().replace(/[^a-z0-
 const folderInputProps: Record<string, string> = { webkitdirectory: "" };
 
 function nextScheduled(schedule: Schedule | undefined): string {
-  if (!schedule?.enabled) return "No schedule";
-  const now = new Date();
-  const minutesNow = now.getHours() * 60 + now.getMinutes();
-  const upcoming = [{ label: "Start", time: schedule.start_time }, { label: "Stop", time: schedule.stop_time }]
-    .filter((entry): entry is { label: string; time: string } => Boolean(entry.time))
-    .map(entry => { const [hours, minutes] = entry.time.split(":").map(Number); return { ...entry, wait: (hours * 60 + minutes - minutesNow + 1440) % 1440 }; })
-    .sort((a, b) => a.wait - b.wait)[0];
-  return upcoming ? `${upcoming.label} ${upcoming.time}` : "No schedule";
+  const upcoming = schedule?.next_executions[0];
+  if (!upcoming) return "No schedule";
+  const at = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }).format(new Date(upcoming.at));
+  return `${upcoming.label} ${at}`;
 }
 
 function ServerCard({ scope, allowlist, schedule, onAction }: { scope: ServerScope; allowlist: number | null; schedule: Schedule | undefined; onAction: (endpoint: string, body?: object) => void }) {

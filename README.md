@@ -37,11 +37,12 @@ Blockstead manages the process around them.
 - safely edits common server settings with validation, diff review, and recovery snapshots
 - reads player lists, with guided allowlist/operator/ban actions
 - shows host CPU, memory, disk use, and server uptime
-- saves a daily start/stop schedule; scheduled stops flush Minecraft saves and
-  create compressed world archives before stopping the server
+- saves weekday-aware start and maintenance schedules, plus one-time events;
+  ordered maintenance runs announce, flush saves, optionally back up, and stop
+  safely, with previews and result history
 - creates private manual world backups and keeps per-server result history
 - can optionally shut down the Linux computer after a safe stop and set an RTC
-  wake alarm for the next day when the computer hardware supports it
+  wake alarm for the next scheduled day when the computer hardware supports it
 - installs as a system service, so the dashboard starts with Linux
 - installs a `blockstead` terminal helper and a menu entry that opens the dashboard
 
@@ -146,7 +147,7 @@ backup guidance, and container limitations are covered in the
 ## Everyday use
 
 Day to day you only need the dashboard: start and stop the server, watch the
-live log, manage players, create backups, and set the daily **Schedule**. The
+live log, manage players, create backups, and set the weekly **Schedule**. The
 computer just needs to stay on (or wake on its schedule, where supported).
 
 Click the **Blockstead** icon on the desktop or in the applications menu to

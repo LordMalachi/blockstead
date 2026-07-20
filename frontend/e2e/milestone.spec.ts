@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 test("first admin imports and controls the owned fixture", async ({ page }) => {
+  test.setTimeout(60_000);
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Welcome to Blockstead" })).toBeVisible();
   await page.getByLabel("Username").fill("owner");
@@ -30,6 +31,7 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
 
   await page.getByRole("link", { name: "Console" }).click();
   await expect(page).toHaveURL(`${workspace}/console`);
+  await page.getByText("Advanced raw command").click();
   await page.getByLabel("Minecraft console command").fill("say hello from browser test");
   await page.getByRole("button", { name: "Send command" }).click();
   await expect(page.getByRole("log")).toContainText("say hello from browser test");
@@ -71,6 +73,11 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
   await page.goto(`${workspace}/schedule`);
   await expect(page.getByRole("heading", { name: "Server schedule" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Vanilla test fixture", level: 1 })).toBeVisible();
+  await page.getByRole("button", { name: "Weekend only" }).click();
+  await page.getByRole("button", { name: "Save plan" }).click();
+  await expect(page.getByRole("status")).toContainText("Automation plan saved");
+  await expect(page.getByRole("heading", { name: "What Blockstead will do" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Next three executions" })).toBeVisible();
   await page.reload();
   await expect(page).toHaveURL(`${workspace}/schedule`);
   await expect(page.getByRole("heading", { name: "Server schedule" })).toBeVisible();

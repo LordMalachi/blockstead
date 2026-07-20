@@ -68,9 +68,42 @@ class Schedule(Base):
     backup_before_stop: Mapped[bool] = mapped_column(Boolean, default=True)
     power_off_after_stop: Mapped[bool] = mapped_column(Boolean, default=False)
     wake_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    weekdays: Mapped[str] = mapped_column(String(32), default="0,1,2,3,4,5,6")
+    only_when_empty: Mapped[bool] = mapped_column(Boolean, default=False)
     last_start_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
     last_stop_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AutomationEvent(Base):
+    __tablename__ = "automation_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), index=True
+    )
+    run_at: Mapped[str] = mapped_column(String(16), index=True)
+    backup_before_stop: Mapped[bool] = mapped_column(Boolean, default=True)
+    power_off_after_stop: Mapped[bool] = mapped_column(Boolean, default=False)
+    wake_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    only_when_empty: Mapped[bool] = mapped_column(Boolean, default=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AutomationRun(Base):
+    __tablename__ = "automation_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), index=True
+    )
+    trigger: Mapped[str] = mapped_column(String(24))
+    action: Mapped[str] = mapped_column(String(24))
+    status: Mapped[str] = mapped_column(String(24))
+    steps: Mapped[str] = mapped_column(Text)
+    detail: Mapped[str] = mapped_column(Text)
+    duration_ms: Mapped[int] = mapped_column(Integer)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class BackupRecord(Base):

@@ -373,13 +373,48 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
 .metrics--panel { margin: var(--space-3) 0 0; }
 .metrics--panel small { display: block; color: var(--muted); margin-top: .2rem; font-size: .7rem; }
 
-.schedule-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--space-3); margin: var(--space-3) 0; }
-.schedule-grid label, .power-schedule label { display: grid; gap: .45rem; font-weight: 700; }
-.schedule-grid input[type="time"], .power-schedule input[type="time"] { min-height: 2.8rem; background: var(--surface); border: 1px solid var(--line-strong); color: var(--ink); border-radius: var(--radius-sm); padding: .7rem; }
-.schedule-grid input[type="checkbox"], .power-schedule input[type="checkbox"] { accent-color: var(--brand); margin-right: .45rem; }
+.automation-page { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .65fr); gap: var(--space-3); align-items: start; }
+.automation-page > .card { height: 100%; }
+.automation-hero { grid-row: span 2; }
+.automation-hero > p:not(.eyebrow, .error, .success) { color: var(--muted); }
+.preset-row, .automation-actions { display: flex; flex-wrap: wrap; gap: .55rem; }
+.preset-row { margin: var(--space-3) 0; }
+.preset-row .button { border-color: var(--line); }
+.weekday-picker { display: grid; grid-template-columns: repeat(7, 1fr); gap: .4rem; }
+.weekday-picker label { display: grid; place-items: center; min-height: 2.65rem; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: var(--surface); cursor: pointer; font-size: .75rem; font-weight: 800; }
+.weekday-picker label.selected { color: var(--brand); border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); background: var(--brand-soft); }
+.weekday-picker input { position: absolute; opacity: 0; pointer-events: none; }
+.schedule-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--space-3); margin: var(--space-4) 0; }
+.schedule-grid label, .power-schedule label, .one-time-form label { display: grid; gap: .45rem; font-size: .82rem; font-weight: 750; }
+.schedule-grid input[type="time"], .power-schedule input[type="time"], .one-time-form input { width: 100%; min-height: 2.8rem; background: var(--surface); border: 1px solid var(--line-strong); color: var(--ink); border-radius: var(--radius-sm); padding: .7rem; }
+.schedule-grid .check-label, .power-schedule .check-label { display: flex; align-items: center; gap: .5rem; min-height: 2.8rem; padding: .7rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); }
+.check-label input { accent-color: var(--brand); }
 .power-schedule { border-top: 1px solid var(--line); padding-top: var(--space-3); margin-bottom: var(--space-3); }
-.power-schedule h3 { margin: 0 0 .5rem; }
-.power-schedule small { color: var(--muted); font-weight: 400; }
+.power-schedule h3 { margin: 0 0 .7rem; }
+.power-schedule small { display: block; margin: .45rem 0; color: var(--muted); font-weight: 400; }
+.capability-tag { display: inline-flex; vertical-align: middle; margin-left: .35rem; padding: .18rem .4rem; border-radius: 5px; color: var(--muted); background: var(--surface-3); font-size: .58rem; letter-spacing: .06em; text-transform: uppercase; }
+.automation-sequence { background: color-mix(in srgb, var(--brand) 4%, var(--surface)); }
+.automation-sequence h2 { margin-bottom: var(--space-3); }
+.automation-sequence ol { list-style: none; padding: 0; margin: 0; display: grid; }
+.automation-sequence li { position: relative; display: grid; grid-template-columns: 2rem 1fr; align-items: center; gap: .7rem; min-height: 3rem; }
+.automation-sequence li:not(:last-child)::after { content: ""; position: absolute; top: 2rem; bottom: -.2rem; left: .93rem; width: 2px; background: var(--line-strong); }
+.automation-sequence li span { z-index: 1; display: grid; place-items: center; width: 1.9rem; height: 1.9rem; border-radius: 50%; color: #fff; background: var(--brand); font-size: .7rem; }
+.automation-sequence li strong { font-size: .82rem; }
+.execution-list, .event-list, .history-list { list-style: none; margin: var(--space-3) 0 0; padding: 0; display: grid; gap: .6rem; }
+.execution-list li, .event-list li, .history-list li { padding: .8rem; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.execution-list li > div, .event-list li { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.execution-list span, .execution-list small, .event-list small, .history-list small { color: var(--muted); font-size: .7rem; }
+.execution-list small, .event-list small { display: block; margin-top: .3rem; }
+.event-list li > div { min-width: 0; }
+.event-list .button { flex: 0 0 auto; }
+.one-time-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: .7rem; margin-top: var(--space-3); }
+.history-list li { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: .75rem; }
+.history-list p { margin: .2rem 0; color: var(--muted); font-size: .76rem; }
+.run-status { display: inline-flex; padding: .2rem .4rem; border-radius: 5px; color: var(--muted); background: var(--surface-3); font-size: .62rem; font-weight: 800; text-transform: uppercase; }
+.run-status--success { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, var(--surface)); }
+.run-status--failed { color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, var(--surface)); }
+.run-status--skipped { color: var(--warning); background: color-mix(in srgb, var(--warning) 9%, var(--surface)); }
+.empty-state { margin: var(--space-3) 0 0; color: var(--muted); font-size: .82rem; }
 .state-label { font-weight: 750; }
 .state-label--ok { color: var(--ok)!important; }
 .state-label--warning { color: var(--warning)!important; }
@@ -524,7 +559,11 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
   .command-fields label:first-child:last-child { grid-column: auto; }
   .command-builder-actions { align-items: stretch; flex-direction: column; }
   .log div { grid-template-columns: 1fr; gap: 0; margin-bottom: .45rem; }
+  .automation-page { grid-template-columns: 1fr; }
+  .automation-hero { grid-row: auto; }
   .schedule-grid { grid-template-columns: 1fr; }
+  .weekday-picker { grid-template-columns: repeat(4, 1fr); }
+  .one-time-form { grid-template-columns: 1fr; }
   .backup-action { grid-template-columns: 1fr; }
   .settings-table th:nth-child(3), .settings-table td:nth-child(3) { display: none; }
   .setting-field, .settings-review li { grid-template-columns: 1fr; }

@@ -75,6 +75,7 @@ class ProcessManager:
             "exit_code": self.exit_code,
             "reason": self.reason,
             "started_at": self.started_at.isoformat() if alive and self.started_at else None,
+            "profile_id": self._owner if alive else None,
         }
 
     def logs(self) -> list[LogEvent]:

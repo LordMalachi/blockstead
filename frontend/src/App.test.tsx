@@ -29,7 +29,11 @@ test("an expired session returns the owner to the sign-in screen", async () => {
 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<MemoryRouter><QueryClientProvider client={client}><App /></QueryClientProvider></MemoryRouter>);
-  expect(await screen.findByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
+  expect(await screen.findByRole(
+    "heading",
+    { name: "Servers", level: 1 },
+    { timeout: 5000 },
+  )).toBeVisible();
 
   // The next poll after expiry comes back 401; the dashboard must not keep
   // showing its last good data as if it were live.

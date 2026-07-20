@@ -39,8 +39,8 @@ remain available without dominating normal server care.
 | 2. Backup Center | Complete | Manual and scheduled backups, history, manifests, checksums, retention, verification, and staged restore |
 | 3. Guided settings editor | Complete | Safe typed editing with search, validation, diff preview, automatic snapshots, and a validated raw editor |
 | 4. Owner-focused overview | Complete | Live player capacity, join address, sampled health trends, protection and schedule status, warnings, and recent activity |
-| 5. Automation upgrade | Next | Weekly schedules, readable action sequences, previews, and execution history |
-| 6. Activity and notifications | Planned | Human-readable audit history and important operational alerts |
+| 5. Automation upgrade | Complete | Weekly schedules, one-time maintenance, readable action sequences, previews, and execution history |
+| 6. Activity and notifications | Next | Human-readable audit history and important operational alerts |
 | 7. Safe file workspace | Planned | Restricted editing, uploads, downloads, archives, and recovery protection |
 | 8. Player and mobile improvements | Planned | Online-player insights, quicker actions, and installable mobile-friendly access |
 
@@ -54,7 +54,8 @@ Blockstead already provides:
 - player allowlist, operator, ban, and pardon workflows;
 - guided editing for common server settings and read-only player files;
 - host and process metrics;
-- daily server start and stop scheduling with backup-before-stop;
+- weekday-aware server start and maintenance scheduling with presets, one-time
+  events, ordered previews, run-now controls, empty-server conditions, and history;
 - manual and scheduled world backups with manifests, SHA-256 verification,
   per-server result history, retention rules, and staged verified restore;
 - optional Linux host shutdown and RTC wake scheduling;
@@ -70,7 +71,6 @@ Blockstead already provides:
 
 The main limitations to address are:
 
-- the schedule panel is basic, with a single daily start and stop time;
 - the full Activity workspace and configurable notifications are not built yet;
 - server cards still show allowlist size rather than polling every server;
 - TPS, MSPT, and update availability remain hidden until a reliable capability
@@ -247,19 +247,19 @@ questions.
 
 ## Milestone 5: automation upgrade
 
-**Status: Planned**
+**Status: Complete**
 
 ### Work checklist
 
-- [ ] Add weekday selection and one-time maintenance events.
-- [ ] Provide presets such as Weekdays, Every night, and Weekend only.
-- [ ] Show the next three expected executions in local time.
-- [ ] Present complex work as a readable sequence, for example:
+- [x] Add weekday selection and one-time maintenance events.
+- [x] Provide presets such as Weekdays, Every night, and Weekend only.
+- [x] Show the next three expected executions in local time.
+- [x] Present complex work as a readable sequence, for example:
       `announce -> save -> back up -> stop -> shut down`.
-- [ ] Allow a manual **Run now** action.
-- [ ] Record last-run time, result, duration, and failure reason.
-- [ ] Support optional conditions such as stopping only when nobody is online.
-- [ ] Keep Linux host power actions explicitly optional and capability-gated.
+- [x] Allow a manual **Run now** action.
+- [x] Record last-run time, result, duration, and failure reason.
+- [x] Support optional conditions such as stopping only when nobody is online.
+- [x] Keep Linux host power actions explicitly optional and capability-gated.
 
 ### Acceptance criteria
 
@@ -269,7 +269,7 @@ questions.
 
 ## Milestone 6: activity and notifications
 
-**Status: Planned**
+**Status: Next**
 
 ### Work checklist
 
@@ -362,6 +362,23 @@ Before marking any milestone complete:
 - [ ] The progress summary and progress log below are updated.
 
 ## Progress log
+
+- **2026-07-19 — Automation upgrade complete.** Replaced the single daily
+  schedule with weekday-aware recurring plans, Weekdays/Every night/Weekend
+  presets, and a queue of local-time one-off maintenance events. The Schedule
+  workspace previews the exact ordered sequence, shows the next three runs,
+  offers a save-then-run manual action, and keeps recent success, skipped, and
+  failure outcomes with duration and explanation. Maintenance announces,
+  flushes saves, optionally creates a verified backup, stops gracefully, and
+  only then invokes the narrowly scoped Linux power helper; unsupported host
+  power stays disabled and the API refuses it. “Only when nobody is online” is
+  deliberately conservative: an unavailable status probe leaves the server
+  running and records why. Migration 0008 adds event and immutable run records.
+  Verification covers weekday calculation, safe step order, unavailable-player
+  handling, API persistence/events/history, and the responsive UI. Final gates:
+  strict backend lint and type checks, 185 backend tests, frontend lint, 40
+  frontend tests, the production build, two real-backend Playwright workflows,
+  and the refreshed screenshot suite with visual review.
 
 - **2026-07-19 — Owner-focused overview complete.** Replaced the diagnostic-first
   overview tiles with the information a home server owner needs: live player

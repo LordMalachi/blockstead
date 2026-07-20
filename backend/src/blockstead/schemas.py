@@ -93,6 +93,39 @@ class ScheduleRequest(BaseModel):
     backup_before_stop: bool = True
     power_off_after_stop: bool = False
     wake_time: str | None = Field(default=None, pattern=r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+    weekdays: list[int] = Field(default_factory=lambda: list(range(7)), min_length=1, max_length=7)
+    only_when_empty: bool = False
+
+    @field_validator("weekdays")
+    @classmethod
+    def valid_weekdays(cls, value: list[int]) -> list[int]:
+        if any(day < 0 or day > 6 for day in value) or len(value) != len(set(value)):
+            raise ValueError("weekdays must be unique numbers from 0 through 6")
+        return sorted(value)
+
+
+class AutomationEventRequest(BaseModel):
+    run_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T([01][0-9]|2[0-3]):[0-5][0-9]$")
+    backup_before_stop: bool = True
+    power_off_after_stop: bool = False
+    wake_time: str | None = Field(default=None, pattern=r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+    only_when_empty: bool = False
+
+    @field_validator("run_at")
+    @classmethod
+    def valid_local_datetime(cls, value: str) -> str:
+        from datetime import datetime
+
+        try:
+            datetime.strptime(value, "%Y-%m-%dT%H:%M")
+        except ValueError as exc:
+            raise ValueError("run_at must be a real local date and time") from exc
+        return value
+
+
+class AutomationRunRequest(BaseModel):
+    action: str = Field(default="maintenance", pattern=r"^(start|maintenance)$")
+    confirm_power: bool = False
 
 
 class SettingChangeRequest(BaseModel):

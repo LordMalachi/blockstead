@@ -72,7 +72,7 @@ def test_overview_includes_backup_schedule_and_recent_profile_activity(
     body = client.get(f"/api/v1/profiles/{profile_id}/overview").json()
 
     assert body["last_backup"]["status"] == "completed"
-    assert body["next_operation"]["label"] in {"Start server", "Back up and stop"}
+    assert body["next_operation"]["label"] in {"Start server", "Maintenance stop"}
     assert "backup-missing" not in {warning["code"] for warning in body["warnings"]}
     assert [event["category"] for event in body["activity"]][:2] == [
         "schedule_update",

@@ -171,14 +171,75 @@ def test_schedule_is_saved_per_profile(client: TestClient, auth: dict[str, str])
             "start_time": "09:00",
             "stop_time": "22:30",
             "backup_before_stop": True,
-            "power_off_after_stop": True,
-            "wake_time": "08:45",
+            "power_off_after_stop": False,
+            "wake_time": None,
+            "weekdays": [0, 1, 2, 3, 4],
+            "only_when_empty": True,
         },
     )
     assert response.status_code == 200
     schedules = client.get("/api/v1/schedules").json()
     assert schedules[0]["start_time"] == "09:00"
-    assert schedules[0]["power_off_after_stop"] is True
+    assert schedules[0]["weekdays"] == [0, 1, 2, 3, 4]
+    assert schedules[0]["only_when_empty"] is True
+    assert len(schedules[0]["next_executions"]) <= 3
+    assert schedules[0]["maintenance_steps"] == [
+        "Announce maintenance",
+        "Flush Minecraft saves",
+        "Create a verified backup",
+        "Stop the server safely",
+    ]
+
+
+def test_one_time_automation_and_manual_run_history(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    profile_id = import_fixture(client, auth)
+    assert client.put(
+        f"/api/v1/schedules/{profile_id}",
+        headers=auth,
+        json={
+            "profile_id": profile_id,
+            "enabled": False,
+            "start_time": None,
+            "stop_time": "22:30",
+            "backup_before_stop": True,
+            "power_off_after_stop": False,
+            "wake_time": None,
+            "weekdays": list(range(7)),
+            "only_when_empty": False,
+        },
+    ).status_code == 200
+    event = client.post(
+        f"/api/v1/profiles/{profile_id}/automation-events",
+        headers=auth,
+        json={
+            "run_at": "2099-07-20T18:00",
+            "backup_before_stop": True,
+            "power_off_after_stop": False,
+            "wake_time": None,
+            "only_when_empty": False,
+        },
+    )
+    assert event.status_code == 201
+    schedules = client.get("/api/v1/schedules").json()
+    assert schedules[0]["one_time_events"][0]["run_at"] == "2099-07-20T18:00"
+
+    run = client.post(
+        f"/api/v1/schedules/{profile_id}/run",
+        headers=auth,
+        json={"action": "maintenance", "confirm_power": False},
+    )
+    assert run.status_code == 200
+    assert run.json()["status"] == "skipped"
+    assert "already stopped" in run.json()["detail"]
+    assert client.get("/api/v1/schedules").json()[0]["history"][0]["trigger"] == "manual"
+
+    cancelled = client.delete(
+        f"/api/v1/profiles/{profile_id}/automation-events/{event.json()['id']}",
+        headers=auth,
+    )
+    assert cancelled.status_code == 204
 
 
 def test_fixture_prerequisites_view(client: TestClient, auth: dict[str, str]) -> None:

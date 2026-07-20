@@ -78,6 +78,8 @@ from .mod_configs import (
 from .models import (
     Administrator,
     AuditEvent,
+    AutomationEvent,
+    AutomationRun,
     BackupRecord,
     LoginSession,
     MetricSample,
@@ -96,7 +98,6 @@ from .modrinth import search as modrinth_search
 from .overview import (
     join_details,
     minecraft_status,
-    next_schedule_operation,
     read_properties,
     world_size,
 )
@@ -110,8 +111,10 @@ from .provisioning import (
     provision_profile,
 )
 from .retention import enforce_retention
-from .scheduler import Scheduler
+from .scheduler import Scheduler, automation_steps, next_executions, parse_weekdays
 from .schemas import (
+    AutomationEventRequest,
+    AutomationRunRequest,
     BackupPolicyRequest,
     CommandRequest,
     Credentials,
@@ -1653,14 +1656,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             .limit(1)
         )
         schedule = db.scalar(select(Schedule).where(Schedule.profile_id == profile.id))
-        next_operation = (
-            next_schedule_operation(
-                schedule.enabled,
-                schedule.start_time,
-                schedule.stop_time,
-                datetime.now().astimezone(),
+        pending_events = db.scalars(
+            select(AutomationEvent).where(
+                AutomationEvent.profile_id == profile.id,
+                AutomationEvent.completed_at.is_(None),
             )
-            if schedule
+        ).all()
+        upcoming = next_executions(
+            schedule, pending_events, datetime.now().astimezone(), limit=1
+        )
+        next_operation = (
+            {"label": upcoming[0]["label"], "at": upcoming[0]["at"]}
+            if upcoming
             else None
         )
 
@@ -1919,22 +1926,77 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         current(request, db)
         return [event.__dict__ for event in manager.logs()]
 
+    @app.get("/api/v1/automation/capabilities")
+    def automation_capabilities(request: Request, db: Db) -> dict[str, bool]:
+        current(request, db)
+        return {"host_power": scheduler.power_capable}
+
     @app.get("/api/v1/schedules")
     def list_schedules(request: Request, db: Db) -> list[dict[str, object]]:
         current(request, db)
-        return [
-            {
-                "id": s.id,
-                "profile_id": s.profile_id,
-                "enabled": s.enabled,
-                "start_time": s.start_time,
-                "stop_time": s.stop_time,
-                "backup_before_stop": s.backup_before_stop,
-                "power_off_after_stop": s.power_off_after_stop,
-                "wake_time": s.wake_time,
+
+        def event_payload(event: AutomationEvent) -> dict[str, object]:
+            return {
+                "id": event.id,
+                "run_at": event.run_at,
+                "backup_before_stop": event.backup_before_stop,
+                "power_off_after_stop": event.power_off_after_stop,
+                "wake_time": event.wake_time,
+                "only_when_empty": event.only_when_empty,
             }
-            for s in db.scalars(select(Schedule)).all()
-        ]
+
+        def run_payload(run: AutomationRun) -> dict[str, object]:
+            return {
+                "id": run.id,
+                "trigger": run.trigger,
+                "action": run.action,
+                "status": run.status,
+                "steps": json.loads(run.steps),
+                "detail": run.detail,
+                "duration_ms": run.duration_ms,
+                "started_at": run.started_at.isoformat(),
+                "completed_at": run.completed_at.isoformat(),
+            }
+
+        now = datetime.now().astimezone()
+        payloads: list[dict[str, object]] = []
+        for schedule in db.scalars(select(Schedule)).all():
+            events = db.scalars(
+                select(AutomationEvent)
+                .where(
+                    AutomationEvent.profile_id == schedule.profile_id,
+                    AutomationEvent.completed_at.is_(None),
+                )
+                .order_by(AutomationEvent.run_at)
+            ).all()
+            runs = db.scalars(
+                select(AutomationRun)
+                .where(AutomationRun.profile_id == schedule.profile_id)
+                .order_by(AutomationRun.started_at.desc())
+                .limit(20)
+            ).all()
+            payloads.append(
+                {
+                    "id": schedule.id,
+                    "profile_id": schedule.profile_id,
+                    "enabled": schedule.enabled,
+                    "start_time": schedule.start_time,
+                    "stop_time": schedule.stop_time,
+                    "backup_before_stop": schedule.backup_before_stop,
+                    "power_off_after_stop": schedule.power_off_after_stop,
+                    "wake_time": schedule.wake_time,
+                    "weekdays": parse_weekdays(schedule.weekdays),
+                    "only_when_empty": schedule.only_when_empty,
+                    "power_capable": scheduler.power_capable,
+                    "maintenance_steps": automation_steps(
+                        schedule.backup_before_stop, schedule.power_off_after_stop
+                    ),
+                    "next_executions": next_executions(schedule, events, now),
+                    "one_time_events": [event_payload(event) for event in events],
+                    "history": [run_payload(run) for run in runs],
+                }
+            )
+        return payloads
 
     @app.put("/api/v1/schedules/{profile_id}")
     def save_schedule(
@@ -1945,11 +2007,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "That profile was not found.")
         if payload.power_off_after_stop and not payload.stop_time:
             raise HTTPException(422, "A computer shutdown needs a server stop time.")
+        if payload.power_off_after_stop and not scheduler.power_capable:
+            raise HTTPException(
+                422,
+                "Linux host shutdown is unavailable because the installer power helper is missing.",
+            )
         schedule = db.scalar(select(Schedule).where(Schedule.profile_id == profile_id))
         if schedule is None:
             schedule = Schedule(profile_id=profile_id)
             db.add(schedule)
-        for name, value in payload.model_dump().items():
+        values = payload.model_dump(exclude={"weekdays"})
+        values["weekdays"] = ",".join(str(day) for day in payload.weekdays)
+        for name, value in values.items():
             setattr(schedule, name, value)
         db.add(
             AuditEvent(
@@ -1960,7 +2029,108 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         )
         db.commit()
-        return {"id": schedule.id, **payload.model_dump()}
+        return {
+            "id": schedule.id,
+            **payload.model_dump(),
+            "power_capable": scheduler.power_capable,
+            "maintenance_steps": automation_steps(
+                schedule.backup_before_stop, schedule.power_off_after_stop
+            ),
+            "next_executions": next_executions(schedule, [], datetime.now().astimezone()),
+            "one_time_events": [],
+            "history": [],
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/automation-events", status_code=201)
+    def create_automation_event(
+        profile_id: str,
+        payload: AutomationEventRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        if payload.run_at <= datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M"):
+            raise HTTPException(422, "Choose a one-time maintenance time in the future.")
+        if payload.power_off_after_stop and not scheduler.power_capable:
+            raise HTTPException(
+                422,
+                "Linux host shutdown is unavailable because the installer power helper is missing.",
+            )
+        pending_count = db.scalar(
+            select(func.count())
+            .select_from(AutomationEvent)
+            .where(
+                AutomationEvent.profile_id == profile_id,
+                AutomationEvent.completed_at.is_(None),
+            )
+        )
+        if pending_count is not None and pending_count >= 20:
+            raise HTTPException(409, "This server already has 20 pending maintenance events.")
+        schedule = db.scalar(select(Schedule).where(Schedule.profile_id == profile_id))
+        if schedule is None:
+            db.add(Schedule(profile_id=profile_id, enabled=False))
+        event = AutomationEvent(profile_id=profile_id, **payload.model_dump())
+        db.add(event)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="automation_event",
+                result="success",
+                safe_detail=f"Scheduled one-time maintenance for {profile.name}",
+            )
+        )
+        db.commit()
+        return {"id": event.id, "profile_id": profile_id, **payload.model_dump()}
+
+    @app.delete("/api/v1/profiles/{profile_id}/automation-events/{event_id}", status_code=204)
+    def cancel_automation_event(
+        profile_id: str, event_id: str, request: Request, db: Db
+    ) -> None:
+        admin = mutation(request, db)
+        event = db.get(AutomationEvent, event_id)
+        if event is None or event.profile_id != profile_id or event.completed_at is not None:
+            raise HTTPException(404, "That pending maintenance event was not found.")
+        db.delete(event)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="automation_event",
+                result="success",
+                safe_detail=f"Cancelled one-time maintenance for profile {profile_id}",
+            )
+        )
+        db.commit()
+
+    @app.post("/api/v1/schedules/{profile_id}/run")
+    async def run_automation(
+        profile_id: str,
+        payload: AutomationRunRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        mutation(request, db)
+        if db.get(Profile, profile_id) is None:
+            raise HTTPException(404, "That profile was not found.")
+        try:
+            run = await scheduler.run_now(
+                profile_id, payload.action, confirm_power=payload.confirm_power
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {
+            "id": run.id,
+            "trigger": run.trigger,
+            "action": run.action,
+            "status": run.status,
+            "steps": json.loads(run.steps),
+            "detail": run.detail,
+            "duration_ms": run.duration_ms,
+            "started_at": run.started_at.isoformat(),
+            "completed_at": run.completed_at.isoformat(),
+        }
 
     @app.post("/api/v1/server/start", status_code=202)
     async def process_start(payload: StartRequest, request: Request, db: Db) -> dict[str, object]:

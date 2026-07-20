@@ -85,3 +85,19 @@ start transitions and refuses to start if the stop times out.
 Host metrics come from `psutil` (CPU, memory, and disk usage of the data
 directory). Process metrics report only the managed process's uptime and
 resident memory; a PID is never treated as proof of health.
+
+## Automation
+
+One recurring plan belongs to each profile and stores local clock times plus an
+explicit weekday set. One-time maintenance events are separate durable records,
+so several future events can be queued without rewriting the recurring plan.
+Every attempted start or maintenance action appends an immutable automation-run
+record containing its trigger, planned steps, result, duration, and safe detail.
+
+Maintenance is a fixed backend sequence: announce, flush saves, optionally hold
+saving while a verified backup is created, restore saving in a `finally` block,
+stop gracefully, and only then invoke the installer-owned Linux power helper.
+The browser cannot reorder steps or supply commands. Host power is advertised
+only when the exact helper is present. The optional empty-server condition uses
+the local Minecraft status protocol and fails closed: if player status cannot be
+proven, the run is recorded as skipped and the server remains online.

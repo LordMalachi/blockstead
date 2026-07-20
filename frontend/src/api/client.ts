@@ -53,7 +53,11 @@ export interface ProfileOverview {
   activity: OverviewActivity[];
   capabilities: { tps: boolean; mspt: boolean; distribution_label: string };
 }
-export interface Schedule { id: string; profile_id: string; enabled: boolean; start_time: string | null; stop_time: string | null; backup_before_stop: boolean; power_off_after_stop: boolean; wake_time: string | null }
+export interface AutomationExecution { kind: "recurring" | "one_time"; action: "start" | "maintenance"; label: string; at: string; steps: string[] }
+export interface AutomationEvent { id: string; run_at: string; backup_before_stop: boolean; power_off_after_stop: boolean; wake_time: string | null; only_when_empty: boolean }
+export interface AutomationRun { id: string; trigger: "scheduled" | "one_time" | "manual"; action: "start" | "maintenance"; status: "success" | "failed" | "skipped"; steps: string[]; detail: string; duration_ms: number; started_at: string; completed_at: string }
+export interface Schedule { id: string; profile_id: string; enabled: boolean; start_time: string | null; stop_time: string | null; backup_before_stop: boolean; power_off_after_stop: boolean; wake_time: string | null; weekdays: number[]; only_when_empty: boolean; power_capable: boolean; maintenance_steps: string[]; next_executions: AutomationExecution[]; one_time_events: AutomationEvent[]; history: AutomationRun[] }
+export interface AutomationCapabilities { host_power: boolean }
 export interface BackupRecord { id: string; profile_id: string; status: "in_progress" | "completed" | "failed" | "expired"; method: "world_archive"; trigger: "manual" | "schedule"; file_name: string | null; size_bytes: number | null; duration_ms: number | null; sha256: string | null; included_paths: string[]; archive_available: boolean; result: string; created_at: string; completed_at: string | null }
 export interface RestorePreview { backup_id: string; verified: boolean; sha256: string; size_bytes: number; included_paths: string[]; worlds_replaced: string[]; required_bytes: number; available_bytes: number; backup_created_at: string | null; minecraft_version: string | null; can_restore: boolean; blockers: string[] }
 export interface RestoreResult { restored_paths: string[]; preserved_paths: string[]; result: string }
