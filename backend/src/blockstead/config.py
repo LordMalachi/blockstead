@@ -17,6 +17,20 @@ class Settings(BaseSettings):
     #: Built dashboard to serve. Left unset, Blockstead looks for it in the source
     #: checkout and next to an installed virtual environment.
     static_dir: Path | None = None
+    #: Install and keep the newest Blockstead without the owner doing anything.
+    #: Turned off automatically when the machine has no privileged update helper,
+    #: which is the case for development checkouts and Docker.
+    update_auto: bool = True
+    #: The GitHub repository Blockstead updates itself from, as "owner/name".
+    #: The privileged helper hardcodes this too and ignores anything the
+    #: application asks for, so changing it here alone cannot redirect an update.
+    update_repo: str = "LordMalachi/blockstead"
+    update_branch: str = "main"
+    #: Where the installer recorded the commit this copy was built from. Left
+    #: unset, Blockstead looks beside the installed application.
+    update_build_file: Path | None = None
+    #: How long to wait between update checks while the application keeps running.
+    update_check_hours: int = Field(default=6, ge=1)
 
     @field_validator("bind_host")
     @classmethod

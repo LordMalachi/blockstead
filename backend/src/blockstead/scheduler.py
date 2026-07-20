@@ -300,7 +300,7 @@ class Scheduler:
         else:
             try:
                 if only_when_empty:
-                    online = await self._online_players(profile)
+                    online = await self.online_players(profile)
                     if online is None:
                         status = "skipped"
                         detail = "Player status was unavailable, so the server was left running."
@@ -353,7 +353,7 @@ class Scheduler:
             if saving_suspended:
                 await self.manager.command("save-on")
 
-    async def _online_players(self, profile: Profile) -> int | None:
+    async def online_players(self, profile: Profile) -> int | None:
         try:
             server_directory = canonical_child(Path(profile.server_directory), self.server_root)
         except (ValueError, OSError):

@@ -233,26 +233,54 @@ dashboard, so saves are flushed and players are treated politely.
 
 ## Updating Blockstead
 
-Stop the Minecraft server from the dashboard, then run:
+**Blockstead keeps itself up to date. Normally there is nothing to do.**
+
+When Blockstead starts, and every few hours after that, it asks GitHub whether
+newer code exists. If it does, Blockstead downloads and installs it on its own,
+then tells you which version you are now on and what changed. This works the
+same whether you cloned the repository or downloaded the ZIP — you never need
+to download a new ZIP by hand again.
+
+Updating is polite about your players:
+
+| What is happening | What Blockstead does |
+| --- | --- |
+| No Minecraft server running | Updates straight away |
+| Server running, nobody online | Stops the server, updates, and leaves it stopped |
+| Players online | Waits, and says so in the dashboard, until the server is empty |
+
+Your settings, administrator accounts, backups, and Minecraft folders are
+always preserved. The update builds the replacement before stopping the
+dashboard, backs up the application database, runs database migrations, and
+verifies the new version's health endpoint — if anything fails, the previous
+application and database are restored automatically and the old version keeps
+running.
+
+**System → Blockstead updates** shows the installed version, the newest
+available, and when it last looked. To update on the spot rather than waiting
+for the next check, use **Check now** there, or run:
 
 ```bash
 sudo blockstead update
 ```
 
-That fetches the newest version into the folder you originally downloaded,
-rebuilds, and reinstalls. Your settings, administrator accounts, backups, and
-Minecraft folders are always preserved. The update builds the replacement
-before stopping the dashboard, backs up the application database, runs
-database migrations, and verifies the new version's health endpoint — if
-anything fails, the previous application and database are restored
-automatically and the old version keeps running.
-
-Installed from a ZIP instead of `git clone`? Download and extract the new
-release, then run `sudo ./scripts/install-linux.sh` inside it — the installer
-recognizes the existing installation and updates it the same way.
-
 Do not copy files directly into `/opt/blockstead`; that can leave obsolete
 dependencies or mismatched dashboard assets behind.
+
+### How the update is allowed to happen
+
+The dashboard runs as an unprivileged account that cannot write `/opt` and
+cannot use `sudo`. It never installs anything itself. It writes a small request
+naming one commit into its own data folder; a root-owned systemd path unit sees
+that file and runs `/usr/lib/blockstead/blockstead-update`. That helper accepts
+nothing but a commit hash, holds its own copy of the repository address where
+the service account cannot edit it, and downloads that exact commit over HTTPS.
+Running as a separate unit is also what lets the update survive the dashboard
+restart it causes.
+
+Because Blockstead follows the `main` branch rather than tagged releases, every
+push reaches installed copies. The health check and automatic rollback are what
+protect you if a release does not come up cleanly.
 
 ## If something goes wrong
 
@@ -308,8 +336,9 @@ exactly where it left them.
 - There is no browser-accessible shell, and Minecraft console commands are
   never run through an operating-system shell.
 - The service runs as an unprivileged `blockstead` account under a hardened
-  systemd unit; only a narrowly scoped helper may power the machine off for
-  the schedule feature.
+  systemd unit; only narrowly scoped helpers may power the machine off for the
+  schedule feature or install an update, and each accepts a single fixed kind
+  of input rather than a command to run.
 - Destructive actions require confirmation, and risky operations create
   recovery copies first.
 

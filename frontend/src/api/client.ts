@@ -56,6 +56,22 @@ export interface DiagnosticsReport {
   recent_errors: DiagnosticLogEntry[];
   recent_log: DiagnosticLogEntry[];
 }
+export interface UpdateBuild { version: string; commit: string | null; short_commit: string | null; committed_at: string | null; label: string; source: string }
+export interface UpdateLatest { commit: string; short_commit: string; committed_at: string; summary: string }
+export interface UpdateAnnouncement { version: string; label: string; commit: string; short_commit: string; previous_commit: string; summary: string | null }
+export interface UpdateStatus {
+  build: UpdateBuild;
+  automatic: boolean;
+  /** Whether this installation has the privileged helper that can install an update. */
+  supported: boolean;
+  decision: "current" | "install" | "stop_server_first" | "waiting_for_players" | "manual";
+  latest: UpdateLatest | null;
+  checked_at: string | null;
+  error: string | null;
+  installing: boolean;
+  last_result: { state: string; detail: string; at: string } | null;
+  announcement: UpdateAnnouncement | null;
+}
 export interface OverviewMetricPoint { at: string; cpu_percent: number; memory_percent: number; disk_percent: number; process_memory_bytes: number | null; world_size_bytes: number | null }
 export interface OverviewWarning { code: string; title: string; detail: string; to: string; severity: "warning" | "danger" }
 export interface OverviewActivity { id: string; category: string; result: string; detail: string; created_at: string; to: string }

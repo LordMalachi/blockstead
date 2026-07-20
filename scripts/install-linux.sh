@@ -12,6 +12,9 @@ SERVICE=blockstead.service
 UNIT_PATH=/etc/systemd/system/$SERVICE
 POWER_HELPER=/usr/lib/blockstead/blockstead-power
 SUDOERS_PATH=/etc/sudoers.d/blockstead-power
+UPDATE_HELPER=/usr/lib/blockstead/blockstead-update
+UPDATE_PATH_UNIT=/etc/systemd/system/blockstead-update.path
+UPDATE_SERVICE_UNIT=/etc/systemd/system/blockstead-update.service
 CLI_PATH=/usr/local/bin/blockstead
 DESKTOP_PATH=/usr/share/applications/blockstead.desktop
 ICON_PATH=/usr/share/icons/hicolor/scalable/apps/blockstead.svg
@@ -88,6 +91,43 @@ if (( node_major < 18 )); then
 fi
 
 new_version=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' "$ROOT/backend/pyproject.toml")
+
+# Every commit carries the same release version, so the commit is what says
+# whether an installation is behind. Where it comes from depends on how this
+# copy arrived: the automatic updater knows exactly what it downloaded, a git
+# checkout can say for itself, and a hand-downloaded ZIP carries nothing at all
+# and is matched against the branch tip so it does not immediately replace
+# itself with the same code.
+new_commit=${BLOCKSTEAD_INSTALL_COMMIT:-}
+new_commit_at=${BLOCKSTEAD_INSTALL_COMMIT_AT:-}
+install_source=zip
+if [[ -n $new_commit ]]; then
+  install_source=update
+elif [[ -d $ROOT/.git ]] && command -v git >/dev/null; then
+  if new_commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null); then
+    new_commit_at=$(git -C "$ROOT" show -s --format=%cI HEAD 2>/dev/null || true)
+    install_source=git
+  else
+    new_commit=""
+  fi
+fi
+if [[ -z $new_commit ]] && command -v curl >/dev/null; then
+  branch_head=$(curl --fail --silent --max-time 10 \
+    https://api.github.com/repos/LordMalachi/blockstead/commits/main 2>/dev/null || true)
+  if [[ -n $branch_head ]]; then
+    new_commit=$(python3 -c 'import json, sys
+try:
+    print(json.loads(sys.stdin.read())["sha"])
+except Exception:
+    pass' <<<"$branch_head" 2>/dev/null || true)
+    new_commit_at=$(python3 -c 'import json, sys
+try:
+    print(json.loads(sys.stdin.read())["commit"]["committer"]["date"])
+except Exception:
+    pass' <<<"$branch_head" 2>/dev/null || true)
+  fi
+fi
+
 old_version="not installed"
 mode=install
 had_app=false
@@ -175,6 +215,7 @@ had_database=false
 had_unit=false
 had_helper=false
 had_sudoers=false
+had_update_helper=false
 rollback_ready=false
 deployment_changed=false
 
@@ -209,6 +250,16 @@ rollback() {
     else
       rm -f "$SUDOERS_PATH"
     fi
+    # A release that shipped a broken updater must not leave that updater in
+    # place, or the machine could never be repaired automatically again.
+    if [[ $had_update_helper == true ]]; then
+      install -m 0755 "$ROLLBACK_DIR/blockstead-update" "$UPDATE_HELPER"
+    else
+      rm -f "$UPDATE_HELPER" "$UPDATE_PATH_UNIT" "$UPDATE_SERVICE_UNIT"
+    fi
+    # Whatever asked for this update failed with it; leaving the request would
+    # start the same losing update again as soon as the watcher returns.
+    rm -f "$DATA_DIR/update-request.json"
     systemctl daemon-reload
   fi
 
@@ -234,6 +285,7 @@ if [[ -f $DATABASE ]]; then
 fi
 if [[ -f $UNIT_PATH ]]; then had_unit=true; cp -a "$UNIT_PATH" "$ROLLBACK_DIR/blockstead.service"; fi
 if [[ -f $POWER_HELPER ]]; then had_helper=true; cp -a "$POWER_HELPER" "$ROLLBACK_DIR/blockstead-power"; fi
+if [[ -f $UPDATE_HELPER ]]; then had_update_helper=true; cp -a "$UPDATE_HELPER" "$ROLLBACK_DIR/blockstead-update"; fi
 if [[ -f $SUDOERS_PATH ]]; then had_sudoers=true; cp -a "$SUDOERS_PATH" "$ROLLBACK_DIR/blockstead-power.sudoers"; fi
 rollback_ready=true
 
@@ -245,6 +297,13 @@ cp -a "$ROOT/frontend/dist" "$APP_DIR/frontend/dist"
 cp -a "$ROOT/packaging" "$APP_DIR/packaging"
 cp -a "$ROOT/scripts" "$APP_DIR/scripts"
 printf '%s\n' "$new_version" >"$APP_DIR/VERSION"
+# What the dashboard reads to know whether a newer commit exists upstream.
+python3 -c 'import json, sys
+json.dump({"version": sys.argv[1], "commit": sys.argv[2] or None,
+           "committed_at": sys.argv[3] or None, "source": sys.argv[4]},
+          open(sys.argv[5], "w"), indent=2)' \
+  "$new_version" "$new_commit" "$new_commit_at" "$install_source" "$APP_DIR/BUILD"
+chmod 0644 "$APP_DIR/BUILD"
 
 python3 -m venv "$APP_DIR/venv"
 "$APP_DIR/venv/bin/pip" install --upgrade pip
@@ -259,8 +318,23 @@ install -d -o root -g root -m 0755 /usr/lib/blockstead
 install -o root -g root -m 0755 "$ROOT/packaging/blockstead-power" "$POWER_HELPER"
 install -o root -g root -m 0440 "$ROOT/packaging/sudoers/blockstead-power" "$SUDOERS_PATH"
 install -m 0644 "$ROOT/packaging/systemd/$SERVICE" "$UNIT_PATH"
+
+# Blockstead updates itself through a root-owned path unit rather than sudo:
+# the dashboard's own unit sets NoNewPrivileges and cannot write /opt, and an
+# update has to outlive the dashboard restart it causes. The dashboard only
+# writes a request file into its data directory; systemd notices it and runs
+# the helper. Root owns the helper, so the service account cannot edit what
+# will later run as root.
+install -o root -g root -m 0755 "$ROOT/packaging/blockstead-update" "$UPDATE_HELPER"
+install -m 0644 "$ROOT/packaging/systemd/blockstead-update.path" "$UPDATE_PATH_UNIT"
+install -m 0644 "$ROOT/packaging/systemd/blockstead-update.service" "$UPDATE_SERVICE_UNIT"
+# A request left over from the update that is installing right now would
+# otherwise start the whole thing again the moment the watcher comes back.
+rm -f "$DATA_DIR/update-request.json"
+
 systemctl daemon-reload
 systemctl enable "$SERVICE"
+systemctl enable --now blockstead-update.path
 systemctl start "$SERVICE"
 
 health_bind=$(python3 -c 'import sys; values = dict(line.strip().split("=", 1) for line in open(sys.argv[1], encoding="utf-8") if line.strip() and not line.lstrip().startswith("#") and "=" in line); print(values.get("BLOCKSTEAD_BIND_HOST", "127.0.0.1"))' "$CONFIG_DIR/blockstead.env")
@@ -272,8 +346,11 @@ else
 fi
 health_url="http://$health_host:$health_port"
 ready=false
-for _ in {1..20}; do
-  if health=$(curl --fail --silent "$health_url/api/v1/health"); then
+# Generous on purpose. An automatic update runs unattended right after a pip
+# install and a database migration, and a slow home machine that needed a few
+# more seconds would otherwise be rolled back off a perfectly good release.
+for _ in {1..60}; do
+  if health=$(curl --fail --silent --max-time 5 "$health_url/api/v1/health"); then
     if python3 -c 'import json, sys; body = json.loads(sys.argv[1]); raise SystemExit(0 if body.get("status") == "ok" and body.get("version") == sys.argv[2] else 1)' "$health" "$new_version"; then
       ready=true
       break

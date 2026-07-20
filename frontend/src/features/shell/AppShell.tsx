@@ -7,6 +7,7 @@ import { Button } from "../../components/Button";
 import { NavIcon } from "../../components/NavIcon";
 import { StatusBadge } from "../../components/StatusBadge";
 import { scopeFor } from "../servers/scope";
+import { UpdateNotice } from "./UpdateNotice";
 
 const workspaceNav = [
   { to: "/servers", label: "Servers", icon: "server", end: true },
@@ -70,6 +71,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
         <div className="privacy-card" data-walkthrough="privacy"><span className="privacy-card__icon" aria-hidden="true">◆</span><div><strong>Local by design</strong><small>Your server data stays on this machine.</small></div></div>
       </aside>
       <main id="main">
+        <UpdateNotice />
         <Outlet />
         <footer className="app-footer"><BrandMark small /><p><strong>Blockstead</strong><br />Quiet, local care for your Minecraft world.</p></footer>
       </main>

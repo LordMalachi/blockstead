@@ -1,0 +1,13 @@
+[Unit]
+Description=Watch for a Blockstead update request
+Documentation=https://github.com/LordMalachi/blockstead
+
+[Path]
+# The dashboard runs unprivileged and cannot install anything itself. It drops
+# this file into its own data directory, which is one of the few paths its
+# systemd sandbox lets it write, and that is what starts the update.
+PathExists=/var/lib/blockstead/update-request.json
+Unit=blockstead-update.service
+
+[Install]
+WantedBy=multi-user.target

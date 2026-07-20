@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Keep Blockstead current by itself. On startup, and every few hours after
+  that, Blockstead compares the commit it was built from against the project's
+  `main` branch and installs a newer one without the owner downloading
+  anything. Updating waits while people are playing and stops an empty server
+  first, because the installer will not run while a Minecraft process is still
+  attached. When the new version comes up, the dashboard says which version it
+  is now on and what changed. This works the same whether Blockstead came from
+  `git clone` or a downloaded ZIP: `scripts/update-linux.sh` now fetches the
+  new code itself instead of refusing to run outside a git checkout.
+  Updates cross the privilege boundary through a root-owned systemd path unit
+  rather than `sudo`, since the dashboard's own unit sets `NoNewPrivileges` and
+  cannot write `/opt`, and an update has to outlive the restart it causes. The
+  only value that crosses is a commit hash, checked against `^[0-9a-f]{40}$`;
+  the repository address lives in the root-owned helper where the service
+  account cannot change it. A new System panel shows the installed build, the
+  newest available, and a manual "Check now"; a copy that cannot update itself
+  says so plainly instead of pretending.
 - Add a one-click vanilla switch to the Extensions panel: disable every
   installed plugin or mod at once to play plain Minecraft, then bring them all
   back exactly as they were. Nothing is deleted; files move to the managed

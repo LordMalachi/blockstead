@@ -8,6 +8,7 @@ import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
@@ -33,7 +34,7 @@ from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Scope
 
-from . import __version__
+from . import __version__, updates
 from .backups import (
     BackupArchive,
     BackupError,
@@ -268,10 +269,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     metrics_task: asyncio.Task[None] | None = None
+    update_task: asyncio.Task[None] | None = None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        nonlocal metrics_task
+        nonlocal metrics_task, update_task
         engine = factory.kw["bind"]
         Base.metadata.create_all(engine)
         with factory() as db:
@@ -285,20 +287,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.commit()
         scheduler.begin()
         metrics_task = asyncio.create_task(metrics_loop())
+        # A first-ever start has nothing to announce, so the build that is
+        # already running is recorded quietly. Anything different arriving later
+        # is a real update and is announced once the owner sees it.
+        if updates.read_state(config.data_dir).acknowledged_commit is None:
+            updates.acknowledge(config.data_dir, installed_build)
+        if update_checks_run_here():
+            update_task = asyncio.create_task(update_loop())
         log.info(
             "Blockstead %s started; dashboard bound to %s:%s",
-            __version__,
+            installed_build.label,
             config.bind_host,
             config.port,
         )
         yield
-        if metrics_task is not None:
-            metrics_task.cancel()
+        for task in (metrics_task, update_task):
+            if task is None:
+                continue
+            task.cancel()
             try:
-                await metrics_task
+                await task
             except asyncio.CancelledError:
                 pass
-            metrics_task = None
+        metrics_task = None
+        update_task = None
         await scheduler.close()
         await manager.close()
         await http_client.aclose()
@@ -372,6 +384,118 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     scheduler = Scheduler(
         factory, manager, scheduled_start, config.data_dir, config.server_root
     )
+
+    # Blockstead follows a branch rather than tagged releases, so the commit the
+    # installer stamped is what says whether this copy is behind.
+    installed_build = updates.read_build(__version__, build_file=config.update_build_file)
+    app.state.installed_build = installed_build
+    app.state.latest_commit = None
+    app.state.update_decision = updates.Decision.CURRENT
+
+    async def players_online_now() -> int | None:
+        """How many people are on the running server, or None if unknowable."""
+        profile_id = app.state.active_profile_id
+        if profile_id is None:
+            return None
+        with factory() as db:
+            profile = db.get(Profile, profile_id)
+            if profile is None:
+                return None
+            return await scheduler.online_players(profile)
+
+    def update_status() -> dict[str, object]:
+        state = updates.read_state(config.data_dir)
+        latest = app.state.latest_commit
+        return {
+            "build": installed_build.payload(),
+            "automatic": config.update_auto,
+            "supported": updates.update_capable(),
+            "decision": app.state.update_decision.value,
+            "latest": latest.payload() if latest else None,
+            "checked_at": state.last_checked_at.isoformat() if state.last_checked_at else None,
+            "error": state.last_error,
+            "installing": updates.pending_request(config.data_dir) is not None,
+            "last_result": updates.read_result(config.data_dir),
+            "announcement": updates.announcement(installed_build, state),
+        }
+
+    async def check_for_update(*, install: bool = True) -> dict[str, object]:
+        """Look at GitHub and, when the moment is polite, ask for the install."""
+        state = updates.read_state(config.data_dir)
+        now = datetime.now(timezone.utc)  # noqa: UP017
+        try:
+            latest = await updates.fetch_latest(
+                http_client, config.update_repo, config.update_branch
+            )
+        except (httpx.HTTPError, ValueError) as exc:
+            log.warning("Blockstead could not check for updates: %s", exc)
+            updates.write_state(
+                config.data_dir,
+                replace(
+                    state,
+                    last_checked_at=now,
+                    last_error="Blockstead could not reach GitHub to check for updates.",
+                ),
+            )
+            return update_status()
+
+        app.state.latest_commit = latest
+        # An installation that was never stamped with a commit cannot be
+        # compared against anything, so the first successful check adopts what
+        # is current instead of reinstalling over a copy that may already match.
+        if installed_build.commit is None and state.baseline_commit is None:
+            state = replace(state, baseline_commit=latest.commit)
+
+        snapshot = manager.snapshot()
+        running = snapshot["state"] in {"RUNNING", "STARTING", "DEGRADED"}
+        decision = updates.decide(
+            behind=updates.is_behind(installed_build, latest, baseline=state.baseline_commit),
+            auto=config.update_auto,
+            capable=updates.update_capable(),
+            server_running=running,
+            players_online=await players_online_now() if running else None,
+        )
+        state = replace(state, last_checked_at=now, last_error=None)
+
+        if install and decision is updates.Decision.STOP_SERVER_FIRST:
+            # Nobody is playing, and the installer refuses to run while the
+            # service still owns a Minecraft process, so close it down politely.
+            log.info("Stopping the empty Minecraft server so Blockstead can update.")
+            if await manager.stop(timeout=60.0):
+                decision = updates.Decision.INSTALL
+            else:
+                decision = updates.Decision.WAITING_FOR_PLAYERS
+                log.warning("The Minecraft server did not stop, so the update waits.")
+
+        if install and decision is updates.Decision.INSTALL:
+            updates.request_install(config.data_dir, latest.commit)
+            state = replace(
+                state, requested_commit=latest.commit, requested_summary=latest.summary
+            )
+
+        app.state.update_decision = decision
+        updates.write_state(config.data_dir, state)
+        return update_status()
+
+    async def update_loop() -> None:
+        while True:
+            try:
+                await check_for_update()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("The Blockstead update check stopped unexpectedly.")
+            await asyncio.sleep(config.update_check_hours * 3600)
+
+    def update_checks_run_here() -> bool:
+        """Only an installation that could act on an update checks by itself.
+
+        A development checkout, a test run, and a Docker image have no
+        privileged helper and update by other means, so none of them should
+        reach out to GitHub on their own. Asking on purpose still works
+        everywhere through the check endpoint.
+        """
+        return config.update_auto and updates.update_capable()
 
     @app.middleware("http")
     async def security_headers(
@@ -2337,6 +2461,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "Content-Disposition": f'attachment; filename="blockstead-report-{stamp}.json"'
             },
         )
+
+    @app.get("/api/v1/updates/status")
+    def updates_status(request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        return update_status()
+
+    @app.post("/api/v1/updates/check")
+    async def updates_check(request: Request, db: Db) -> dict[str, object]:
+        mutation(request, db)
+        return await check_for_update()
+
+    @app.post("/api/v1/updates/install")
+    async def updates_install(request: Request, db: Db) -> dict[str, object]:
+        mutation(request, db)
+        if not updates.update_capable():
+            raise HTTPException(
+                409,
+                "This copy of Blockstead cannot update itself. "
+                "Install it with scripts/install-linux.sh to enable updates.",
+            )
+        latest = app.state.latest_commit
+        if latest is None:
+            raise HTTPException(409, "Blockstead has not checked for an update yet.")
+        if not updates.is_behind(
+            installed_build,
+            latest,
+            baseline=updates.read_state(config.data_dir).baseline_commit,
+        ):
+            raise HTTPException(409, "Blockstead is already up to date.")
+        if manager.snapshot()["state"] in {"RUNNING", "STARTING", "DEGRADED"}:
+            raise HTTPException(
+                409,
+                "Stop the Minecraft server before updating, so players are not "
+                "disconnected partway through.",
+            )
+        updates.request_install(config.data_dir, latest.commit)
+        state = updates.read_state(config.data_dir)
+        updates.write_state(
+            config.data_dir,
+            replace(state, requested_commit=latest.commit, requested_summary=latest.summary),
+        )
+        app.state.update_decision = updates.Decision.INSTALL
+        return update_status()
+
+    @app.post("/api/v1/updates/acknowledge")
+    def updates_acknowledge(request: Request, db: Db) -> dict[str, object]:
+        mutation(request, db)
+        updates.acknowledge(config.data_dir, installed_build)
+        return update_status()
 
     @app.get("/api/v1/server/state")
     def process_state(request: Request, db: Db) -> dict[str, object]:

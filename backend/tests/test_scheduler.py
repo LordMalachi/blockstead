@@ -148,7 +148,7 @@ def test_only_when_empty_skips_when_status_is_unavailable(tmp_path: Path) -> Non
     manager.command = AsyncMock()
     manager.stop = AsyncMock(return_value=True)
     scheduler = Scheduler(factory, manager, AsyncMock(), tmp_path / "data", tmp_path)
-    scheduler._online_players = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    scheduler.online_players = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     asyncio.run(
         scheduler.tick(datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc))  # noqa: UP017

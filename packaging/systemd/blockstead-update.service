@@ -1,0 +1,19 @@
+[Unit]
+Description=Install a newer Blockstead
+Documentation=https://github.com/LordMalachi/blockstead
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/blockstead/blockstead-update
+
+# This unit is deliberately not sandboxed the way blockstead.service is. It has
+# to replace /opt/blockstead, run systemctl, and keep running while the
+# dashboard it restarts goes down and comes back. Its safety comes from the
+# helper accepting nothing but a commit hash, and from the installer restoring
+# the previous version by itself when the new one is not healthy.
+#
+# Building the dashboard and migrating the database can take a while on a small
+# home machine, so the timeout is generous rather than tight.
+TimeoutStartSec=1800

@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Install a newer Blockstead on behalf of the unprivileged dashboard service.
+#
+# The dashboard cannot do this itself: its systemd unit sets NoNewPrivileges,
+# which stops sudo working, and ProtectSystem=strict leaves /opt read-only. It
+# also must not do this itself, because installing stops the dashboard service
+# and would kill the process doing the work partway through. So the dashboard
+# only writes a request file, and a root-owned path unit runs this helper.
+#
+# The request carries a commit and nothing else. The repository lives here,
+# where the service account cannot edit it, so a compromised dashboard can at
+# worst pick which commit of this repository to install.
+set -euo pipefail
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+REPO=LordMalachi/blockstead
+DATA_DIR=/var/lib/blockstead
+LOG_DIR=/var/log/blockstead
+REQUEST=$DATA_DIR/update-request.json
+RESULT=$DATA_DIR/update-result.json
+LOCK=/run/blockstead-update.lock
+LOG=$LOG_DIR/update.log
+
+main() {
+  local commit workdir tarball extracted status=1 detail
+
+  [[ ${EUID} -eq 0 ]] || { echo "This helper must run as root." >&2; exit 1; }
+  [[ -f $REQUEST ]] || { echo "No update was requested." >&2; exit 0; }
+
+  commit=$(python3 -c 'import json, sys
+try:
+    print(json.load(open(sys.argv[1]))["commit"])
+except Exception:
+    raise SystemExit(1)' "$REQUEST" 2>/dev/null) || {
+    record failed "The update request could not be read."
+    rm -f "$REQUEST"
+    exit 2
+  }
+
+  # The only value that crosses the privilege boundary, so it is pinned to
+  # exactly the shape of a git commit before it reaches curl or tar.
+  if [[ ! $commit =~ ^[0-9a-f]{40}$ ]]; then
+    record failed "The update request did not name a valid commit."
+    rm -f "$REQUEST"
+    exit 2
+  fi
+
+  # Consume the request straight away. The path unit only fires again once the
+  # file has gone, and leaving it behind would retrigger this helper forever.
+  rm -f "$REQUEST"
+
+  echo "Installing Blockstead commit $commit"
+  record running "Downloading Blockstead ${commit:0:7}."
+
+  workdir=$(mktemp -d /tmp/blockstead-update.XXXXXX)
+  # shellcheck disable=SC2064  # workdir is fixed now; expand it now too.
+  trap "rm -rf '$workdir'" EXIT
+  tarball=$workdir/source.tar.gz
+
+  if ! curl --fail --silent --show-error --location --max-time 300 \
+    --output "$tarball" "https://codeload.github.com/$REPO/tar.gz/$commit"; then
+    record failed "Blockstead could not download the update. It will try again later."
+    exit 1
+  fi
+
+  mkdir -p "$workdir/source"
+  if ! tar -xzf "$tarball" -C "$workdir/source"; then
+    record failed "The downloaded update could not be unpacked."
+    exit 1
+  fi
+
+  extracted=$(find "$workdir/source" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+  if [[ -z $extracted || ! -x $extracted/scripts/install-linux.sh ]]; then
+    record failed "The downloaded update did not contain an installer."
+    exit 1
+  fi
+
+  record running "Installing Blockstead ${commit:0:7}."
+  # Hand the exact commit to the installer so it stamps what really landed
+  # rather than guessing. The date comes along too, because it is what stops a
+  # rewritten branch from later installing older code over this one.
+  BLOCKSTEAD_INSTALL_COMMIT=$commit
+  BLOCKSTEAD_INSTALL_COMMIT_AT=$(curl --fail --silent --max-time 15 \
+    "https://api.github.com/repos/$REPO/commits/$commit" 2>/dev/null |
+    python3 -c 'import json, sys
+try:
+    print(json.loads(sys.stdin.read())["commit"]["committer"]["date"])
+except Exception:
+    pass' 2>/dev/null || true)
+  export BLOCKSTEAD_INSTALL_COMMIT BLOCKSTEAD_INSTALL_COMMIT_AT
+
+  # The installer restores the previous version by itself if the new one does
+  # not come up healthy, so a failure here is reported, not repaired.
+  if "$extracted/scripts/install-linux.sh" --yes; then
+    status=0
+    detail="Blockstead was updated to ${commit:0:7}."
+  else
+    detail="The update did not install cleanly, so the previous version was kept."
+  fi
+
+  if [[ $status -eq 0 ]]; then
+    record succeeded "$detail"
+  else
+    record failed "$detail"
+  fi
+  exit "$status"
+}
+
+# Leave a note the dashboard can read once it comes back up.
+record() {
+  local state=$1 detail=$2
+  python3 -c 'import json, sys
+json.dump({"state": sys.argv[1], "detail": sys.argv[2], "at": sys.argv[3]},
+          open(sys.argv[4], "w"), indent=2)' \
+    "$state" "$detail" "$(date -Is)" "$RESULT" 2>/dev/null || true
+  chmod 0644 "$RESULT" 2>/dev/null || true
+  echo "$state: $detail"
+}
+
+mkdir -p "$LOG_DIR"
+# One update at a time, so an automatic run and `sudo blockstead update` cannot
+# race each other over /opt/blockstead.
+exec 9>"$LOCK"
+if ! flock --nonblock 9; then
+  echo "Another Blockstead update is already running." >&2
+  exit 0
+fi
+
+main "$@" 2>&1 | tee -a "$LOG"
+exit "${PIPESTATUS[0]}"

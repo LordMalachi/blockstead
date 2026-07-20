@@ -217,9 +217,15 @@ cmd_update() {
   if [[ -n $src && -x $src/scripts/update-linux.sh ]]; then
     exec "$src/scripts/update-linux.sh" "$@"
   fi
+  # The folder Blockstead was installed from is often a download that has since
+  # been deleted or moved. The installed copy of the updater can fetch the new
+  # version by itself, so that is a perfectly good place to run it from.
+  if [[ -x $APP_DIR/scripts/update-linux.sh ]]; then
+    exec "$APP_DIR/scripts/update-linux.sh" "$@"
+  fi
   cat >&2 <<EOF
 Blockstead cannot find the folder it was installed from
-(${src:-no location was recorded}).
+(${src:-no location was recorded}), and the installed copy has no updater.
 
 To update:
   1. Download or clone the newest Blockstead release.

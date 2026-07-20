@@ -10,6 +10,9 @@ SERVICE=blockstead.service
 UNIT_PATH=/etc/systemd/system/$SERVICE
 POWER_HELPER=/usr/lib/blockstead/blockstead-power
 SUDOERS_PATH=/etc/sudoers.d/blockstead-power
+UPDATE_HELPER=/usr/lib/blockstead/blockstead-update
+UPDATE_PATH_UNIT=/etc/systemd/system/blockstead-update.path
+UPDATE_SERVICE_UNIT=/etc/systemd/system/blockstead-update.service
 CLI_PATH=/usr/local/bin/blockstead
 DESKTOP_PATH=/usr/share/applications/blockstead.desktop
 ICON_PATH=/usr/share/icons/hicolor/scalable/apps/blockstead.svg
@@ -94,7 +97,11 @@ if [[ $assume_yes == false ]]; then
 fi
 
 systemctl disable --now "$SERVICE" 2>/dev/null || true
-rm -f "$UNIT_PATH" "$POWER_HELPER" "$SUDOERS_PATH" "$CLI_PATH" "$DESKTOP_PATH" "$ICON_PATH"
+# The update watcher is a separate unit, so it has to be stopped separately or
+# it would sit there waiting to reinstall what was just removed.
+systemctl disable --now blockstead-update.path 2>/dev/null || true
+rm -f "$UNIT_PATH" "$POWER_HELPER" "$SUDOERS_PATH" "$CLI_PATH" "$DESKTOP_PATH" "$ICON_PATH" \
+  "$UPDATE_HELPER" "$UPDATE_PATH_UNIT" "$UPDATE_SERVICE_UNIT"
 if [[ -n "${SUDO_USER:-}" ]]; then
   USER_DESKTOP=$(runuser -u "$SUDO_USER" -- xdg-user-dir DESKTOP 2>/dev/null || echo "")
   if [[ -n "$USER_DESKTOP" && -d "$USER_DESKTOP" ]]; then
