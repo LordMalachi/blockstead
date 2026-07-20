@@ -23,6 +23,8 @@ Blockstead manages the process around them.
 | Overview with the fixture running | Live log and guided quick commands |
 | ![Player management](docs/screenshots/05-players.png) | ![Guided settings editor](docs/screenshots/06-settings.png) |
 | Player management | Guided settings editor |
+| ![Mods and plugins workshop](docs/screenshots/10-mods-plugins.png) | ![Backup Center with a verified restore point](docs/screenshots/11-backups.png) |
+| Mods and plugins workshop | Backup Center with a verified restore point |
 | ![System health](docs/screenshots/07-system.png) | ![Every server on this computer](docs/screenshots/08-servers.png) |
 | System health | Every server on this computer |
 
@@ -44,14 +46,16 @@ Blockstead manages the process around them.
 - saves weekday-aware start and maintenance schedules, plus one-time events;
   ordered maintenance runs announce, flush saves, optionally back up, and stop
   safely, with previews and result history
-- searches Modrinth, Hangar (PaperMC), and CurseForge for plugins and mods that
-  suit the selected server, with category filters, sort orders, paging, and a
-  version picker; installs are dependency-resolved and checksum-verified, and a
-  one-click vanilla switch turns every extension off (and back on) without
-  deleting anything
+- gives mods and plugins their own friendly workshop: browse compatible
+  projects from Modrinth, Hangar (PaperMC), and CurseForge; compare versions,
+  categories, and sort orders; then install a checksum-verified release when
+  the server is safely stopped. A one-click vanilla switch parks every
+  extension without deleting anything, ready for the next game night
 - checks installed plugins and mods for newer compatible releases and updates
   a file in place once the verified download succeeds
-- creates private manual world backups and keeps per-server result history
+- creates private, verified manual and scheduled world backups, keeps a clear
+  per-server history, lets you save a portable copy when you need one, and can
+  mirror successful archives to approved folders on another drive
 - can optionally shut down the Linux computer after a safe stop and set an RTC
   wake alarm for the next scheduled day when the computer hardware supports it
 - installs as a system service, so the dashboard starts with Linux
@@ -179,6 +183,31 @@ backup guidance, and container limitations are covered in the
 Day to day you only need the dashboard: start and stop the server, watch the
 live log, manage players, create backups, and set the weekly **Schedule**. The
 computer just needs to stay on (or wake on its schedule, where supported).
+
+### Mods, plugins, and backups without the guesswork
+
+The **Extension Workshop** is a good place to explore, even while friends are
+playing. Search the catalog, compare projects, and use the version picker at
+any time. Blockstead matches what it shows to the server's Minecraft version
+and loader. When you are ready to install, update, upload, enable, disable, or
+remove a jar, stop the server first — the page explains why and unlocks the
+change controls once Minecraft is fully stopped. Disabling keeps a file handy
+for later; removing it deletes that file after one last confirmation. After a
+change, start the server and give the first few console lines a quick look.
+
+The **Backup Center** is your world safety net. **Back up now** makes a private,
+checksum-verified restore point; it does not ask you to pick a download folder.
+Use **Save a copy** beside a completed backup when you want a portable archive
+on your computer. The history shows manual and scheduled attempts, what needs
+attention, and which archives are still available. Before a restore,
+Blockstead checks the archive, disk space, and world folders it will replace,
+then keeps the current folders beside the restored ones. Set retention rules to
+keep the right number, age, or total size of primary archives, and optionally
+mirror every successful backup to up to eight existing folders on the host.
+
+Both pages have an **Open … guide** button for a short, in-context walkthrough,
+plus small help buttons beside the choices that are easiest to second-guess.
+For the full friendly reference, see [the mods, plugins, and backups guide](docs/mods-plugins-backups.md).
 
 Click the **Blockstead** icon on the desktop or in the applications menu to
 open it. The icon starts the dashboard service if necessary, waits until it is
@@ -316,6 +345,7 @@ screenshots with `npm --prefix frontend run screenshots`. Read
 | [docs/architecture.md](docs/architecture.md) | How the backend and frontend fit together |
 | [docs/threat-model.md](docs/threat-model.md) | Security boundaries and assumptions |
 | [docs/docker.md](docs/docker.md) | Docker Compose setup, storage, networking, and upgrades |
+| [docs/mods-plugins-backups.md](docs/mods-plugins-backups.md) | Friendly guide to extensions, backups, restores, and extra copies |
 | [docs/linux-mint-release-checklist.md](docs/linux-mint-release-checklist.md) | Manual acceptance testing before a release |
 | [CHANGELOG.md](CHANGELOG.md) | Notable changes per release |
 

@@ -52,6 +52,51 @@ test("captures documentation screenshots @docs", async ({ page }) => {
   await expect(page.getByLabel("Player limit")).toBeVisible();
   await page.screenshot({ path: out("06-settings") });
 
+  await page.getByRole("link", { name: "Backups" }).click();
+  await expect(page.getByRole("heading", { name: "Backup Center" })).toBeVisible();
+  await page.getByRole("button", { name: "Back up now" }).click();
+  await expect(page.getByRole("status")).toContainText(/completed and verified/i, { timeout: 10_000 });
+  await expect(page.getByText("Protected world.")).toBeVisible();
+  await page.setViewportSize({ width: 1360, height: 1080 });
+  await page.screenshot({ path: out("11-backups") });
+  await page.setViewportSize({ width: 1360, height: 850 });
+
+  await page.getByRole("link", { name: "Overview" }).click();
+  await page.getByRole("button", { name: "Stop safely" }).click();
+  await expect(page.getByText("Stopped", { exact: true })).toBeVisible({ timeout: 5_000 });
+
+  // The checked-in server fixture is deliberately vanilla. Supply a representative,
+  // local-only loadout here so the documentation can show the extension workspace
+  // rather than a network-dependent catalog result.
+  await page.route(/\/api\/v1\/profiles\/[^/]+\/extensions$/, route => route.fulfill({ json: {
+    directory: "mods",
+    present: true,
+    entries: [
+      { file_name: "lithium-fabric-mc1.21.4-0.14.7.jar", size_bytes: 735_000, sha256: "a".repeat(64), kind: "fabric-mod", loaders: ["fabric"], identifier: "lithium", display_name: "Lithium", version: "0.14.7", minecraft_constraint: "1.21.4", environment: "server", dependencies: [], readable: true },
+      { file_name: "voicechat-fabric-1.21.4-2.5.28.jar", size_bytes: 2_100_000, sha256: "b".repeat(64), kind: "fabric-mod", loaders: ["fabric"], identifier: "voicechat", display_name: "Simple Voice Chat", version: "2.5.28", minecraft_constraint: "1.21.4", environment: "server", dependencies: [], readable: true },
+    ],
+    disabled_entries: [
+      { file_name: "squaremap-1.3.3.jar.disabled", size_bytes: 1_800_000, sha256: "c".repeat(64), kind: "fabric-mod", loaders: ["fabric"], identifier: "squaremap", display_name: "squaremap", version: "1.3.3", minecraft_constraint: "1.21.4", environment: "server", dependencies: [], readable: true },
+    ],
+    warnings: [],
+    truncated: false,
+  } }));
+  await page.route(/\/api\/v1\/profiles\/[^/]+\/shared-map$/, route => route.fulfill({ json: {
+    config_present: true, config_path: "config/squaremap/config.yml", internal_webserver_enabled: true, bind: "127.0.0.1", port: 8080, problem: null,
+  } }));
+  await page.route(/\/api\/v1\/profiles\/[^/]+\/catalog\/categories\?source=modrinth$/, route => route.fulfill({ json: {
+    categories: ["optimization", "utility", "server"],
+  } }));
+  await page.route(/\/api\/v1\/profiles\/[^/]+\/configs$/, route => route.fulfill({ json: {
+    distribution: "fabric", directory: "config", files: [],
+  } }));
+  await page.getByRole("link", { name: "Mods and plugins" }).click();
+  await expect(page.getByRole("heading", { name: "Extension Workshop" })).toBeVisible();
+  await expect(page.getByText("Simple Voice Chat")).toBeVisible();
+  await page.setViewportSize({ width: 1360, height: 1280 });
+  await page.screenshot({ path: out("10-mods-plugins") });
+  await page.setViewportSize({ width: 1360, height: 850 });
+
   await page.getByRole("link", { name: "Schedule" }).click();
   await expect(page.getByRole("heading", { name: "What Blockstead will do" })).toBeVisible();
   await page.getByRole("button", { name: "Every night" }).click();
@@ -70,7 +115,4 @@ test("captures documentation screenshots @docs", async ({ page }) => {
   await page.getByRole("link", { name: "Servers" }).click();
   await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
   await page.screenshot({ path: out("08-servers") });
-
-  await page.getByRole("button", { name: "Stop safely" }).click();
-  await expect(page.getByText("Stopped", { exact: true })).toBeVisible({ timeout: 5_000 });
 });
