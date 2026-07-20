@@ -77,6 +77,13 @@ export const setCsrf = (value: string) => { csrfToken = value; sessionStorage.se
 export const clearCsrf = () => { csrfToken = ""; sessionStorage.removeItem("blockstead_csrf"); };
 export const getCsrf = () => csrfToken;
 
+// Sessions expire server-side; without this hook a signed-out dashboard keeps
+// rendering its last successful data forever. App registers a handler that
+// returns the owner to the sign-in screen the moment any request comes back 401.
+let onAuthExpired: (() => void) | null = null;
+export const setOnAuthExpired = (handler: (() => void) | null) => { onAuthExpired = handler; };
+const reportAuthExpired = (status: number) => { if (status === 401) { clearCsrf(); onAuthExpired?.(); } };
+
 /** POST a FormData body with upload progress, which fetch cannot report. */
 export function apiUpload<T>(path: string, form: FormData, onProgress?: (loadedBytes: number, totalBytes: number) => void): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -89,7 +96,10 @@ export function apiUpload<T>(path: string, form: FormData, onProgress?: (loadedB
     request.onload = () => {
       const body = request.response as (ApiError & T) | null;
       if (request.status >= 200 && request.status < 300) resolve(body as T);
-      else reject(new Error(body?.error?.recovery ? `${body.error.message} ${body.error.recovery}` : body?.error?.message ?? "Upload failed."));
+      else {
+        reportAuthExpired(request.status);
+        reject(new Error(body?.error?.recovery ? `${body.error.message} ${body.error.recovery}` : body?.error?.message ?? "Upload failed."));
+      }
     };
     request.send(form);
   });
@@ -102,6 +112,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) headers.set("X-CSRF-Token", csrfToken);
   const response = await fetch(`/api/v1${path}`, { ...init, headers, credentials: "same-origin" });
   if (!response.ok) {
+    reportAuthExpired(response.status);
     const body = await response.json() as ApiError;
     throw new Error(body.error?.recovery ? `${body.error.message} ${body.error.recovery}` : body.error?.message ?? "Request failed.");
   }

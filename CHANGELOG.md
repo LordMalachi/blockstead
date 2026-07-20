@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Return to the sign-in screen the moment the dashboard's session expires.
+  Previously every poll failed silently and the overview kept showing its last
+  fetched player count, uptime, and Running badge as if they were live.
+- Require Java 25 for Minecraft's year-based versions (26.1 and later). The
+  old mapping compared them against the 1.x thresholds and approved Java 21,
+  so a current-version server passed the readiness check and then crashed at
+  launch with `UnsupportedClassVersionError`.
 - Let the dashboard import an existing server folder from anywhere on the
   computer: the browser uploads the chosen folder in batches with progress,
   Blockstead copies it into the managed server root without touching the

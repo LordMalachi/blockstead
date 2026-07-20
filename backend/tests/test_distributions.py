@@ -67,6 +67,11 @@ def test_required_java_major_mapping() -> None:
     assert required_java_major("1.20.4") == 17
     assert required_java_major("1.20.5") == 21
     assert required_java_major("1.21.1") == 21
+    assert required_java_major("1.21.11") == 21
+    # Mojang's year-based scheme (26.1+) declares Java 25 in its launch metadata.
+    assert required_java_major("26.1") == 25
+    assert required_java_major("26.1.2") == 25
+    assert required_java_major("26.2") == 25
     assert required_java_major(None) is None
     assert required_java_major("weird") is None
 

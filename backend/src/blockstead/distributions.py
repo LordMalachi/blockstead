@@ -72,6 +72,10 @@ def required_java_major(minecraft_version: str | None) -> int | None:
     version = _version_tuple(minecraft_version)
     if version is None or len(version) < 2:
         return None
+    # Year-based versions (26.1 and later) replaced the 1.x scheme and must be
+    # matched first: (26, 2) also compares greater than every 1.x threshold.
+    if version[0] >= 26:
+        return 25
     if version >= (1, 20, 5):
         return 21
     if version >= (1, 18):

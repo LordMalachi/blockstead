@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
-import { api, getCsrf } from "./api/client";
+import { api, getCsrf, setOnAuthExpired } from "./api/client";
 import { AuthPage } from "./features/auth/AuthPage";
 import { ConsolePage } from "./features/console/ConsolePage";
 import { OverviewPage } from "./features/servers/OverviewPage";
@@ -14,6 +14,12 @@ type View = "loading" | "setup" | "login" | "dashboard";
 export default function App() {
   const [view, setView] = useState<View>("loading");
   useEffect(() => { api<{ needs_setup: boolean }>("/setup/status").then(result => { if (result.needs_setup) setView("setup"); else if (getCsrf()) api("/auth/me").then(() => setView("dashboard")).catch(() => setView("login")); else setView("login"); }).catch(() => setView("login")); }, []);
+  // A session that expires mid-use must return the owner to sign-in; otherwise the
+  // dashboard keeps polling into 401s while showing frozen stats as if they were live.
+  useEffect(() => {
+    setOnAuthExpired(() => setView(current => current === "dashboard" ? "login" : current));
+    return () => setOnAuthExpired(null);
+  }, []);
   if (view === "loading") return <main className="loading"><p>Opening Blockstead…</p></main>;
   if (view === "setup" || view === "login") return <AuthPage setup={view === "setup"} onSuccess={() => setView("dashboard")} />;
   return <Routes>
