@@ -500,6 +500,23 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
 .shared-map-action { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: .45rem; padding: var(--space-2); border-left: 1px solid var(--line); }
 .shared-map-action small { margin-top: 0; }
 .shared-map-network-note { grid-column: 1 / -1; padding-top: var(--space-2); border-top: 1px solid var(--line); color: var(--muted); font-size: .82rem; }
+.vanilla-switch { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin-top: var(--space-3); padding: var(--space-3); border: 1px solid var(--line); border-radius: 14px; background: var(--bg); }
+.vanilla-switch span { display: block; color: var(--muted); font-size: .84rem; margin-top: .2rem; }
+.list-heading { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); }
+.list-heading h3 { margin-bottom: 0; }
+.update-summary { color: var(--muted); font-size: .82rem; margin: .35rem 0 .55rem; }
+.catalog-filters { display: grid; gap: .6rem; margin-top: var(--space-2); }
+.catalog-filters select { max-width: 14rem; }
+.category-chips { display: flex; flex-wrap: wrap; gap: .35rem; }
+.chip { padding: .25rem .65rem; font-size: .78rem; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 999px; cursor: pointer; }
+.chip--on { color: var(--brand); font-weight: 600; border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); background: color-mix(in srgb, var(--brand) 10%, var(--bg)); }
+.pager { display: flex; align-items: center; justify-content: center; gap: var(--space-3); margin-top: var(--space-2); color: var(--muted); font-size: .82rem; }
+.version-list { list-style: none; margin: .6rem 0 0; padding: 0; display: grid; gap: .4rem; }
+.version-list li { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); padding: .5rem .65rem; border: 1px solid var(--line); border-radius: 8px; }
+.version-list small { display: block; color: var(--muted); font-size: .75rem; }
+.version-list a.button, .catalog-results a.button { text-decoration: none; display: inline-flex; align-items: center; }
+.curseforge-key-form { align-items: end; }
+.curseforge-key-form .empty-note { flex-basis: 100%; margin: .25rem 0 0; }
 .catalog-results { display: grid; gap: .6rem; margin-top: var(--space-3); }
 .catalog-results article { display: flex; align-items: start; justify-content: space-between; gap: var(--space-3); border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: var(--space-3); }
 .catalog-results p { color: var(--muted); font-size: .84rem; margin: .2rem 0; }

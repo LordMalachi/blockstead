@@ -10,6 +10,7 @@ services:
     environment:
       BLOCKSTEAD_BIND_HOST: 0.0.0.0
       BLOCKSTEAD_PORT: 8765
+      BLOCKSTEAD_PUBLIC_MINECRAFT_PORT: "${MINECRAFT_PORT:-25565}"
       BLOCKSTEAD_DATA_DIR: /var/lib/blockstead
       BLOCKSTEAD_SERVER_ROOT: /srv/minecraft
       BLOCKSTEAD_STATIC_DIR: /opt/blockstead/frontend/dist
@@ -29,4 +30,3 @@ services:
 volumes:
   blockstead-data:
   blockstead-servers:
-

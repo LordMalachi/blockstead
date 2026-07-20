@@ -21,7 +21,7 @@ const completed: BackupRecord = {
   completed_at: "2026-07-17T14:30:01.5Z",
 };
 
-const defaultPolicy: BackupPolicy = { keep_count: 10, keep_days: null, max_total_mb: null };
+const defaultPolicy: BackupPolicy = { keep_count: 10, keep_days: null, max_total_mb: null, redundancy_enabled: false, destinations: [] };
 
 const verifiedPreview: RestorePreview = {
   backup_id: "backup-1",
@@ -75,7 +75,7 @@ test("shows persisted backup history", async () => {
   expect(await screen.findByText("Protected world.")).toBeVisible();
   expect(screen.getByText("2.0 KB")).toBeVisible();
   expect(screen.getByText("1.5 s")).toBeVisible();
-  expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Choose folder & back up" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Restore…" })).toBeEnabled();
 });
 
@@ -83,7 +83,7 @@ test("explains live save handling and starts a manual backup", async () => {
   renderPanel({ records: [], running: true });
   expect(await screen.findByText(/briefly pause saving/i)).toBeVisible();
 
-  fireEvent.click(screen.getByRole("button", { name: "Back up now" }));
+  fireEvent.click(screen.getByRole("button", { name: "Choose folder & back up" }));
 
   await waitFor(() => expect(fetch).toHaveBeenCalledWith(
       "/api/v1/profiles/profile-1/backups",
@@ -131,8 +131,33 @@ test("saves retention rules with blank meaning no limit", async () => {
     "/api/v1/profiles/profile-1/backup-policy",
     expect.objectContaining({
       method: "PUT",
-      body: JSON.stringify({ keep_count: 3, keep_days: null, max_total_mb: null }),
+      body: JSON.stringify({ keep_count: 3, keep_days: null, max_total_mb: null, redundancy_enabled: false, destinations: [] }),
     }),
   ));
   expect(await screen.findByText(/1 older backup removed/)).toBeVisible();
+});
+
+test("saves approved redundant backup destinations", async () => {
+  renderPanel();
+  fireEvent.click(await screen.findByText("Advanced redundant copies"));
+  fireEvent.click(screen.getByLabelText(/Mirror every backup/));
+  fireEvent.change(screen.getByLabelText("Destination folder"), {
+    target: { value: "/media/backup-drive/minecraft" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Add folder" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save backup settings" }));
+
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/backup-policy",
+    expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({
+        keep_count: 10,
+        keep_days: null,
+        max_total_mb: null,
+        redundancy_enabled: true,
+        destinations: ["/media/backup-drive/minecraft"],
+      }),
+    }),
+  ));
 });

@@ -105,8 +105,45 @@ def test_manual_backup_creates_private_archive_and_history(
     with tarfile.open(archive_path) as archive:
         assert "world" in archive.getnames()
 
+    download = client.get(
+        f"/api/v1/profiles/{profile_id}/backups/{body['id']}/download"
+    )
+    assert download.status_code == 200
+    assert body["file_name"] in download.headers["content-disposition"]
+    assert download.content == archive_path.read_bytes()
+
     history = client.get(f"/api/v1/profiles/{profile_id}/backups").json()
     assert history == [body]
+
+
+def test_manual_backup_mirrors_to_every_approved_destination(
+    client: TestClient, auth: dict[str, str], tmp_path: Path
+) -> None:
+    profile_id = import_fixture(client, auth)
+    first = tmp_path / "drive-a"
+    second = tmp_path / "drive-b"
+    first.mkdir()
+    second.mkdir()
+    policy = client.put(
+        f"/api/v1/profiles/{profile_id}/backup-policy",
+        headers=auth,
+        json={
+            "keep_count": 10,
+            "keep_days": None,
+            "max_total_mb": None,
+            "redundancy_enabled": True,
+            "destinations": [str(first), str(second)],
+        },
+    )
+    assert policy.status_code == 200
+
+    backup = client.post(f"/api/v1/profiles/{profile_id}/backups", headers=auth).json()
+
+    assert backup["status"] == "completed"
+    assert "mirrored to 2 approved destinations" in backup["result"].lower()
+    for destination in (first, second):
+        mirrored = destination / "blockstead-backups" / profile_id
+        assert (mirrored / backup["file_name"]).is_file()
 
 
 def test_running_backup_flushes_and_reenables_saves(
@@ -282,7 +319,13 @@ def test_backup_policy_roundtrip_applies_retention(owned_client: TestClient) -> 
     policy = owned_client.get(
         f"/api/v1/profiles/{profile_id}/backup-policy", headers=auth
     ).json()
-    assert policy == {"keep_count": 10, "keep_days": None, "max_total_mb": None}
+    assert policy == {
+        "keep_count": 10,
+        "keep_days": None,
+        "max_total_mb": None,
+        "redundancy_enabled": False,
+        "destinations": [],
+    }
 
     first = owned_client.post(f"/api/v1/profiles/{profile_id}/backups", headers=auth).json()
     second = owned_client.post(f"/api/v1/profiles/{profile_id}/backups", headers=auth).json()
@@ -291,7 +334,13 @@ def test_backup_policy_roundtrip_applies_retention(owned_client: TestClient) -> 
     updated = owned_client.put(
         f"/api/v1/profiles/{profile_id}/backup-policy",
         headers=auth,
-        json={"keep_count": 1, "keep_days": None, "max_total_mb": None},
+        json={
+            "keep_count": 1,
+            "keep_days": None,
+            "max_total_mb": None,
+            "redundancy_enabled": False,
+            "destinations": [],
+        },
     )
     assert updated.status_code == 200
     assert updated.json()["keep_count"] == 1

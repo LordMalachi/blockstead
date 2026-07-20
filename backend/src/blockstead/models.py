@@ -43,6 +43,8 @@ class Profile(Base):
     backup_keep_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=10)
     backup_keep_days: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     backup_max_total_mb: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    backup_redundancy_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    backup_destinations: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -139,4 +141,15 @@ class MetricSample(Base):
     world_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
+class AppSecret(Base):
+    """Small owner-provided secrets (external API keys), never exported."""
+
+    __tablename__ = "app_secrets"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )

@@ -78,15 +78,18 @@ export interface AutomationCapabilities { host_power: boolean }
 export interface BackupRecord { id: string; profile_id: string; status: "in_progress" | "completed" | "failed" | "expired"; method: "world_archive"; trigger: "manual" | "schedule"; file_name: string | null; size_bytes: number | null; duration_ms: number | null; sha256: string | null; included_paths: string[]; archive_available: boolean; result: string; created_at: string; completed_at: string | null }
 export interface RestorePreview { backup_id: string; verified: boolean; sha256: string; size_bytes: number; included_paths: string[]; worlds_replaced: string[]; required_bytes: number; available_bytes: number; backup_created_at: string | null; minecraft_version: string | null; can_restore: boolean; blockers: string[] }
 export interface RestoreResult { restored_paths: string[]; preserved_paths: string[]; result: string }
-export interface BackupPolicy { keep_count: number | null; keep_days: number | null; max_total_mb: number | null }
+export interface BackupPolicy { keep_count: number | null; keep_days: number | null; max_total_mb: number | null; redundancy_enabled: boolean; destinations: string[] }
 export interface JavaRuntime { path: string; version: string; major: number }
 export interface PrerequisitesView { distribution: string; label: string; minecraft_version: string | null; is_fixture: boolean; eula_accepted: boolean; required_java_major: number | null; java_runtimes: JavaRuntime[]; selected_java: JavaRuntime | null; java_satisfied: boolean; launch_files_ready: boolean; launch_problem: string | null; extension_directory: string | null; extension_directory_present: boolean }
-export interface ExtensionEntry { file_name: string; size_bytes: number; sha256: string | null; kind: "paper-plugin" | "fabric-mod" | "quilt-mod" | "neoforge-mod" | "forge-mod" | "unknown"; loaders: string[]; identifier: string | null; display_name: string | null; version: string | null; minecraft_constraint: string | null; environment: string | null; dependencies: string[]; readable: boolean }
+export interface ExtensionEntry { file_name: string; size_bytes: number; sha256: string | null; sha512?: string | null; kind: "paper-plugin" | "fabric-mod" | "quilt-mod" | "neoforge-mod" | "forge-mod" | "unknown"; loaders: string[]; identifier: string | null; display_name: string | null; version: string | null; minecraft_constraint: string | null; environment: string | null; dependencies: string[]; readable: boolean }
+export interface ExtensionUpdate { file_name: string; installed_version: string | null; new_version_number: string | null; new_file_name: string; project_id: string; version_id: string }
+export interface ExtensionUpdates { updates: ExtensionUpdate[]; up_to_date: number; unknown: string[]; checked: number }
 export interface ExtensionWarning { code: string; message: string; files: string[] }
 export interface ExtensionsView { directory: string | null; present: boolean; entries: ExtensionEntry[]; disabled_entries: ExtensionEntry[]; warnings: ExtensionWarning[]; truncated: boolean }
 export interface SharedMapView { config_present: boolean; config_path: string | null; internal_webserver_enabled: boolean; bind: string; port: number; problem: string | null }
-export interface CatalogProject { project_id: string; slug: string | null; title: string | null; description: string | null; downloads: number | null; icon_url?: string | null; author?: string | null; project_type?: string | null }
-export interface CatalogSearch { minecraft_version?: string | null; projects: CatalogProject[] }
+export interface CatalogProject { project_id: string; slug: string | null; title: string | null; description: string | null; downloads: number | null; icon_url?: string | null; author?: string | null; project_type?: string | null; source?: string; page_url?: string | null; installable?: boolean }
+export interface CatalogSearch { minecraft_version?: string | null; source?: string; projects: CatalogProject[]; total?: number; offset?: number; limit?: number }
+export interface CatalogVersion { version_id: string; version_number: string | null; version_type: string | null; date_published: string | null; game_versions: string[]; loaders: string[]; external_url?: string | null; required_plugins?: string[] }
 export interface ModpackInstallResult { id: string; name: string; directory: string; distribution: string; minecraft_version: string; loader_version: string | null; installed_files: number; override_files: number; skipped_unsupported: string[]; notes: string[]; eula_accepted: boolean }
 export interface ProvisionVersions { distribution: string; versions: string[] }
 export interface ProvisionResult { id: string; name: string; distribution: string; minecraft_version: string; loader_version: string | null; directory: string; notes: string[]; eula_accepted: boolean }
@@ -105,6 +108,16 @@ export const getCsrf = () => csrfToken;
 let onAuthExpired: (() => void) | null = null;
 export const setOnAuthExpired = (handler: (() => void) | null) => { onAuthExpired = handler; };
 const reportAuthExpired = (status: number) => { if (status === 401) { clearCsrf(); onAuthExpired?.(); } };
+
+export async function apiBlob(path: string): Promise<Blob> {
+  const response = await fetch(`/api/v1${path}`);
+  reportAuthExpired(response.status);
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as ApiError | null;
+    throw new Error(body?.error?.message ?? `Request failed (${response.status})`);
+  }
+  return response.blob();
+}
 
 /** POST a FormData body with upload progress, which fetch cannot report. */
 export function apiUpload<T>(path: string, form: FormData, onProgress?: (loadedBytes: number, totalBytes: number) => void): Promise<T> {

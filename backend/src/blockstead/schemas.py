@@ -1,6 +1,11 @@
+import re
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .security import MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH
+
+PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 class Credentials(BaseModel):
@@ -62,16 +67,49 @@ class BackupPolicyRequest(BaseModel):
     keep_count: int | None = Field(default=None, ge=1, le=500)
     keep_days: int | None = Field(default=None, ge=1, le=3650)
     max_total_mb: int | None = Field(default=None, ge=100, le=10_000_000)
+    redundancy_enabled: bool = False
+    destinations: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("destinations")
+    @classmethod
+    def valid_backup_destinations(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            value = value.strip()
+            if not value or len(value) > 4096 or "\x00" in value:
+                raise ValueError("Each backup destination must be a usable folder path.")
+            if value not in cleaned:
+                cleaned.append(value)
+        return cleaned
 
 
 class InstallRequest(BaseModel):
-    project_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-    version_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    """Catalog installs; the API re-validates project_id per source."""
+
+    project_id: str = Field(
+        min_length=1, max_length=104, pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?$"
+    )
+    version_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9._+-]+$")
+    source: Literal["modrinth", "hangar", "curseforge"] = "modrinth"
+
+
+class CurseForgeKeyRequest(BaseModel):
+    """The owner's own CurseForge core API key; stored, never echoed back."""
+
+    api_key: str = Field(min_length=8, max_length=256, pattern=r"^\S+$")
 
 
 class ToggleRequest(BaseModel):
     file_name: str = Field(min_length=5, max_length=132)
     enabled: bool
+
+
+class ToggleAllRequest(BaseModel):
+    enabled: bool
+
+
+class UpdateRequest(BaseModel):
+    file_name: str = Field(min_length=5, max_length=132)
 
 
 class ModConfigUpdateRequest(BaseModel):

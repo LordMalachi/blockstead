@@ -27,6 +27,32 @@ class RestoreError(RuntimeError):
     """A restore was refused or failed; messages are safe to show to an owner."""
 
 
+def mirror_backup_archive(
+    source_root: Path,
+    profile_id: str,
+    archive: "BackupArchive",
+    destinations: list[Path],
+) -> tuple[list[str], list[str]]:
+    """Copy an archive and manifest to independent, owner-approved folders."""
+
+    source = backup_directory(source_root, profile_id)
+    copied: list[str] = []
+    failed: list[str] = []
+    for root in destinations:
+        try:
+            target = root / "blockstead-backups" / profile_id
+            target.mkdir(parents=True, exist_ok=True, mode=0o700)
+            for name in (archive.file_name, archive.manifest_name):
+                temporary = target / f".{name}.partial"
+                shutil.copyfile(source / name, temporary)
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, target / name)
+            copied.append(str(root))
+        except OSError:
+            failed.append(str(root))
+    return copied, failed
+
+
 @dataclass(frozen=True)
 class BackupArchive:
     file_name: str

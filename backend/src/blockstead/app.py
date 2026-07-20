@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import secrets
 import shutil
 import sys
@@ -25,7 +26,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -38,11 +39,28 @@ from .backups import (
     BackupError,
     RestoreError,
     create_backup_archive,
+    mirror_backup_archive,
     perform_restore,
     plan_restore,
 )
+from .catalog import CatalogError
 from .command_catalog import GuidedCommandRequest, catalog_payload, render_guided_command
 from .config import Settings
+from .curseforge import (
+    PROJECT_ID_PATTERN as CURSEFORGE_PROJECT_PATTERN,
+)
+from .curseforge import (
+    list_categories as curseforge_categories,
+)
+from .curseforge import (
+    list_project_versions as curseforge_versions,
+)
+from .curseforge import (
+    plan_install as curseforge_plan_install,
+)
+from .curseforge import (
+    search as curseforge_search,
+)
 from .db import Base, create_session_factory
 from .diagnostics import attach_logging, build_report
 from .distributions import (
@@ -55,12 +73,28 @@ from .extension_ops import (
     MAX_UPLOAD_BYTES,
     ExtensionOpsError,
     place_upload,
+    set_all_enabled,
     set_enabled,
 )
 from .extension_ops import (
     remove as remove_extension,
 )
 from .extensions import read_extensions
+from .hangar import (
+    PROJECT_PATH_PATTERN as HANGAR_PROJECT_PATTERN,
+)
+from .hangar import (
+    list_categories as hangar_categories,
+)
+from .hangar import (
+    list_project_versions as hangar_versions,
+)
+from .hangar import (
+    plan_install as hangar_plan_install,
+)
+from .hangar import (
+    search as hangar_search,
+)
 from .import_scan import (
     UPLOAD_PREFIX,
     canonical_child,
@@ -78,6 +112,7 @@ from .mod_configs import (
 )
 from .models import (
     Administrator,
+    AppSecret,
     AuditEvent,
     AutomationEvent,
     AutomationRun,
@@ -94,7 +129,19 @@ from .modpacks import (
     install_modpack,
     search_modpacks,
 )
-from .modrinth import ModrinthError, plan_install
+from .modrinth import (
+    ModrinthError,
+    plan_install,
+)
+from .modrinth import (
+    check_updates as modrinth_check_updates,
+)
+from .modrinth import (
+    list_categories as modrinth_categories,
+)
+from .modrinth import (
+    list_project_versions as modrinth_versions,
+)
 from .modrinth import search as modrinth_search
 from .overview import (
     join_details,
@@ -114,11 +161,13 @@ from .provisioning import (
 from .retention import enforce_retention
 from .scheduler import Scheduler, automation_steps, next_executions, parse_weekdays
 from .schemas import (
+    PROJECT_ID_PATTERN,
     AutomationEventRequest,
     AutomationRunRequest,
     BackupPolicyRequest,
     CommandRequest,
     Credentials,
+    CurseForgeKeyRequest,
     EulaRequest,
     ImportRequest,
     ImportUploadFinish,
@@ -133,7 +182,9 @@ from .schemas import (
     ScheduleRequest,
     SettingsUpdateRequest,
     StartRequest,
+    ToggleAllRequest,
     ToggleRequest,
+    UpdateRequest,
 )
 from .security import (
     SESSION_COOKIE,
@@ -667,6 +718,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ).all()
         return [backup_payload(record) for record in records]
 
+    @app.get("/api/v1/profiles/{profile_id}/backups/{backup_id}/download")
+    def download_backup(
+        profile_id: str, backup_id: str, request: Request, db: Db
+    ) -> FileResponse:
+        current(request, db)
+        record = db.get(BackupRecord, backup_id)
+        if record is None or record.profile_id != profile_id:
+            raise HTTPException(404, "That backup was not found for this server.")
+        if record.status != "completed" or not record.file_name:
+            raise HTTPException(409, "Only a completed backup can be saved elsewhere.")
+        if (
+            "/" in record.file_name
+            or "\\" in record.file_name
+            or record.file_name.startswith(".")
+        ):
+            raise HTTPException(409, "This backup's archive name is not usable.")
+        archive = config.data_dir / "backups" / profile_id / record.file_name
+        if not archive.is_file():
+            raise HTTPException(409, "This backup archive is no longer on disk.")
+        return FileResponse(archive, filename=record.file_name, media_type="application/gzip")
+
     @app.post("/api/v1/profiles/{profile_id}/backups", status_code=201)
     async def create_backup(
         profile_id: str, request: Request, db: Db
@@ -745,19 +817,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         record.completed_at = datetime.now(timezone.utc)  # noqa: UP017
         record.duration_ms = round((time.monotonic() - started) * 1000)
+        mirror_note: str | None = None
         if archive is not None:
             record.file_name = archive.file_name
             record.manifest_name = archive.manifest_name
             record.sha256 = archive.sha256
             record.included_paths = json.dumps(list(archive.included_paths))
             record.size_bytes = archive.size_bytes
+            if profile.backup_redundancy_enabled:
+                copied, failed = await asyncio.to_thread(
+                    mirror_backup_archive,
+                    config.data_dir,
+                    profile.id,
+                    archive,
+                    [Path(value) for value in configured_backup_destinations(profile)],
+                )
+                if failed:
+                    mirror_note = (
+                        f"The primary backup succeeded, but {len(failed)} approved "
+                        "destination(s) were unavailable."
+                    )
+                elif copied:
+                    label = "destination" if len(copied) == 1 else "destinations"
+                    mirror_note = f"Mirrored to {len(copied)} approved {label}."
         if failure:
             record.status = "failed"
             record.result = failure
         else:
             assert archive is not None
             record.status = "completed"
-            record.result = f"Protected {', '.join(archive.included_paths)}."
+            record.result = " ".join(
+                part
+                for part in (
+                    f"Protected {', '.join(archive.included_paths)}.",
+                    mirror_note,
+                )
+                if part
+            )
             enforce_retention(db, profile, config.data_dir)
         db.add(
             AuditEvent(
@@ -911,17 +1007,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
         }
 
-    def policy_payload(profile: Profile) -> dict[str, int | None]:
+    def configured_backup_destinations(profile: Profile) -> list[str]:
+        try:
+            values = json.loads(profile.backup_destinations or "[]")
+        except (TypeError, json.JSONDecodeError):
+            return []
+        return [value for value in values if isinstance(value, str)]
+
+    def policy_payload(profile: Profile) -> dict[str, object]:
         return {
             "keep_count": profile.backup_keep_count,
             "keep_days": profile.backup_keep_days,
             "max_total_mb": profile.backup_max_total_mb,
+            "redundancy_enabled": profile.backup_redundancy_enabled,
+            "destinations": configured_backup_destinations(profile),
         }
 
     @app.get("/api/v1/profiles/{profile_id}/backup-policy")
     def read_backup_policy(
         profile_id: str, request: Request, db: Db
-    ) -> dict[str, int | None]:
+    ) -> dict[str, object]:
         current(request, db)
         profile = db.get(Profile, profile_id)
         if profile is None:
@@ -939,6 +1044,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile.backup_keep_count = payload.keep_count
         profile.backup_keep_days = payload.keep_days
         profile.backup_max_total_mb = payload.max_total_mb
+        resolved_destinations: list[str] = []
+        for raw in payload.destinations:
+            path = Path(raw).expanduser()
+            if not path.is_absolute():
+                raise HTTPException(422, "Backup destinations must use full folder paths.")
+            try:
+                resolved = path.resolve(strict=True)
+            except OSError as exc:
+                raise HTTPException(422, f"Backup destination is unavailable: {raw}") from exc
+            if not resolved.is_dir():
+                raise HTTPException(422, f"Backup destination is not a folder: {raw}")
+            resolved_destinations.append(str(resolved))
+        if payload.redundancy_enabled and not resolved_destinations:
+            raise HTTPException(422, "Add at least one approved backup destination.")
+        profile.backup_redundancy_enabled = payload.redundancy_enabled
+        profile.backup_destinations = json.dumps(resolved_destinations)
         expired = enforce_retention(db, profile, config.data_dir)
         db.add(
             AuditEvent(
@@ -1253,24 +1374,165 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if manager.state.value not in {"STOPPED", "CRASHED"}:
             raise HTTPException(409, "Stop the server before changing mods or configuration.")
 
-    @app.get("/api/v1/profiles/{profile_id}/modrinth/search")
+    def catalog_project_pattern(source: str) -> re.Pattern[str]:
+        if source == "hangar":
+            return HANGAR_PROJECT_PATTERN
+        if source == "curseforge":
+            return CURSEFORGE_PROJECT_PATTERN
+        if source == "modrinth":
+            return PROJECT_ID_PATTERN
+        raise HTTPException(422, "That catalog is not one Blockstead knows.")
+
+    CURSEFORGE_KEY_NAME = "curseforge_api_key"
+
+    def curseforge_key(db: Session) -> str | None:
+        row = db.get(AppSecret, CURSEFORGE_KEY_NAME)
+        return row.value if row else None
+
+    @app.get("/api/v1/settings/curseforge")
+    def curseforge_settings(request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        return {"configured": curseforge_key(db) is not None}
+
+    @app.put("/api/v1/settings/curseforge")
+    def curseforge_settings_update(
+        payload: CurseForgeKeyRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        row = db.get(AppSecret, CURSEFORGE_KEY_NAME)
+        if row is None:
+            db.add(AppSecret(key=CURSEFORGE_KEY_NAME, value=payload.api_key))
+        else:
+            row.value = payload.api_key
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="settings_change",
+                result="success",
+                safe_detail="Stored a CurseForge API key",
+            )
+        )
+        db.commit()
+        return {"configured": True}
+
+    @app.delete("/api/v1/settings/curseforge")
+    def curseforge_settings_clear(request: Request, db: Db) -> dict[str, object]:
+        admin = mutation(request, db)
+        row = db.get(AppSecret, CURSEFORGE_KEY_NAME)
+        if row is not None:
+            db.delete(row)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="settings_change",
+                result="success",
+                safe_detail="Removed the CurseForge API key",
+            )
+        )
+        db.commit()
+        return {"configured": False}
+
+    @app.get("/api/v1/profiles/{profile_id}/catalog/search")
     async def extension_search(
-        profile_id: str, query: str, request: Request, db: Db
+        profile_id: str,
+        query: str,
+        request: Request,
+        db: Db,
+        source: str = "modrinth",
+        categories: str = "",
+        sort: str = "relevance",
+        offset: int = 0,
     ) -> dict[str, object]:
         current(request, db)
         profile, _ = extension_context(profile_id, db)
+        catalog_project_pattern(source)
         if not query.strip() or len(query) > 100:
             raise HTTPException(422, "Enter a search of at most 100 characters.")
+        if len(categories) > 300:
+            raise HTTPException(422, "That category filter is too long.")
+        chosen_categories = [item for item in categories.split(",") if item]
         try:
-            projects = await modrinth_search(
-                http_client, profile.distribution, profile.minecraft_version, query.strip()
-            )
-        except ModrinthError as exc:
+            if source == "curseforge":
+                page = await curseforge_search(
+                    http_client,
+                    curseforge_key(db),
+                    profile.distribution,
+                    profile.minecraft_version,
+                    query.strip(),
+                    categories=chosen_categories,
+                    sort=sort,
+                    offset=max(0, offset),
+                )
+            else:
+                search_catalog = hangar_search if source == "hangar" else modrinth_search
+                page = await search_catalog(
+                    http_client,
+                    profile.distribution,
+                    profile.minecraft_version,
+                    query.strip(),
+                    categories=chosen_categories,
+                    sort=sort,
+                    offset=max(0, offset),
+                )
+        except CatalogError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {
             "minecraft_version": profile.minecraft_version,
-            "projects": [project.model_dump() for project in projects],
+            "source": source,
+            "projects": [project.model_dump() for project in page.projects],
+            "total": page.total,
+            "offset": page.offset,
+            "limit": page.limit,
         }
+
+    @app.get("/api/v1/profiles/{profile_id}/catalog/categories")
+    async def extension_categories(
+        profile_id: str, request: Request, db: Db, source: str = "modrinth"
+    ) -> dict[str, object]:
+        current(request, db)
+        profile, _ = extension_context(profile_id, db)
+        catalog_project_pattern(source)
+        try:
+            if source == "curseforge":
+                names = await curseforge_categories(
+                    http_client, curseforge_key(db), profile.distribution
+                )
+            else:
+                list_catalog_categories = (
+                    hangar_categories if source == "hangar" else modrinth_categories
+                )
+                names = await list_catalog_categories(http_client, profile.distribution)
+        except CatalogError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"source": source, "categories": names}
+
+    @app.get("/api/v1/profiles/{profile_id}/catalog/versions")
+    async def extension_versions(
+        profile_id: str, project_id: str, request: Request, db: Db, source: str = "modrinth"
+    ) -> dict[str, object]:
+        current(request, db)
+        profile, _ = extension_context(profile_id, db)
+        if not catalog_project_pattern(source).match(project_id):
+            raise HTTPException(422, "That project id is not one Blockstead accepts.")
+        try:
+            if source == "curseforge":
+                versions = await curseforge_versions(
+                    http_client,
+                    curseforge_key(db),
+                    profile.distribution,
+                    profile.minecraft_version,
+                    project_id,
+                )
+            else:
+                list_catalog_versions = (
+                    hangar_versions if source == "hangar" else modrinth_versions
+                )
+                versions = await list_catalog_versions(
+                    http_client, profile.distribution, profile.minecraft_version, project_id
+                )
+        except CatalogError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"source": source, "versions": [version.model_dump() for version in versions]}
 
     @app.post("/api/v1/profiles/{profile_id}/extensions/install", status_code=201)
     async def extension_install(
@@ -1279,15 +1541,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin = mutation(request, db)
         require_server_stopped()
         profile, extension_dir = extension_context(profile_id, db)
+        if not catalog_project_pattern(payload.source).match(payload.project_id):
+            raise HTTPException(422, "That project id is not one Blockstead accepts.")
         try:
-            planned = await plan_install(
-                http_client,
-                profile.distribution,
-                profile.minecraft_version,
-                payload.project_id,
-                payload.version_id,
-            )
-        except ModrinthError as exc:
+            if payload.source == "curseforge":
+                planned = await curseforge_plan_install(
+                    http_client,
+                    curseforge_key(db),
+                    profile.distribution,
+                    profile.minecraft_version,
+                    payload.project_id,
+                    payload.version_id,
+                )
+            else:
+                plan_catalog_install = (
+                    hangar_plan_install if payload.source == "hangar" else plan_install
+                )
+                planned = await plan_catalog_install(
+                    http_client,
+                    profile.distribution,
+                    profile.minecraft_version,
+                    payload.project_id,
+                    payload.version_id,
+                )
+        except CatalogError as exc:
             raise HTTPException(400, str(exc)) from exc
         extension_dir.mkdir(mode=0o755, exist_ok=True)
         installed: list[dict[str, object]] = []
@@ -1321,7 +1598,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 category="extension_install",
                 result="success",
                 safe_detail=(
-                    f"Installed {len(installed)} file(s) from Modrinth project {payload.project_id}"
+                    f"Installed {len(installed)} file(s) from "
+                    f"{payload.source} project {payload.project_id}"
                 ),
             )
         )
@@ -1355,6 +1633,132 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.commit()
         return {
             "file_name": payload.file_name,
+            "enabled": payload.enabled,
+            "restart_required": True,
+        }
+
+    @app.get("/api/v1/profiles/{profile_id}/extensions/updates")
+    async def extension_updates(profile_id: str, request: Request, db: Db) -> dict[str, object]:
+        current(request, db)
+        profile, _ = extension_context(profile_id, db)
+        view = read_extensions(profile_directory(profile_id, db), profile.distribution)
+        entries = [entry for entry in view.entries if entry.sha512]
+        try:
+            found = await modrinth_check_updates(
+                http_client,
+                profile.distribution,
+                profile.minecraft_version,
+                [entry.sha512 for entry in entries if entry.sha512],
+            )
+        except CatalogError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        updates: list[dict[str, object]] = []
+        unknown: list[str] = []
+        up_to_date = 0
+        for entry in entries:
+            if entry.sha512 not in found:
+                unknown.append(entry.file_name)
+                continue
+            planned = found[entry.sha512]
+            if planned is None:
+                up_to_date += 1
+                continue
+            updates.append(
+                {
+                    "file_name": entry.file_name,
+                    "installed_version": entry.version,
+                    "new_version_number": planned.version_number,
+                    "new_file_name": planned.file_name,
+                    "project_id": planned.project_id,
+                    "version_id": planned.version_id,
+                }
+            )
+        return {
+            "updates": updates,
+            "up_to_date": up_to_date,
+            "unknown": sorted(unknown),
+            "checked": len(entries),
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/extensions/update")
+    async def extension_apply_update(
+        profile_id: str, payload: UpdateRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        require_server_stopped()
+        profile, extension_dir = extension_context(profile_id, db)
+        view = read_extensions(profile_directory(profile_id, db), profile.distribution)
+        entry = next(
+            (item for item in view.entries if item.file_name == payload.file_name), None
+        )
+        if entry is None or not entry.sha512:
+            raise HTTPException(404, "That file is not in the live extensions folder.")
+        try:
+            found = await modrinth_check_updates(
+                http_client, profile.distribution, profile.minecraft_version, [entry.sha512]
+            )
+        except CatalogError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        planned = found.get(entry.sha512)
+        if planned is None:
+            raise HTTPException(409, "No newer compatible version is known for that file.")
+        if planned.file_name != entry.file_name and (extension_dir / planned.file_name).exists():
+            raise HTTPException(409, "A file with the new version's name already exists.")
+        try:
+            sha256 = await download_verified_file(
+                http_client,
+                planned.url,
+                extension_dir,
+                planned.file_name,
+                planned.checksum_algorithm,
+                planned.checksum,
+            )
+        except ProvisionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if planned.file_name != entry.file_name:
+            try:
+                remove_extension(extension_dir, entry.file_name)
+            except ExtensionOpsError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="extension_update",
+                result="success",
+                safe_detail=(
+                    f"Updated {entry.file_name} to {planned.file_name} (sha256 {sha256})"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "file_name": planned.file_name,
+            "replaced": entry.file_name,
+            "version_number": planned.version_number,
+            "restart_required": True,
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/extensions/toggle-all")
+    def extension_toggle_all(
+        profile_id: str, payload: ToggleAllRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        require_server_stopped()
+        _, extension_dir = extension_context(profile_id, db)
+        moved, skipped = set_all_enabled(extension_dir, payload.enabled)
+        state = "enabled" if payload.enabled else "disabled"
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="extension_toggle",
+                result="success",
+                safe_detail=f"Marked all extensions as {state} ({len(moved)} file(s) moved)",
+            )
+        )
+        db.commit()
+        return {
+            "moved": moved,
+            "skipped": skipped,
             "enabled": payload.enabled,
             "restart_required": True,
         }
@@ -1671,7 +2075,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if active and manager.started_at is not None:
             uptime = max(0.0, (now_utc - manager.started_at).total_seconds())
 
-        join = join_details(properties, request.url.hostname)
+        join = join_details(
+            properties, request.url.hostname, config.public_minecraft_port
+        )
         status = await minecraft_status(properties) if active and state == "RUNNING" else None
         configured_max = 20
         try:
@@ -2328,6 +2734,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/v1/server/stop", status_code=202)
     async def process_stop(request: Request, db: Db) -> dict[str, object]:
         mutation(request, db)
+        backup_record: BackupRecord | None = None
+        active_profile_id = app.state.active_profile_id
+        if active_profile_id:
+            profile = db.get(Profile, active_profile_id)
+            if profile is not None:
+                try:
+                    backup_record = await scheduler.backup_before_manual_stop(
+                        db, profile, datetime.now(timezone.utc)  # noqa: UP017
+                    )
+                except (BackupError, InvalidTransition, ValueError) as exc:
+                    raise HTTPException(
+                        409,
+                        "The pre-stop backup failed, so Blockstead left the server running: "
+                        f"{exc}",
+                    ) from exc
         try:
             graceful = await manager.stop()
         except InvalidTransition as exc:
@@ -2341,6 +2762,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             **manager.snapshot(),
             "graceful": graceful,
             "profile_id": app.state.active_profile_id,
+            "backup": backup_payload(backup_record) if backup_record else None,
         }
 
     @app.post("/api/v1/server/force-stop", status_code=202)

@@ -7,6 +7,7 @@ from blockstead.extension_ops import (
     disabled_directory,
     place_upload,
     remove,
+    set_all_enabled,
     set_enabled,
 )
 
@@ -57,6 +58,37 @@ def test_remove_deletes_only_the_named_file(mods: Path) -> None:
     remove(mods, "cool.jar")
     assert not (mods / "cool.jar").exists()
     assert (mods / "other.jar").exists()
+
+
+def test_set_all_enabled_round_trip(mods: Path) -> None:
+    (mods / "other.jar").write_bytes(b"jar")
+    moved, skipped = set_all_enabled(mods, enabled=False)
+    assert moved == ["cool.jar", "other.jar"] and skipped == []
+    assert not list(mods.glob("*.jar"))
+    restored, skipped = set_all_enabled(mods, enabled=True)
+    assert restored == ["cool.jar", "other.jar"] and skipped == []
+    assert (mods / "cool.jar").is_file() and (mods / "other.jar").is_file()
+
+
+def test_set_all_enabled_skips_collisions_and_symlinks(mods: Path, tmp_path: Path) -> None:
+    disabled = disabled_directory(mods)
+    disabled.mkdir()
+    (disabled / "cool.jar").write_bytes(b"other")
+    outside = tmp_path / "outside.jar"
+    outside.write_bytes(b"secret")
+    (mods / "link.jar").symlink_to(outside)
+    moved, skipped = set_all_enabled(mods, enabled=False)
+    assert moved == [] and skipped == ["cool.jar"]
+    assert (mods / "cool.jar").read_bytes() == b"jar"
+    assert (disabled / "cool.jar").read_bytes() == b"other"
+    assert (mods / "link.jar").is_symlink() and outside.exists()
+
+
+def test_set_all_enabled_handles_missing_directories(tmp_path: Path) -> None:
+    absent = tmp_path / "mods"
+    assert set_all_enabled(absent, enabled=False) == ([], [])
+    assert set_all_enabled(absent, enabled=True) == ([], [])
+    assert not disabled_directory(absent).exists()
 
 
 def test_upload_stages_and_refuses_duplicates(mods: Path) -> None:

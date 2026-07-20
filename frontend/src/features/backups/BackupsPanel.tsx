@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { api, type BackupPolicy, type BackupRecord, type RestorePreview, type RestoreResult } from "../../api/client";
+import { api, apiBlob, type BackupPolicy, type BackupRecord, type RestorePreview, type RestoreResult } from "../../api/client";
 import { Button } from "../../components/Button";
 import { Tooltip } from "../../components/Tooltip";
 import { formatBytes } from "../../lib/format";
@@ -18,13 +18,40 @@ function formatDuration(milliseconds: number | null): string {
   return `${(milliseconds / 1000).toFixed(1)} s`;
 }
 
-interface PolicyDraft { keep_count: string; keep_days: string; max_total_mb: string }
+interface PolicyDraft { keep_count: string; keep_days: string; max_total_mb: string; redundancy_enabled: boolean; destinations: string[] }
+
+interface WritableFileHandle { createWritable(): Promise<{ write(data: Blob): Promise<void>; close(): Promise<void> }> }
+interface BackupDirectoryHandle { getFileHandle(name: string, options: { create: true }): Promise<WritableFileHandle> }
+
+function directoryPicker(): (() => Promise<BackupDirectoryHandle>) | undefined {
+  return (window as typeof window & { showDirectoryPicker?: () => Promise<BackupDirectoryHandle> }).showDirectoryPicker;
+}
+
+async function saveBackup(profileId: string, backup: BackupRecord, directory?: BackupDirectoryHandle) {
+  if (!backup.file_name) throw new Error("The completed backup has no archive file.");
+  const blob = await apiBlob(`/profiles/${profileId}/backups/${backup.id}/download`);
+  if (directory) {
+    const file = await directory.getFileHandle(backup.file_name, { create: true });
+    const output = await file.createWritable();
+    await output.write(blob);
+    await output.close();
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = backup.file_name;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 function draftFrom(policy: BackupPolicy): PolicyDraft {
   return {
     keep_count: policy.keep_count?.toString() ?? "",
     keep_days: policy.keep_days?.toString() ?? "",
     max_total_mb: policy.max_total_mb?.toString() ?? "",
+    redundancy_enabled: policy.redundancy_enabled,
+    destinations: policy.destinations,
   };
 }
 
@@ -35,7 +62,10 @@ function parseRule(value: string): number | null {
 export function BackupsPanel({ profileId, running }: { profileId: string; running: boolean }) {
   const cache = useQueryClient();
   const [restoreTarget, setRestoreTarget] = useState<BackupRecord | null>(null);
+  const [exportNotice, setExportNotice] = useState("");
+  const [exportError, setExportError] = useState("");
   const [policyDraft, setPolicyDraft] = useState<PolicyDraft | null>(null);
+  const [destinationInput, setDestinationInput] = useState("");
   const backups = useQuery({
     queryKey: ["backups", profileId],
     queryFn: () => api<BackupRecord[]>(`/profiles/${profileId}/backups`),
@@ -46,8 +76,15 @@ export function BackupsPanel({ profileId, running }: { profileId: string; runnin
     queryFn: () => api<BackupPolicy>(`/profiles/${profileId}/backup-policy`),
   });
   const create = useMutation({
-    mutationFn: () => api<BackupRecord>(`/profiles/${profileId}/backups`, { method: "POST" }),
-    onSuccess: () => void cache.invalidateQueries({ queryKey: ["backups", profileId] }),
+    mutationFn: async () => {
+      const picker = directoryPicker();
+      const directory = picker ? await picker() : undefined;
+      const backup = await api<BackupRecord>(`/profiles/${profileId}/backups`, { method: "POST" });
+      await saveBackup(profileId, backup, directory);
+      return backup;
+    },
+    onMutate: () => { setExportNotice(""); setExportError(""); },
+    onSuccess: () => { setExportNotice("Backup completed and saved to the selected folder."); void cache.invalidateQueries({ queryKey: ["backups", profileId] }); },
     onError: () => void cache.invalidateQueries({ queryKey: ["backups", profileId] }),
   });
   const preview = useQuery({
@@ -75,7 +112,7 @@ export function BackupsPanel({ profileId, running }: { profileId: string; runnin
   const records = backups.data ?? [];
   const lastSuccess = records.find(entry => entry.status === "completed");
   const draft = policyDraft ?? (policy.data ? draftFrom(policy.data) : null);
-  const editRule = (rule: keyof PolicyDraft) => (value: string) => {
+  const editRule = (rule: "keep_count" | "keep_days" | "max_total_mb") => (value: string) => {
     if (draft) setPolicyDraft({ ...draft, [rule]: value });
   };
 
@@ -90,10 +127,11 @@ export function BackupsPanel({ profileId, running }: { profileId: string; runnin
         <p>Blockstead stores a private compressed archive of every world folder for this server, with a manifest and SHA-256 checksum for later verification.</p>
         <small>{running ? "The server will briefly pause saving, flush the world, create the archive, and immediately turn saving back on." : "This server is stopped, so its world can be archived directly."}</small>
       </div>
-      <Button disabled={create.isPending} onClick={() => create.mutate()}>{create.isPending ? "Backing up…" : "Back up now"}</Button>
+      <Button disabled={create.isPending} onClick={() => create.mutate()}>{create.isPending ? "Backing up…" : "Choose folder & back up"}</Button>
     </div>
     {create.error && <p className="error" role="alert">{create.error.message}</p>}
-    {create.isSuccess && <p className="success" role="status">Backup completed successfully.</p>}
+    {exportNotice && <p className="success" role="status">{exportNotice}</p>}
+    {exportError && <p className="error" role="alert">{exportError}</p>}
     {restore.isSuccess && restore.data && <p className="success" role="status">
       {restore.data.result}{restore.data.preserved_paths.length > 0 && ` Previous folders: ${restore.data.preserved_paths.join(", ")}.`}
     </p>}
@@ -133,7 +171,7 @@ export function BackupsPanel({ profileId, running }: { profileId: string; runnin
           <td>{record.size_bytes == null ? "—" : formatBytes(record.size_bytes)}</td>
           <td>{formatDuration(record.duration_ms)}</td>
           <td>{record.result}</td>
-          <td>{record.status === "completed" && record.archive_available && <Button className="button--secondary button--small" onClick={() => { restore.reset(); setRestoreTarget(record); }}>Restore…</Button>}</td>
+          <td>{record.status === "completed" && record.archive_available && <div className="row-actions"><Button className="button--secondary button--small" onClick={() => { restore.reset(); setRestoreTarget(record); }}>Restore…</Button><Button className="button--quiet button--small" onClick={() => { const picker = directoryPicker(); setExportNotice(""); setExportError(""); void (async () => { try { await saveBackup(profileId, record, picker ? await picker() : undefined); setExportNotice("Backup saved to the selected folder."); } catch (error) { setExportError(error instanceof Error ? error.message : "The backup could not be saved."); } })(); }}>Save a copy…</Button></div>}</td>
         </tr>)}</tbody>
       </table></div>}
     </div>
@@ -146,6 +184,8 @@ export function BackupsPanel({ profileId, running }: { profileId: string; runnin
           keep_count: parseRule(draft.keep_count),
           keep_days: parseRule(draft.keep_days),
           max_total_mb: parseRule(draft.max_total_mb),
+          redundancy_enabled: draft.redundancy_enabled,
+          destinations: draft.destinations,
         });
       }}>
         <label>Keep at most<input type="number" min={1} max={500} value={draft.keep_count} onChange={event => editRule("keep_count")(event.target.value)} /><span>backups</span></label>
@@ -157,6 +197,14 @@ export function BackupsPanel({ profileId, running }: { profileId: string; runnin
       {savePolicy.isSuccess && <p className="success" role="status">
         Retention saved.{savePolicy.data.expired_now > 0 && ` ${savePolicy.data.expired_now} older backup${savePolicy.data.expired_now === 1 ? "" : "s"} removed.`}
       </p>}
+      {draft && <details className="import-advanced">
+        <summary>Advanced redundant copies</summary>
+        <p>Copy every successful manual or scheduled backup to each approved folder. Use full paths visible to Blockstead; Docker destinations must be mounted first and entered using their container paths.</p>
+        <label className="check-label"><input type="checkbox" checked={draft.redundancy_enabled} onChange={event => setPolicyDraft({ ...draft, redundancy_enabled: event.target.checked })} /> Mirror every backup to approved folders</label>
+        <div className="inline-form"><label>Destination folder<input value={destinationInput} onChange={event => setDestinationInput(event.target.value)} placeholder="/media/backup-drive/minecraft" /></label><Button type="button" className="button--secondary" disabled={!destinationInput.trim()} onClick={() => { const value = destinationInput.trim(); if (!draft.destinations.includes(value)) setPolicyDraft({ ...draft, destinations: [...draft.destinations, value] }); setDestinationInput(""); }}>Add folder</Button></div>
+        {draft.destinations.length > 0 ? <ul className="restore-blockers">{draft.destinations.map(destination => <li key={destination}><code>{destination}</code> <Button type="button" className="button--quiet button--small" onClick={() => setPolicyDraft({ ...draft, destinations: draft.destinations.filter(value => value !== destination) })}>Remove</Button></li>)}</ul> : <p className="empty-note">No additional destinations approved.</p>}
+        <Button type="button" className="button--secondary" disabled={savePolicy.isPending || policyDraft == null} onClick={() => savePolicy.mutate({ keep_count: parseRule(draft.keep_count), keep_days: parseRule(draft.keep_days), max_total_mb: parseRule(draft.max_total_mb), redundancy_enabled: draft.redundancy_enabled, destinations: draft.destinations })}>{savePolicy.isPending ? "Saving…" : "Save backup settings"}</Button>
+      </details>}
     </div>
   </section>;
 }

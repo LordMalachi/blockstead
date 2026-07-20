@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from . import __version__
-from .backups import BackupError, create_backup_archive
+from .backups import BackupError, create_backup_archive, mirror_backup_archive
 from .import_scan import canonical_child
 from .models import (
     Administrator,
@@ -338,6 +338,21 @@ class Scheduler:
             if saving_suspended:
                 await self.manager.command("save-on")
 
+    async def backup_before_manual_stop(
+        self, db: Session, profile: Profile, now: datetime
+    ) -> BackupRecord:
+        """Flush and protect a running world before an owner-requested stop."""
+
+        saving_suspended = False
+        try:
+            await self.manager.command("save-off")
+            saving_suspended = True
+            await self.manager.command("save-all flush")
+            return await self.backup(db, profile, now, trigger="manual")
+        finally:
+            if saving_suspended:
+                await self.manager.command("save-on")
+
     async def _online_players(self, profile: Profile) -> int | None:
         try:
             server_directory = canonical_child(Path(profile.server_directory), self.server_root)
@@ -401,8 +416,10 @@ class Scheduler:
         db.flush()
         return run
 
-    async def backup(self, db: Session, profile: Profile, now: datetime) -> BackupRecord:
-        record = BackupRecord(profile_id=profile.id, trigger="schedule", created_at=now)
+    async def backup(
+        self, db: Session, profile: Profile, now: datetime, trigger: str = "schedule"
+    ) -> BackupRecord:
+        record = BackupRecord(profile_id=profile.id, trigger=trigger, created_at=now)
         db.add(record)
         db.flush()
         # Make progress visible and block a simultaneous manual backup before archive work.
@@ -428,8 +445,29 @@ class Scheduler:
                 distribution=profile.distribution,
                 minecraft_version=profile.minecraft_version,
                 application_version=__version__,
-                trigger="schedule",
+                trigger=trigger,
             )
+            mirror_note: str | None = None
+            if profile.backup_redundancy_enabled:
+                try:
+                    configured = json.loads(profile.backup_destinations or "[]")
+                except (TypeError, json.JSONDecodeError):
+                    configured = []
+                copied, failed = await asyncio.to_thread(
+                    mirror_backup_archive,
+                    self.data_dir,
+                    profile.id,
+                    archive,
+                    [Path(value) for value in configured if isinstance(value, str)],
+                )
+                if failed:
+                    mirror_note = (
+                        f"The primary backup succeeded, but {len(failed)} approved "
+                        "destination(s) were unavailable."
+                    )
+                elif copied:
+                    label = "destination" if len(copied) == 1 else "destinations"
+                    mirror_note = f"Mirrored to {len(copied)} approved {label}."
         except BackupError as exc:
             record.status = "failed"
             record.result = str(exc)
@@ -445,7 +483,14 @@ class Scheduler:
         record.included_paths = json.dumps(list(archive.included_paths))
         record.size_bytes = archive.size_bytes
         record.duration_ms = round((time.monotonic() - started) * 1000)
-        record.result = f"Protected {', '.join(archive.included_paths)}."
+        record.result = " ".join(
+            part
+            for part in (
+                f"Protected {', '.join(archive.included_paths)}.",
+                mirror_note,
+            )
+            if part
+        )
         record.completed_at = datetime.now().astimezone()
         enforce_retention(db, profile, self.data_dir)
         db.commit()

@@ -44,6 +44,13 @@ Blockstead manages the process around them.
 - saves weekday-aware start and maintenance schedules, plus one-time events;
   ordered maintenance runs announce, flush saves, optionally back up, and stop
   safely, with previews and result history
+- searches Modrinth, Hangar (PaperMC), and CurseForge for plugins and mods that
+  suit the selected server, with category filters, sort orders, paging, and a
+  version picker; installs are dependency-resolved and checksum-verified, and a
+  one-click vanilla switch turns every extension off (and back on) without
+  deleting anything
+- checks installed plugins and mods for newer compatible releases and updates
+  a file in place once the verified download succeeds
 - creates private manual world backups and keeps per-server result history
 - can optionally shut down the Linux computer after a safe stop and set an RTC
   wake alarm for the next scheduled day when the computer hardware supports it
@@ -291,8 +298,8 @@ Open <http://127.0.0.1:5173>. The first dashboard flow imports the sanitized
 `fixtures/servers/vanilla-fixture` folder and launches its safe Python fixture
 process. Imported vanilla profiles with `server.jar` and an accepted `eula.txt`
 can also be started from the dashboard. For a Fabric or Paper profile, use the
-**Extensions** panel to inventory, search, install, upload, disable, or remove
-compatible mods and plugins. Use **Modpacks** to install a Fabric pack from
+**Extensions** panel to inventory, search Modrinth, Hangar, or CurseForge,
+install, upload, update, disable, or remove compatible mods and plugins. Use **Modpacks** to install a Fabric pack from
 Modrinth or import a local `.mrpack`; Blockstead creates a new profile and then
 shows its Java, launcher, and EULA requirements in **Server readiness**.
 

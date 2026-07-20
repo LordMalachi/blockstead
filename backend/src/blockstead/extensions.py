@@ -42,6 +42,7 @@ class ExtensionEntry(BaseModel):
     file_name: str
     size_bytes: int
     sha256: str | None
+    sha512: str | None = None
     kind: Kind
     loaders: list[str]
     identifier: str | None
@@ -226,13 +227,18 @@ def _kind_of(loaders: list[str]) -> Kind:
 def _inspect_jar(path: Path) -> ExtensionEntry:
     found = _Metadata()
     sha256: str | None = None
+    sha512: str | None = None
     readable = False
     digest = hashlib.sha256()
+    # Modrinth's update lookup identifies files by sha512, so record both.
+    long_digest = hashlib.sha512()
     try:
         with path.open("rb") as handle:
             while chunk := handle.read(1024 * 1024):
                 digest.update(chunk)
+                long_digest.update(chunk)
         sha256 = digest.hexdigest()
+        sha512 = long_digest.hexdigest()
         with zipfile.ZipFile(path) as archive:
             fabric = _read_member(archive, "fabric.mod.json")
             if fabric is not None:
@@ -262,6 +268,7 @@ def _inspect_jar(path: Path) -> ExtensionEntry:
         file_name=path.name,
         size_bytes=size,
         sha256=sha256,
+        sha512=sha512,
         kind=_kind_of(found.loaders) if readable else "unknown",
         loaders=found.loaders,
         identifier=found.identifier,

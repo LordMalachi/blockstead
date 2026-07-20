@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Add a one-click vanilla switch to the Extensions panel: disable every
+  installed plugin or mod at once to play plain Minecraft, then bring them all
+  back exactly as they were. Nothing is deleted; files move to the managed
+  `-disabled` folder and every change is audited.
+- Add Hangar (PaperMC) and CurseForge as extension catalogs beside Modrinth,
+  behind one shared search. Hangar serves Paper-family plugins with
+  sha256-verified downloads; files hosted outside Hangar are offered as
+  browser links instead of unverifiable downloads. CurseForge needs the
+  owner's own free API key, stored on this computer and never echoed back,
+  and honors authors who disallow automated downloads by linking to the
+  project page instead.
+- Add catalog search filters: category chips, sort order (relevance,
+  downloads, follows, newest, recently updated), result paging, and a
+  per-project version picker so a specific compatible release can be
+  installed instead of the newest.
+- Add update checking for installed extensions: one click compares every live
+  jar against Modrinth by checksum, shows which files have newer compatible
+  releases, and updates a file in place while removing the replaced jar only
+  after the verified download succeeds.
+- Add persistent advanced backup destinations, mirror every successful manual
+  or scheduled archive to each approved folder, and create a verified backup
+  before an ordinary safe stop.
+- Let owners choose a local destination folder for a new world backup and save
+  additional copies of completed backup archives from Backup Center.
+- Show Docker's published Minecraft port in the join address when it differs
+  from the server's internal container port.
 - Add a central searchable Help workspace, an opt-in replayable app tour, and
   accessible contextual tooltips for readiness, backups, scheduling, and host
   health.

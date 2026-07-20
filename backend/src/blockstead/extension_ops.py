@@ -45,6 +45,37 @@ def set_enabled(extension_directory: Path, file_name: str, enabled: bool) -> Pat
     return target
 
 
+def set_all_enabled(extension_directory: Path, enabled: bool) -> tuple[list[str], list[str]]:
+    """Move every managed jar between the live and disabled directories.
+
+    Returns (moved, skipped). A jar is skipped — never overwritten or
+    renamed — when the target already has a file with its name, or when
+    its name fails the same validation used for single-file operations.
+    """
+    disabled_dir = disabled_directory(extension_directory)
+    source_dir, target_dir = (
+        (disabled_dir, extension_directory) if enabled else (extension_directory, disabled_dir)
+    )
+    if not source_dir.is_dir():
+        return [], []
+    moved: list[str] = []
+    skipped: list[str] = []
+    jars = sorted(
+        entry.name
+        for entry in source_dir.iterdir()
+        if entry.suffix == ".jar" and entry.is_file() and not entry.is_symlink()
+    )
+    if jars:
+        target_dir.mkdir(mode=0o755, exist_ok=True)
+    for name in jars:
+        if not JAR_NAME_PATTERN.match(name) or (target_dir / name).exists():
+            skipped.append(name)
+            continue
+        (source_dir / name).replace(target_dir / name)
+        moved.append(name)
+    return moved, skipped
+
+
 def remove(extension_directory: Path, file_name: str, disabled: bool = False) -> None:
     """Delete one validated jar from the live or disabled managed directory."""
     directory = disabled_directory(extension_directory) if disabled else extension_directory

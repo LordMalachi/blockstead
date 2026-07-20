@@ -96,10 +96,14 @@ def _lan_addresses() -> list[str]:
     return sorted(addresses, key=lambda item: (ipaddress.ip_address(item).version, item))
 
 
-def join_details(values: dict[str, str], request_host: str | None) -> dict[str, object]:
+def join_details(
+    values: dict[str, str],
+    request_host: str | None,
+    public_port: int | None = None,
+) -> dict[str, object]:
     """Describe where players can join without claiming router reachability."""
 
-    port = integer_property(values, "server-port", 25565, 1, 65535)
+    port = public_port or integer_property(values, "server-port", 25565, 1, 65535)
     bind = values.get("server-ip", "").strip()
     wildcard = bind in {"", "0.0.0.0", "::"}  # noqa: S104 -- detecting MC wildcard
     local_only = bind in {"127.0.0.1", "::1", "localhost"}

@@ -9,13 +9,25 @@ import json
 import re
 
 import httpx
-from pydantic import BaseModel
+
+from .catalog import (
+    CatalogError,
+    CatalogProject,
+    PlannedFile,
+    ProjectVersion,
+    SearchPage,
+)
 
 MODRINTH_API = "https://api.modrinth.com/v2"
 SEARCH_LIMIT = 20
 MAX_RESOLVED_FILES = 32
+MAX_SEARCH_OFFSET = 1000
+MAX_LISTED_VERSIONS = 20
+MAX_CATEGORY_FILTERS = 5
+SORT_INDEXES = frozenset({"relevance", "downloads", "follows", "newest", "updated"})
 
 JAR_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+\- ]{0,127}\.jar$")
+CATEGORY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
 LOADER_FILTERS: dict[str, list[str]] = {
     "paper": ["paper", "spigot", "bukkit"],
@@ -33,30 +45,12 @@ PROJECT_TYPES: dict[str, str] = {
 }
 
 
-class ModrinthError(ValueError):
-    """The catalog request failed or returned unusable data; message is user-safe."""
+class ModrinthError(CatalogError):
+    """The Modrinth request failed or returned unusable data; message is user-safe."""
 
 
-class ModrinthProject(BaseModel):
-    project_id: str
-    slug: str | None
-    title: str | None
-    description: str | None
-    downloads: int | None
-    icon_url: str | None = None
-    author: str | None = None
-    project_type: str | None = None
-
-
-class PlannedFile(BaseModel):
-    project_id: str
-    version_id: str
-    version_number: str | None
-    file_name: str
-    url: str
-    checksum_algorithm: str | None
-    checksum: str | None
-    required_by: str | None
+# Backward-compatible alias: Modrinth records are plain catalog projects.
+ModrinthProject = CatalogProject
 
 
 def _loaders_for(distribution: str) -> list[str]:
@@ -83,21 +77,39 @@ async def search(
     distribution: str,
     minecraft_version: str | None,
     query: str,
-) -> list[ModrinthProject]:
+    categories: list[str] | None = None,
+    sort: str = "relevance",
+    offset: int = 0,
+) -> SearchPage:
     loaders = _loaders_for(distribution)
+    if sort not in SORT_INDEXES:
+        raise ModrinthError("That sort order is not one Modrinth offers.")
+    offset = max(0, min(offset, MAX_SEARCH_OFFSET))
+    chosen = [item for item in (categories or []) if CATEGORY_PATTERN.match(item)]
+    if len(chosen) > MAX_CATEGORY_FILTERS:
+        raise ModrinthError("Pick at most five category filters.")
     facets: list[list[str]] = [
         [f"project_type:{PROJECT_TYPES[distribution]}"],
         [f"categories:{loader}" for loader in loaders],
         ["server_side:required", "server_side:optional"],
     ]
+    # Each chosen category is its own facet group, so filters narrow (AND).
+    facets.extend([f"categories:{category}"] for category in chosen)
     if minecraft_version:
         facets.append([f"versions:{minecraft_version}"])
     payload = await _get_json(
         client,
         f"{MODRINTH_API}/search",
-        {"query": query[:100], "facets": json.dumps(facets), "limit": str(SEARCH_LIMIT)},
+        {
+            "query": query[:100],
+            "facets": json.dumps(facets),
+            "limit": str(SEARCH_LIMIT),
+            "offset": str(offset),
+            "index": sort,
+        },
     )
     hits = payload.get("hits") if isinstance(payload, dict) else None
+    total = payload.get("total_hits") if isinstance(payload, dict) else None
     projects: list[ModrinthProject] = []
     for hit in hits if isinstance(hits, list) else []:
         if not isinstance(hit, dict) or not isinstance(hit.get("project_id"), str):
@@ -116,9 +128,82 @@ async def search(
                 project_type=(
                     hit.get("project_type") if isinstance(hit.get("project_type"), str) else None
                 ),
+                source="modrinth",
+                page_url=(
+                    f"https://modrinth.com/{PROJECT_TYPES[distribution]}/{hit['slug']}"
+                    if isinstance(hit.get("slug"), str)
+                    else None
+                ),
             )
         )
-    return projects
+    return SearchPage(
+        projects=projects,
+        total=total if isinstance(total, int) else len(projects),
+        offset=offset,
+        limit=SEARCH_LIMIT,
+    )
+
+
+async def list_categories(client: httpx.AsyncClient, distribution: str) -> list[str]:
+    """Category names Modrinth offers for this distribution's project type."""
+    _loaders_for(distribution)
+    payload = await _get_json(client, f"{MODRINTH_API}/tag/category", {})
+    # Modrinth's tag list has no separate "plugin" type; plugins share mod categories.
+    project_type = PROJECT_TYPES[distribution]
+    if project_type == "plugin":
+        project_type = "mod"
+    names = [
+        entry["name"]
+        for entry in (payload if isinstance(payload, list) else [])
+        if isinstance(entry, dict)
+        and entry.get("project_type") == project_type
+        and entry.get("header") == "categories"
+        and isinstance(entry.get("name"), str)
+        and CATEGORY_PATTERN.match(entry["name"])
+    ]
+    return sorted(set(names))
+
+
+async def list_project_versions(
+    client: httpx.AsyncClient,
+    distribution: str,
+    minecraft_version: str | None,
+    project_id: str,
+) -> list[ProjectVersion]:
+    """Versions of one project that suit this server, newest first."""
+    loaders = _loaders_for(distribution)
+    params: dict[str, str] = {"loaders": json.dumps(loaders), "include_changelog": "false"}
+    if minecraft_version:
+        params["game_versions"] = json.dumps([minecraft_version])
+    payload = await _get_json(client, f"{MODRINTH_API}/project/{project_id}/version", params)
+    versions: list[ProjectVersion] = []
+    for item in payload if isinstance(payload, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            continue
+        number = item.get("version_number")
+        kind = item.get("version_type")
+        published = item.get("date_published")
+        game_versions = item.get("game_versions")
+        item_loaders = item.get("loaders")
+        versions.append(
+            ProjectVersion(
+                version_id=item["id"],
+                version_number=number[:100] if isinstance(number, str) else None,
+                version_type=kind if isinstance(kind, str) else None,
+                date_published=published[:32] if isinstance(published, str) else None,
+                game_versions=[
+                    value for value in game_versions if isinstance(value, str)
+                ][:20]
+                if isinstance(game_versions, list)
+                else [],
+                loaders=[value for value in item_loaders if isinstance(value, str)][:10]
+                if isinstance(item_loaders, list)
+                else [],
+            )
+        )
+        if len(versions) >= MAX_LISTED_VERSIONS:
+            break
+    return versions
 
 
 def _pick_file(version: dict[str, object]) -> dict[str, object]:
@@ -161,6 +246,53 @@ def _planned_from(version: dict[str, object], required_by: str | None) -> Planne
         checksum=checksum,
         required_by=required_by,
     )
+
+
+MAX_UPDATE_HASHES = 200
+
+
+async def check_updates(
+    client: httpx.AsyncClient,
+    distribution: str,
+    minecraft_version: str | None,
+    sha512_hashes: list[str],
+) -> dict[str, PlannedFile | None]:
+    """Map installed-file sha512 hashes to the newest compatible Modrinth file.
+
+    A hash appears in the result only when Modrinth recognizes it: mapped to
+    None when the installed file already is the newest compatible one, or to
+    the newer planned file otherwise. Unrecognized hashes are absent.
+    """
+    loaders = _loaders_for(distribution)
+    hashes = [item for item in sha512_hashes if isinstance(item, str)][:MAX_UPDATE_HASHES]
+    if not hashes:
+        return {}
+    body: dict[str, object] = {
+        "hashes": hashes,
+        "algorithm": "sha512",
+        "loaders": loaders,
+    }
+    if minecraft_version:
+        body["game_versions"] = [minecraft_version]
+    try:
+        response = await client.post(f"{MODRINTH_API}/version_files/update", json=body)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise ModrinthError(f"Modrinth did not answer as expected ({type(exc).__name__}).") from exc
+    updates: dict[str, PlannedFile | None] = {}
+    for installed_hash, version in payload.items() if isinstance(payload, dict) else []:
+        if installed_hash not in hashes or not isinstance(version, dict):
+            continue
+        try:
+            planned = _planned_from(version, None)
+        except ModrinthError:
+            continue
+        already_newest = (
+            planned.checksum_algorithm == "sha512" and planned.checksum == installed_hash
+        )
+        updates[installed_hash] = None if already_newest else planned
+    return updates
 
 
 async def _version_by_id(client: httpx.AsyncClient, version_id: str) -> dict[str, object]:

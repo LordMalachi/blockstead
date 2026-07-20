@@ -93,6 +93,15 @@ def test_join_details_honors_explicit_bind_and_port() -> None:
     assert details["local_only"] is True
 
 
+def test_join_details_uses_public_port_without_changing_server_bind() -> None:
+    details = join_details(
+        {"server-ip": "", "server-port": "25565"}, "example.test", 25570
+    )
+
+    assert details["port"] == 25570
+    assert details["address"] == "example.test:25570"
+
+
 def test_world_size_uses_configured_world_name_and_ignores_links(tmp_path: Path) -> None:
     (tmp_path / "server.properties").write_text("level-name=survival\n", encoding="utf-8")
     world = tmp_path / "survival"
