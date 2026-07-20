@@ -6,12 +6,18 @@ interface WalkthroughStep {
   title: string;
   body: string;
   target?: string;
+  image?: string;
+  imageAlt?: string;
 }
+
+const overviewPreview = "/help/server-controls.png";
 
 const steps: WalkthroughStep[] = [
   {
     title: "A quick tour of Blockstead",
-    body: "Blockstead keeps everyday server care in a few predictable workspaces. Nothing in this tour changes your server.",
+    body: "Blockstead keeps everyday server care in a few predictable workspaces. This tour points them out without starting, stopping, or changing anything.",
+    image: overviewPreview,
+    imageAlt: "Blockstead Overview showing a running server, its controls, and recent health information.",
   },
   {
     title: "Servers is your home base",
@@ -25,7 +31,7 @@ const steps: WalkthroughStep[] = [
   },
   {
     title: "Help stays close",
-    body: "Return to Help for task guides, quick answers, recovery commands, and this walkthrough. Contextual question marks explain technical choices without opening another page.",
+    body: "Return to Help for task shortcuts, quick answers, recovery commands, and this walkthrough. Contextual question marks explain technical choices without opening another page.",
     target: "help",
   },
   {
@@ -68,9 +74,14 @@ export function WalkthroughProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!step?.target) return;
     const target = document.querySelector<HTMLElement>(`[data-walkthrough="${step.target}"]`);
+    const layer = target?.closest<HTMLElement>(".sidebar");
     target?.classList.add("walkthrough-target");
+    layer?.classList.add("walkthrough-layer");
     target?.scrollIntoView?.({ block: "nearest" });
-    return () => target?.classList.remove("walkthrough-target");
+    return () => {
+      target?.classList.remove("walkthrough-target");
+      layer?.classList.remove("walkthrough-layer");
+    };
   }, [step]);
 
   useEffect(() => {
@@ -110,6 +121,9 @@ export function WalkthroughProvider({ children }: PropsWithChildren) {
           <p className="eyebrow">Quick tour · {index! + 1} of {steps.length}</p>
           <h2 id="walkthrough-title" tabIndex={-1} ref={heading}>{step.title}</h2>
           <p>{step.body}</p>
+          {step.image && <figure className="walkthrough-preview">
+            <img src={step.image} alt={step.imageAlt ?? ""} />
+          </figure>}
         </div>
         <div className="walkthrough-progress" aria-hidden="true">
           {steps.map((_, dot) => <i className={dot <= index! ? "complete" : ""} key={dot} />)}

@@ -27,6 +27,8 @@ Blockstead manages the process around them.
 | Mods and plugins workshop | Backup Center with a verified restore point |
 | ![System health](docs/screenshots/07-system.png) | ![Every server on this computer](docs/screenshots/08-servers.png) |
 | System health | Every server on this computer |
+| ![Weekly automation plan](docs/screenshots/09-automation.png) | ![Searchable Help workspace](docs/screenshots/12-help.png) |
+| Weekly automation plan | Searchable Help workspace |
 
 ## What it does today
 
@@ -46,12 +48,12 @@ Blockstead manages the process around them.
 - saves weekday-aware start and maintenance schedules, plus one-time events;
   ordered maintenance runs announce, flush saves, optionally back up, and stop
   safely, with previews and result history
-- gives mods and plugins their own friendly workshop: browse compatible
-  projects from Modrinth, Hangar (PaperMC), and CurseForge; compare versions,
+- gives mods and plugins their own friendly workshop: filter projects from
+  Modrinth, Hangar (PaperMC), and CurseForge for the selected server; compare versions,
   categories, and sort orders; then install a checksum-verified release when
   the server is safely stopped. A one-click vanilla switch parks every
   extension without deleting anything, ready for the next game night
-- checks installed plugins and mods for newer compatible releases and updates
+- checks installed plugins and mods for newer releases listed for that setup and updates
   a file in place once the verified download succeeds
 - creates private, verified manual and scheduled world backups, keeps a clear
   per-server history, lets you save a portable copy when you need one, and can
@@ -328,7 +330,8 @@ Open <http://127.0.0.1:5173>. The first dashboard flow imports the sanitized
 process. Imported vanilla profiles with `server.jar` and an accepted `eula.txt`
 can also be started from the dashboard. For a Fabric or Paper profile, use the
 **Extensions** panel to inventory, search Modrinth, Hangar, or CurseForge,
-install, upload, update, disable, or remove compatible mods and plugins. Use **Modpacks** to install a Fabric pack from
+install, upload, update, disable, or remove mods and plugins filtered for that
+profile. Use **Modpacks** to install a Fabric pack from
 Modrinth or import a local `.mrpack`; Blockstead creates a new profile and then
 shows its Java, launcher, and EULA requirements in **Server readiness**.
 

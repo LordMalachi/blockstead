@@ -153,7 +153,7 @@ export function CommandCenter({ profileId, running }: { profileId: string; runni
   return <section className="command-center" aria-labelledby="command-center-title">
     <div className="command-center-heading">
       <div><p className="eyebrow">Guided console</p><h3 id="command-center-title">Command center</h3><p>Choose an action, fill in its values, and review the exact Minecraft command.</p></div>
-      {catalog.data && <span title="More commands can be entered through the advanced raw console.">{catalog.data.complete ? "Live catalog" : "Curated catalog"}</span>}
+      {catalog.data && <span>{catalog.data.complete ? "Live catalog" : "Curated catalog"}</span>}
     </div>
     <div className="command-browser">
       <div className="command-library">
@@ -162,7 +162,6 @@ export function CommandCenter({ profileId, running }: { profileId: string; runni
         {catalog.isLoading ? <p className="empty-note">Loading guided commands…</p> : catalog.error ? <p className="error" role="alert">{catalog.error.message}</p> : <div className="command-cards">{filtered.map(command => <button
           type="button"
           className={selected?.id === command.id ? "active" : ""}
-          title={command.description}
           key={command.id}
           onClick={() => choose(command)}
         ><span><strong>{command.label}</strong><small>{command.description}</small></span><code>{command.root}</code></button>)}{filtered.length === 0 && <p className="empty-note">No guided commands match that search. The advanced console can still send any command.</p>}</div>}

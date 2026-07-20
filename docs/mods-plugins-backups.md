@@ -7,6 +7,8 @@ world backups.
 
 ## The Extension Workshop
 
+![Extension Workshop with active and disabled mods](screenshots/10-mods-plugins.png)
+
 Open **Mods and plugins** for the selected server. The workshop knows whether
 your server uses Paper plugins or Fabric, Forge, Quilt, or NeoForge mods. A
 Vanilla server does not load extension jars, so Blockstead points you toward the
@@ -15,10 +17,12 @@ right kind of profile instead of pretending an install will work.
 ### Find something fun
 
 Use **Discover** to search Modrinth, Hangar (for Paper plugins), or CurseForge.
-Blockstead matches projects and releases to the Minecraft version and loader for
-the server you have open. You can search, change catalogs, filter by category,
-sort, page through results, and open **Versions** to choose a specific
-compatible build.
+Blockstead filters projects and releases using the Minecraft version and loader
+for the server you have open. You can search, change catalogs, filter by
+category, sort, page through results, and open **Versions** to choose a specific
+build that declares support for that setup. Metadata can rule out some obvious
+mismatches, but it cannot guarantee that every group of add-ons will work
+together.
 
 Browsing is always fine. Installing, updating, uploading, enabling, disabling,
 and removing files wait until Minecraft has stopped cleanly. Minecraft loads
@@ -32,11 +36,12 @@ saving or searching the key does not work.
 ### Keep your loadout tidy
 
 **Manage** separates active files from files you have disabled. Each item shows
-what Blockstead could recognize: version, file name, size, loader, and Minecraft
-compatibility when available.
+what Blockstead could recognize: version, file name, size, loader, and declared
+Minecraft version information when available.
 
-- **Check for updates** looks for a newer compatible release of recognized
-  Modrinth files. The old jar stays put until the verified replacement is ready.
+- **Check for updates** looks for a newer release listed for this setup for
+  recognized Modrinth files. The old jar stays put until the checksum-verified
+  replacement is ready.
 - **Disable** parks a jar in Blockstead's managed disabled area. It is a great
   way to troubleshoot or run a plain-Minecraft session without losing your
   usual setup.
@@ -45,8 +50,9 @@ compatibility when available.
 - **Remove** permanently removes that jar after a confirmation. Use Disable if
   you think you might want it back soon.
 - **Upload a `.jar`** is for a file you already trust and downloaded yourself.
-  Blockstead waits for the server to stop before it places the file in the
-  loadout.
+  Jars contain executable code. Blockstead records the file and waits for the
+  server to stop before placing it, but cannot verify its origin or guarantee
+  that it works with your loadout.
 
 The **Configure** area is for supported generated configuration files. Change
 one thing at a time, then start the server and check the early console messages
@@ -56,13 +62,15 @@ if an add-on is new or updated.
 
 1. Browse and compare while the server is up, if you like.
 2. Let players know, then stop the server from Blockstead.
-3. Make the extension change and read any compatibility note.
+3. Make the extension change and read any version, loader, or dependency note.
 4. Start the server again and check the first startup messages.
 
 If a new add-on makes the server unhappy, stop it and use **Disable** (or the
 vanilla switch) to get back to a known-good loadout.
 
 ## The Backup Center
+
+![Backup Center with a verified restore point](screenshots/11-backups.png)
 
 Open **Backups** for the selected server. Think of each completed archive as a
 restore point: a private copy Blockstead can check before it uses it.
@@ -128,7 +136,7 @@ first and enter the container path.
 
 Both workspaces include an **Open extension guide** or **Open backup guide**
 button. Those short guides explain the safe workflow without leaving the page.
-Small question-mark buttons explain compatibility matching, stopped-server
+Small question-mark buttons explain project filtering, stopped-server
 locks, live backups, verification, retention, and approved mirror folders.
 
 The top-level **Help** page also links directly to these workspaces. Search for

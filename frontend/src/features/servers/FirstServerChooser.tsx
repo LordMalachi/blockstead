@@ -15,7 +15,7 @@ const choices: Array<{
   {
     value: "import",
     title: "Use an existing server",
-    detail: "Copy your world folder in from anywhere on this computer.",
+    detail: "Copy an existing Minecraft server folder into Blockstead.",
   },
   {
     value: "modpack",

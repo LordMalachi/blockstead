@@ -15,6 +15,7 @@ test("runs and closes the replayable walkthrough", () => {
   fireEvent.click(launcher);
   const firstHeading = screen.getByRole("heading", { name: "A quick tour of Blockstead" });
   expect(screen.getByRole("dialog", { name: "A quick tour of Blockstead" })).toBeVisible();
+  expect(screen.getByRole("img", { name: /Overview showing a running server/ })).toBeVisible();
   expect(firstHeading).toHaveFocus();
   expect(launcher.closest(".app-shell")).toHaveAttribute("inert");
 

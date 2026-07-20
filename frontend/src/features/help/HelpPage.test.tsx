@@ -29,11 +29,33 @@ test("starts the guided tour from Help", () => {
   expect(screen.getByRole("dialog", { name: "A quick tour of Blockstead" })).toBeVisible();
 });
 
-test("asks the owner to choose a server when none is active", () => {
+test("links to the only server even when it is stopped", () => {
   renderHelp(false);
 
   const backupGuide = screen.getByRole("heading", { name: "Protect, save, and restore a world" }).closest("article");
   expect(backupGuide).not.toBeNull();
-  expect(backupGuide!.querySelector("a")).toHaveTextContent("Choose a server");
-  expect(backupGuide!.querySelector("a")).toHaveAttribute("href", "/servers");
+  expect(backupGuide!.querySelector("a")).toHaveTextContent("Open Backup Center");
+  expect(backupGuide!.querySelector("a")).toHaveAttribute("href", "/servers/profile-1/backups");
+});
+
+test("searches common synonyms and clears an empty result", () => {
+  renderHelp();
+  const search = screen.getByRole("searchbox", { name: "Search help" });
+
+  fireEvent.change(search, { target: { value: "whitelist" } });
+  expect(screen.getByRole("heading", { name: "Manage players" })).toBeVisible();
+
+  fireEvent.change(search, { target: { value: "backup drive" } });
+  expect(screen.getByRole("heading", { name: "Protect, save, and restore a world" })).toBeVisible();
+
+  fireEvent.change(search, { target: { value: "forgot password" } });
+  const resetLink = screen.getByRole("link", { name: /Open reset instructions/ });
+  expect(resetLink.getAttribute("href")).toMatch(/#password-recovery$/);
+  fireEvent.click(resetLink);
+  expect(document.querySelector("#password-recovery")).toHaveAttribute("open");
+
+  fireEvent.change(search, { target: { value: "something impossible" } });
+  fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+  expect(search).toHaveValue("");
+  expect(screen.getByRole("heading", { name: "Help friends join" })).toBeVisible();
 });

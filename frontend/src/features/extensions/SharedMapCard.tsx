@@ -66,7 +66,7 @@ export function SharedMapCard({
         <Button disabled={!stopped || busy} onClick={install}>
           {busy ? "Installing…" : "Install shared map"}
         </Button>
-        <small>{stopped ? "Blockstead will select a compatible, checksum-verified Modrinth release." : "Stop the server before installing the map."}</small>
+        <small>{stopped ? "Blockstead will select a checksum-verified Modrinth release listed for this server." : "Stop the server before installing the map."}</small>
       </>}
     </div>
     <p className="shared-map-network-note">squaremap serves the map on a separate web port. Blockstead does not open the Linux firewall or expose the port through your router.</p>

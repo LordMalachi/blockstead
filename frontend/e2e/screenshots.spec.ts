@@ -35,6 +35,8 @@ test("captures documentation screenshots @docs", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Server readiness" })).toBeVisible();
   await page.waitForTimeout(500);
   await page.screenshot({ path: out("03-overview-running") });
+  await page.locator(".hero-actions").screenshot({ path: out("help-tour-server-controls") });
+  await page.locator(".hero-actions").screenshot({ path: "public/help/server-controls.png" });
 
   await page.getByRole("link", { name: "Console" }).click();
   await expect(page.getByRole("heading", { name: "Live server log" })).toBeVisible();
@@ -111,6 +113,30 @@ test("captures documentation screenshots @docs", async ({ page }) => {
   // Let the metrics poller take a second CPU sample so the tile shows a real value.
   await page.waitForTimeout(2_500);
   await page.screenshot({ path: out("07-system") });
+  await page.getByRole("button", { name: "Help: What these measurements include" }).focus();
+  const tooltip = page.getByRole("tooltip");
+  await expect(tooltip).toBeVisible();
+  const tooltipBox = await tooltip.boundingBox();
+  expect(tooltipBox).not.toBeNull();
+  expect(tooltipBox.x).toBeGreaterThanOrEqual(8);
+  expect(tooltipBox.y).toBeGreaterThanOrEqual(8);
+  expect(tooltipBox.x + tooltipBox.width).toBeLessThanOrEqual(1352);
+  expect(tooltipBox.y + tooltipBox.height).toBeLessThanOrEqual(842);
+  await page.screenshot({ path: out("15-contextual-help") });
+  await page.keyboard.press("Escape");
+  await expect(tooltip).toBeHidden();
+
+  await page.getByRole("link", { name: "Help" }).click();
+  await expect(page.getByRole("heading", { name: "How can we help?" })).toBeVisible();
+  await page.screenshot({ path: out("12-help") });
+  await page.getByRole("button", { name: "Start guided tour" }).click();
+  await expect(page.getByRole("dialog", { name: "A quick tour of Blockstead" })).toBeVisible();
+  await expect(page.getByRole("img", { name: /Overview showing a running server/ })).toBeVisible();
+  await page.screenshot({ path: out("13-guided-tour") });
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByRole("heading", { name: "Servers is your home base" })).toBeVisible();
+  await page.screenshot({ path: out("14-guided-tour-spotlight") });
+  await page.getByRole("button", { name: "Exit tour" }).click();
 
   await page.getByRole("link", { name: "Servers" }).click();
   await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();

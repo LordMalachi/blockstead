@@ -64,7 +64,7 @@ function VersionChooser({
   return <div className="version-drawer">
     <div className="version-drawer__heading">
       <strong>Choose a release</strong>
-      <small>Only server-compatible versions are shown.</small>
+      <small>Only releases listed for this Minecraft version and loader are shown.</small>
     </div>
     <ul className="version-list">
       {versions.data?.versions.map(version => <li key={version.version_id}>
@@ -82,7 +82,7 @@ function VersionChooser({
           : <Button className="button--secondary button--small" aria-label={`Install version ${version.version_number ?? version.version_id}`} disabled={locked} onClick={() => install(version.version_id)}>Install this version</Button>}
       </li>)}
       {versions.isFetching && <li className="empty-note">Loading versions…</li>}
-      {versions.data && !versions.data.versions.length && <li className="empty-note">No compatible versions for this server.</li>}
+      {versions.data && !versions.data.versions.length && <li className="empty-note">No releases are listed for this Minecraft version and loader.</li>}
       {versions.error && <li className="empty-note">{versions.error.message}</li>}
     </ul>
   </div>;
@@ -150,14 +150,14 @@ function ExtensionGuide({ close }: { close: () => void }) {
     <div className="workspace-guide__heading">
       <div>
         <p className="eyebrow">Quick field guide</p>
-        <h3 id="extension-guide-title">A safe modding loop</h3>
+        <h3 id="extension-guide-title">Change mods and plugins safely</h3>
       </div>
       <Button className="button--quiet button--small" onClick={close}>Close guide</Button>
     </div>
     <ol className="workspace-guide__steps">
-      <li><span>1</span><div><strong>Browse while you play</strong><small>Search and compare projects at any time. Blockstead matches the catalog to this server’s Minecraft version and loader.</small></div></li>
-      <li><span>2</span><div><strong>Stop before changing files</strong><small>Installs, updates, uploads, and enable/disable actions unlock only when Minecraft is safely stopped.</small></div></li>
-      <li><span>3</span><div><strong>Use the compatible release</strong><small>Install chooses a verified compatible release automatically, or open Versions when you need a specific build.</small></div></li>
+      <li><span>1</span><div><strong>Browse while you play</strong><small>Search and compare projects at any time. Results are filtered using this server’s Minecraft version and loader.</small></div></li>
+      <li><span>2</span><div><strong>Stop before changing files</strong><small>Installs, updates, uploads, removals, enable/disable actions, and configuration saves wait until Minecraft is safely stopped.</small></div></li>
+      <li><span>3</span><div><strong>Review the release</strong><small>Install uses a checksum-verified release that declares support for this setup. Open Versions when you need a specific build.</small></div></li>
       <li><span>4</span><div><strong>Restart and check the console</strong><small>Most changes take effect on the next start. Review the first startup log for dependency or configuration messages.</small></div></li>
     </ol>
     <p className="workspace-guide__note"><strong>Good to know:</strong> Disable keeps a jar nearby for an easy return. Remove deletes that jar from the server, so Blockstead asks again first.</p>
@@ -355,7 +355,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
           <span className="workspace-hero__icon"><NavIcon name="blocks" /></span>
           <h2>Extension Workshop</h2>
         </div>
-        <p>Build a server loadout, find releases matched to this Minecraft setup, and keep every change easy to understand or undo.</p>
+        <p>Build a server loadout, filter releases for this Minecraft setup, and keep every file change clear and deliberate.</p>
         <div className="workspace-hero__actions">
           <Button ref={guideTrigger} className="button--light button--small" aria-expanded={guideOpen} aria-controls="extension-guide" onClick={() => guideOpen ? closeGuide() : setGuideOpen(true)}>
             {guideOpen ? "Hide extension guide" : "Open extension guide"}
@@ -382,7 +382,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     </div> : view ? <>
       <nav className="workspace-jump" aria-label="Extension workspace sections">
         <a href="#extension-loadout"><span>01</span><strong>Manage</strong><small>Active and disabled</small></a>
-        <a href="#extension-catalog"><span>02</span><strong>Discover</strong><small>Search compatible projects</small></a>
+        <a href="#extension-catalog"><span>02</span><strong>Discover</strong><small>Search listed projects</small></a>
         <a href="#extension-config"><span>03</span><strong>Configure</strong><small>Tune generated files</small></a>
       </nav>
 
@@ -479,8 +479,8 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
           <div>
             <p className="eyebrow">Discover</p>
             <div className="heading-with-help">
-              <h3 id="catalog-heading">Find compatible projects</h3>
-              <Tooltip label="How compatibility matching works">Searches include this profile’s Minecraft version and loader. Blockstead verifies downloaded files and resolves required dependencies before placing them in the server.</Tooltip>
+              <h3 id="catalog-heading">Find projects for this server</h3>
+              <Tooltip label="How project filtering works">Results are filtered by this profile’s Minecraft version and loader. Installs verify published checksums and include required dependencies, but Blockstead cannot guarantee that add-ons work together.</Tooltip>
             </div>
             <p>Browse freely while the server runs; installation buttons unlock after a safe stop.</p>
           </div>
@@ -489,7 +489,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
 
         <form className="catalog-search" role="search" onSubmit={search}>
           <label>
-            <span>Search server-compatible projects</span>
+            <span>Search projects listed for this server</span>
             <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Try Lithium, LuckPerms, voice chat…" />
           </label>
           <Button disabled={!query.trim() || !catalogReady || results.isFetching}>{results.isFetching ? "Searching…" : source === "curseforge" && !catalogReady ? "Add key to search" : "Search"}</Button>
@@ -576,11 +576,8 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
       <section className="manual-install" aria-labelledby="manual-install-heading">
         <div>
           <p className="eyebrow">Bring your own file</p>
-          <div className="heading-with-help">
-            <h3 id="manual-install-heading">Upload a jar</h3>
-            <Tooltip label="When to upload a jar manually">Use manual upload for a trusted project that is not available through a connected catalog. Blockstead inventories the file, but you are responsible for its source and compatibility.</Tooltip>
-          </div>
-          <p>For a file you already trust. Catalog installs are preferable because Blockstead can verify compatibility and dependencies first.</p>
+          <h3 id="manual-install-heading">Upload a jar</h3>
+          <p>Only upload a jar from a source you trust when it is not in a connected catalog. Blockstead records the file, but cannot verify its origin or guarantee that it works with your loadout.</p>
         </div>
         <form className="upload-form" onSubmit={upload}>
           <label>Local .jar file<input name="file" type="file" accept=".jar,application/java-archive" required /></label>

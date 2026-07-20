@@ -9,9 +9,10 @@ The primary requirement is a single map that every player can open without a
 client mod. squaremap runs as a server-side plugin or mod, renders a simple 2D
 vanilla-style map, shows live player markers, and serves the result through a
 normal web browser. Its upstream project supports Paper, Fabric, NeoForge, and
-Sponge; Fabric also requires Fabric API. Blockstead lets Modrinth select the
-release and required dependencies compatible with the profile's exact loader
-and Minecraft version.
+Sponge; Fabric also requires Fabric API. Blockstead selects a release and
+required dependencies that declare support for the profile's loader and
+Minecraft version, then checksum-verifies each download. Project metadata
+cannot guarantee that every add-on combination will work together.
 
 The alternatives solve somewhat different problems:
 

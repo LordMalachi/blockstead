@@ -82,7 +82,7 @@ test("offers the vanilla switch and disables everything through toggle-all", asy
 
 test("searches with filters, pages results, and installs a chosen version", async () => {
   const fetch = renderPanel();
-  fireEvent.change(await screen.findByLabelText("Search server-compatible projects"), { target: { value: "lithium" } });
+  fireEvent.change(await screen.findByLabelText("Search projects listed for this server"), { target: { value: "lithium" } });
   fireEvent.click(screen.getByRole("button", { name: "Search" }));
   expect(await screen.findByText("Performance mod.")).toBeVisible();
 
@@ -123,7 +123,7 @@ test("offers Hangar only for plugin servers and passes the source through", asyn
   fireEvent.change(picker, { target: { value: "hangar" } });
   await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/catalog/categories?source=hangar"), expect.anything()));
 
-  fireEvent.change(screen.getByLabelText("Search server-compatible projects"), { target: { value: "essentials" } });
+  fireEvent.change(screen.getByLabelText("Search projects listed for this server"), { target: { value: "essentials" } });
   fireEvent.click(screen.getByRole("button", { name: "Search" }));
   await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("source=hangar&query=essentials"), expect.anything()));
 });
@@ -164,7 +164,7 @@ test("installs the curated squaremap project through the verified extension endp
 
 test("keeps discovery open while a running server protects file changes", async () => {
   renderPanel(false);
-  const search = await screen.findByLabelText("Search server-compatible projects");
+  const search = await screen.findByLabelText("Search projects listed for this server");
   fireEvent.change(search, { target: { value: "lithium" } });
 
   expect(screen.getByRole("button", { name: "Search" })).toBeEnabled();
@@ -179,9 +179,9 @@ test("opens an in-page guide and exposes contextual help", async () => {
   const guide = await screen.findByRole("button", { name: "Open extension guide" });
   fireEvent.click(guide);
 
-  expect(screen.getByRole("heading", { name: "A safe modding loop" })).toBeVisible();
-  expect(screen.getByRole("button", { name: "Help: How compatibility matching works" })).toBeVisible();
-  expect(screen.getByRole("button", { name: "Help: When to upload a jar manually" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Change mods and plugins safely" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Help: How project filtering works" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Help: When to upload a jar manually" })).not.toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: "Close guide" }));
   await waitFor(() => expect(guide).toHaveFocus());

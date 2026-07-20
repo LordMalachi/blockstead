@@ -109,8 +109,8 @@ function BackupGuide({ close }: { close: () => void }) {
     </div>
     <ol className="workspace-guide__steps workspace-guide__steps--three">
       <li><span>1</span><div><strong>Create a consistent snapshot</strong><small>If Minecraft is running, Blockstead briefly flushes and pauses saving while it archives every world folder.</small></div></li>
-      <li><span>2</span><div><strong>Verify before trusting</strong><small>The completed archive gets a manifest and SHA-256 checksum. You can also save a portable copy to a folder you choose.</small></div></li>
-      <li><span>3</span><div><strong>Preview before restoring</strong><small>Blockstead checks the archive, disk space, and affected worlds first, then preserves today’s folders beside the restored ones.</small></div></li>
+      <li><span>2</span><div><strong>Verify before trusting</strong><small>The completed archive gets a file list and checksum—a digital fingerprint. You can then save a portable copy through your browser.</small></div></li>
+      <li><span>3</span><div><strong>Preview before restoring</strong><small>With Minecraft stopped, Blockstead checks the archive, disk space, and affected worlds, then preserves the current world folders beside the restored ones.</small></div></li>
     </ol>
     <p className="workspace-guide__note"><strong>The safety net:</strong> Retention never removes the newest completed backup. Scheduled backups appear in the same history as manual ones.</p>
   </aside>;
@@ -321,7 +321,7 @@ export function BackupsPanel({
           <p className="eyebrow">Restore points</p>
           <div className="heading-with-help">
             <h3 id="backup-history-heading">Backup history</h3>
-            <Tooltip label="What makes a backup verified?">Completed archives include a manifest and SHA-256 checksum. Blockstead checks that checksum again before it allows a restore.</Tooltip>
+          <Tooltip label="What makes a backup verified?">Each completed backup includes a checksum—a digital fingerprint. Blockstead checks it before restore to confirm that the archive has not changed or been damaged.</Tooltip>
           </div>
           <p>The most recent 50 manual and scheduled attempts for this server.</p>
         </div>
@@ -384,7 +384,7 @@ export function BackupsPanel({
           <p className="eyebrow">Storage housekeeping</p>
           <div className="heading-with-help">
             <h3 id="retention-heading">Retention and extra copies</h3>
-            <Tooltip label="How backup retention works">Limits are checked together after a successful backup. Blockstead always preserves the newest completed backup, even when a limit would otherwise remove it.</Tooltip>
+            <Tooltip label="How backup retention works">After a successful backup, Blockstead removes the oldest archives until every enabled limit is met. It always keeps the newest completed backup.</Tooltip>
           </div>
           <p>{retentionSummary(policy.data)}. Leave a rule blank for no limit.</p>
         </div>
@@ -409,7 +409,7 @@ export function BackupsPanel({
         <details className="backup-copies">
           <summary><span><strong>Copies on another drive</strong><small>Optional protection outside Blockstead’s private storage</small></span><i>{draft.redundancy_enabled ? "On" : "Off"}</i></summary>
           <div className="backup-copies__body">
-            <div className="heading-with-help"><h4>Mirror every successful backup</h4><Tooltip label="What counts as an approved destination">Enter an existing absolute folder path on the computer running Blockstead. In Docker, mount the folder first and use its container path. Up to eight destinations are supported.</Tooltip></div>
+            <div className="heading-with-help"><h4>Mirror every successful backup</h4><Tooltip label="What counts as an approved destination">Use an existing full path on the computer running Blockstead. In Docker, mount the folder first and enter its container path. You can add up to eight folders.</Tooltip></div>
             <p>Manual and scheduled archives are copied to each approved host folder. Retention removes Blockstead’s primary archives but does not prune these mirrored copies.</p>
             <label className="check-label"><input type="checkbox" checked={draft.redundancy_enabled} onChange={event => setPolicyDraft({ ...draft, redundancy_enabled: event.target.checked })} /> Mirror every backup to approved folders</label>
             <div className="inline-form"><label>Destination folder<input value={destinationInput} onChange={event => setDestinationInput(event.target.value)} placeholder="/media/backup-drive/minecraft" /></label><Button type="button" className="button--secondary" disabled={!destinationInput.trim() || draft.destinations.length >= 8} onClick={() => {
