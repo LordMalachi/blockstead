@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type AutomationCapabilities, type AutomationEvent, type AutomationRun, type Schedule } from "../../api/client";
 import { Button } from "../../components/Button";
+import { Tooltip } from "../../components/Tooltip";
 
 const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const blank = {
@@ -130,7 +131,7 @@ export function SchedulePanel({ profileId }: { profileId: string }) {
         <label className="check-label"><input type="checkbox" checked={form.only_when_empty} onChange={event => set("only_when_empty", event.target.checked)} /> Stop only when nobody is online</label>
       </div>
       <div className="power-schedule">
-        <h3>Computer power <span className="capability-tag">Linux only</span></h3>
+        <div className="heading-with-help"><h3>Computer power <span className="capability-tag">Linux only</span></h3><Tooltip label="How scheduled power works">Blockstead stops Minecraft safely before asking the installed Linux helper to shut down. Waking later requires compatible RTC hardware; no network wake or router automation is performed.</Tooltip></div>
         <label className="check-label"><input type="checkbox" checked={form.power_off_after_stop} onChange={event => set("power_off_after_stop", event.target.checked)} disabled={!powerCapable || !form.stop_time} /> Shut down the computer after the safe stop</label>
         {!powerCapable && <small>Unavailable until the Linux installer power helper is present. Blockstead never offers an unverified host-power action.</small>}
         {form.power_off_after_stop && <label>Wake computer at<input type="time" value={form.wake_time} onChange={event => set("wake_time", event.target.value)} /><small>Requires compatible RTC wake hardware.</small></label>}

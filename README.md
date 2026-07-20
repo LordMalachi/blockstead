@@ -39,6 +39,8 @@ Blockstead manages the process around them.
 - shows host CPU, memory, disk use, and server uptime
 - keeps a private application log and recent-error view, and saves a redacted
   one-file diagnostic report to attach when asking for help
+- includes a searchable Help workspace, keyboard-friendly contextual tooltips,
+  recovery shortcuts, and an optional guided tour that can be replayed anytime
 - saves weekday-aware start and maintenance schedules, plus one-time events;
   ordered maintenance runs announce, flush saves, optionally back up, and stop
   safely, with previews and result history

@@ -98,6 +98,16 @@ client mod.
       rendering at one thread.
 - [ ] Check reachability and show map health before calling it available.
 
+## Focused enhancement: in-app guidance
+
+**Status: Complete (initial slice)**
+
+- [x] Add a central searchable Help workspace with task-oriented links.
+- [x] Add an opt-in walkthrough that can be replayed without changing server state.
+- [x] Add keyboard- and pointer-accessible tooltips for technical concepts.
+- [x] Include local recovery commands and a direct path to diagnostics.
+- [ ] Expand contextual help as the Activity and Files workspaces are built.
+
 ## Milestone 1: server workspace navigation
 
 **Status: Complete**

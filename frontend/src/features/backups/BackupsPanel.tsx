@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, type BackupPolicy, type BackupRecord, type RestorePreview, type RestoreResult } from "../../api/client";
 import { Button } from "../../components/Button";
+import { Tooltip } from "../../components/Tooltip";
 import { formatBytes } from "../../lib/format";
 
 function formatWhen(value: string): string {
@@ -137,7 +138,7 @@ export function BackupsPanel({ profileId, running }: { profileId: string; runnin
       </table></div>}
     </div>
     <div className="backup-policy">
-      <h3>Retention</h3>
+      <div className="heading-with-help"><h3>Retention</h3><Tooltip label="How backup retention works">Limits are checked after a successful backup. Blockstead always preserves the newest completed backup, even when a limit would otherwise remove it.</Tooltip></div>
       <p>Older completed backups are removed by these rules after each new backup. The newest completed backup is always kept. Leave a rule blank for no limit.</p>
       {draft && <form className="backup-policy__form" onSubmit={event => {
         event.preventDefault();

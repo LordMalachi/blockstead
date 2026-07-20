@@ -3,6 +3,8 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { api, getCsrf, setOnAuthExpired } from "./api/client";
 import { AuthPage } from "./features/auth/AuthPage";
 import { ConsolePage } from "./features/console/ConsolePage";
+import { HelpPage } from "./features/help/HelpPage";
+import { WalkthroughProvider } from "./features/help/Walkthrough";
 import { OverviewPage } from "./features/servers/OverviewPage";
 import { ServerLayout } from "./features/servers/ServerLayout";
 import { BackupsPage, ModsPage, PlayersPage, SchedulePage, SettingsPage } from "./features/servers/ServerPages";
@@ -22,7 +24,7 @@ export default function App() {
   }, []);
   if (view === "loading") return <main className="loading"><p>Opening Blockstead…</p></main>;
   if (view === "setup" || view === "login") return <AuthPage setup={view === "setup"} onSuccess={() => setView("dashboard")} />;
-  return <Routes>
+  return <WalkthroughProvider><Routes>
     <Route element={<AppShell onLogout={() => setView("login")} />}>
       <Route index element={<Navigate to="/servers" replace />} />
       <Route path="servers" element={<ServersPage />} />
@@ -37,7 +39,8 @@ export default function App() {
         <Route path="settings" element={<SettingsPage />} />
       </Route>
       <Route path="system" element={<SystemPage />} />
+      <Route path="help" element={<HelpPage />} />
       <Route path="*" element={<Navigate to="/servers" replace />} />
     </Route>
-  </Routes>;
+  </Routes></WalkthroughProvider>;
 }

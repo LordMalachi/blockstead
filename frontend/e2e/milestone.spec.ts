@@ -59,6 +59,16 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "System health" })).toBeVisible();
   await expect(page.getByText("Host CPU")).toBeVisible();
 
+  await page.getByRole("link", { name: "Help" }).click();
+  await expect(page.getByRole("heading", { name: "How can we help?" })).toBeVisible();
+  await page.getByRole("searchbox", { name: "Search help" }).fill("backup");
+  await expect(page.getByRole("heading", { name: "Protect and restore a world" })).toBeVisible();
+  await page.getByRole("button", { name: "Start guided tour" }).click();
+  await expect(page.getByRole("dialog", { name: "A quick tour of Blockstead" })).toBeVisible();
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByRole("heading", { name: "Servers is your home base" })).toBeVisible();
+  await page.getByRole("button", { name: "Exit tour" }).click();
+
   // Lifecycle stays one interaction away from every server page.
   await page.getByRole("link", { name: "Overview" }).click();
   const pidTile = page.getByText("Process ID").locator("..");

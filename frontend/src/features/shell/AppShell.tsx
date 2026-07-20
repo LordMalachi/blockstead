@@ -11,6 +11,7 @@ import { scopeFor } from "../servers/scope";
 const workspaceNav = [
   { to: "/servers", label: "Servers", icon: "server", end: true },
   { to: "/system", label: "System", icon: "pulse", end: false },
+  { to: "/help", label: "Help", icon: "help", end: false },
 ];
 const serverNav = [
   { path: "overview", label: "Overview", icon: "grid" },
@@ -58,7 +59,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
       <aside className="sidebar">
         <nav aria-label="Main navigation">
           <p className="nav-heading">Workspace</p>
-          {workspaceNav.map(item => <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => isActive ? "active" : ""}><NavIcon name={item.icon} /><span>{item.label}</span></NavLink>)}
+          {workspaceNav.map(item => <NavLink key={item.to} to={item.to} end={item.end} data-walkthrough={item.label.toLowerCase()} className={({ isActive }) => isActive ? "active" : ""}><NavIcon name={item.icon} /><span>{item.label}</span></NavLink>)}
           <Soon label="Activity" icon="history" note="Later" />
           {profile && <>
             <p className="nav-heading nav-heading--server" title={profile.name}>{profile.name}</p>
@@ -66,7 +67,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
             {serverSoon.map(item => <Soon key={item.label} {...item} />)}
           </>}
         </nav>
-        <div className="privacy-card"><span className="privacy-card__icon" aria-hidden="true">◆</span><div><strong>Local by design</strong><small>Your server data stays on this machine.</small></div></div>
+        <div className="privacy-card" data-walkthrough="privacy"><span className="privacy-card__icon" aria-hidden="true">◆</span><div><strong>Local by design</strong><small>Your server data stays on this machine.</small></div></div>
       </aside>
       <main id="main">
         <Outlet />

@@ -12,6 +12,7 @@ const paths: Record<string, ReactNode> = {
   folder: <><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></>,
   history: <><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 4v4h4" /><path d="M12 8v4.5l3 1.5" /></>,
   pulse: <><path d="M3 12h4l2.5-7 5 14 2.5-7h4" /></>,
+  help: <><circle cx="12" cy="12" r="9" /><path d="M9.8 9a2.3 2.3 0 1 1 3.6 1.9c-.9.6-1.4 1-1.4 2.1" /><path d="M12 17h.01" /></>,
 };
 
 export function NavIcon({ name }: { name: string }) {
