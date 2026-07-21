@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,7 +40,8 @@ def test_backup_archives_world_directories_without_links(tmp_path: Path) -> None
     archive_path = tmp_path / "data" / "backups" / "profile-1" / result.file_name
     assert result.included_paths == ("world", "world_nether")
     assert result.excluded_links == 1
-    assert archive_path.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert archive_path.stat().st_mode & 0o777 == 0o600
     with tarfile.open(archive_path) as archive:
         names = archive.getnames()
     assert "world/level.dat" in names
@@ -56,7 +58,8 @@ def test_backup_writes_matching_manifest(tmp_path: Path) -> None:
 
     folder = tmp_path / "data" / "backups" / "profile-1"
     manifest_path = folder / result.manifest_name
-    assert manifest_path.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert manifest_path.stat().st_mode & 0o777 == 0o600
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["manifest_version"] == 1
     assert manifest["profile_id"] == "profile-1"

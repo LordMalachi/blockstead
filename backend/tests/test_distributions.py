@@ -112,6 +112,7 @@ def test_launch_arguments_forge_and_quilt(tmp_path: Path) -> None:
     forge = make_folder(
         tmp_path,
         "libraries/net/minecraftforge/forge/1.20.1-47.4.10/unix_args.txt",
+        "libraries/net/minecraftforge/forge/1.20.1-47.4.10/win_args.txt",
         "user_jvm_args.txt",
     )
     args = launch_arguments("forge", forge, "/java")

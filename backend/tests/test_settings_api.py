@@ -12,14 +12,13 @@ def editable_client(tmp_path: Path) -> tuple[TestClient, dict[str, str], str, Pa
     server.mkdir(parents=True)
     (server / "server.jar").write_bytes(b"fixture")
     (server / "eula.txt").write_text("eula=true\n", encoding="utf-8")
-    (server / "server.properties").write_text(
-        "# keep this comment\n"
-        "motd=Home server\n"
-        "max-players=20\n"
-        "white-list=true\n"
-        "enforce-whitelist=true\n"
-        "custom-key=preserved\n",
-        encoding="utf-8",
+    (server / "server.properties").write_bytes(
+        b"# keep this comment\n"
+        b"motd=Home server\n"
+        b"max-players=20\n"
+        b"white-list=true\n"
+        b"enforce-whitelist=true\n"
+        b"custom-key=preserved\n"
     )
     settings = Settings(
         data_dir=tmp_path / "data",

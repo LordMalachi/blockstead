@@ -16,9 +16,10 @@ from pathlib import Path
 import httpx
 from pydantic import BaseModel
 
+from . import __version__
 from .distributions import LaunchPlanError, launch_arguments
 
-USER_AGENT = "blockstead/0.1.0 (https://github.com/LordMalachi/blockstead)"
+USER_AGENT = f"blockstead/{__version__} (https://github.com/LordMalachi/blockstead)"
 MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 DIRECTORY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 

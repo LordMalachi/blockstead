@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -59,7 +60,7 @@ def test_guided_settings_preview_and_apply_preserve_source(tmp_path: Path) -> No
         "rcon.password=keep-secret\n"
     )
     properties = tmp_path / "server.properties"
-    properties.write_text(original, encoding="utf-8")
+    properties.write_bytes(original.encode("utf-8"))
     view = read_settings(tmp_path)
     assert view.revision is not None
 
@@ -90,7 +91,8 @@ def test_guided_settings_preview_and_apply_preserve_source(tmp_path: Path) -> No
     assert "rcon.password=keep-secret\n" in updated
     snapshot = tmp_path / "private-data" / "settings-snapshots" / "profile-1" / result.snapshot_name
     assert snapshot.read_text(encoding="utf-8") == original
-    assert snapshot.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert snapshot.stat().st_mode & 0o777 == 0o600
     assert result.revision != result.previous_revision
 
 

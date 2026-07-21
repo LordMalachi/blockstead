@@ -305,7 +305,10 @@ def test_atomic_json_replacements_fsync_the_file_and_directory(tmp_path: Path) -
     with patch("blockstead.updates.os.fsync", wraps=os.fsync) as fsync:
         write_state(tmp_path, State(requested_commit=NEW_COMMIT))
 
-    assert fsync.call_count == 2
+    # Every platform flushes the file. POSIX additionally flushes the parent
+    # directory to make the atomic rename durable; Windows cannot open a
+    # directory with os.open and therefore has no equivalent call here.
+    assert fsync.call_count == (2 if os.name == "posix" else 1)
 
 
 def test_unsupported_directory_fsync_does_not_turn_a_completed_write_into_failure(
@@ -784,4 +787,4 @@ def test_an_executable_helper_makes_self_update_possible(tmp_path: Path) -> None
     helper.write_text("#!/bin/sh\n", encoding="utf-8")
     helper.chmod(0o755)
 
-    assert update_capable(helper=helper) is True
+    assert update_capable(helper=helper) is (os.name == "posix")
