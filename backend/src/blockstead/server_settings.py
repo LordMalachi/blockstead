@@ -333,6 +333,25 @@ def _lines_with_endings(text: str) -> list[tuple[str, str]]:
     return lines
 
 
+def _uniform_newline(text: str) -> str | None:
+    """Return the source's newline when every terminated line agrees."""
+
+    endings = [ending for _, ending in _lines_with_endings(text) if ending]
+    if endings and all(ending == endings[0] for ending in endings):
+        return endings[0]
+    return None
+
+
+def _preserve_source_newlines(original: str, submitted: str) -> str:
+    """Undo browser/platform newline normalization for a uniform source file."""
+
+    newline = _uniform_newline(original)
+    if newline is None:
+        return submitted
+    normalized = submitted.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized if newline == "\n" else normalized.replace("\n", newline)
+
+
 def read_raw_settings(server_directory: Path) -> RawSettingsView:
     """The complete file for advanced editing, with secret values hidden."""
 
@@ -502,7 +521,9 @@ def _plan_raw_update(
             "server.properties changed after it was opened. Reload settings and review again."
         )
     problems: list[str] = []
-    restored = _restore_secrets(text, content, problems)
+    restored = _restore_secrets(
+        text, _preserve_source_newlines(text, content), problems
+    )
     if restored and not restored.endswith(("\n", "\r")):
         restored += "\r\n" if "\r\n" in text else "\n"
     _, more_problems = _validate_raw_text(restored)
@@ -708,7 +729,14 @@ def _write_snapshot(snapshot_root: Path, profile_id: str, raw: bytes) -> str:
     snapshot_name = f"{stamp}-{uuid4().hex[:8]}.properties"
     snapshot = snapshot_directory / snapshot_name
     with snapshot.open("xb") as handle:
-        os.chmod(handle.fileno(), 0o600)
+        # Keep the path-swap-resistant descriptor operation on POSIX. Windows
+        # exposes chmod(path) but not fchmod(fd), and its mode bits cannot
+        # express Unix ownership, so use the path only on that platform.
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is not None:
+            fchmod(handle.fileno(), 0o600)
+        else:
+            snapshot.chmod(0o600)
         handle.write(raw)
         handle.flush()
         os.fsync(handle.fileno())

@@ -247,17 +247,19 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
             os.fsync(handle.fileno())
         os.chmod(handle.name, 0o600)
         os.replace(handle.name, path)
-        try:
-            directory_fd = os.open(path.parent, os.O_RDONLY)
+        if os.name == "posix":
             try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except OSError:
-            # Directory fsync makes rename ordering durable on Linux. Some
-            # supported development platforms/filesystems do not permit it;
-            # the successfully replaced file remains valid there.
-            log.debug("Directory fsync is unavailable for %s", path.parent)
+                directory_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except OSError:
+                # Directory fsync makes rename ordering durable on Linux. Some
+                # POSIX filesystems do not permit it; the successfully replaced
+                # file remains valid there. Windows cannot open directories this
+                # way, so it deliberately keeps the file-fsync guarantee only.
+                log.debug("Directory fsync is unavailable for %s", path.parent)
     except OSError:
         Path(handle.name).unlink(missing_ok=True)
         raise
@@ -310,7 +312,11 @@ def write_state(data_dir: Path, state: State) -> None:
 def update_capable(*, helper: Path | None = None) -> bool:
     """Can this installation actually install an update on its own?"""
     target = helper if helper is not None else UPDATE_HELPER
-    return target.is_file() and os.access(target, os.X_OK)
+    # The privileged helper is a POSIX shell program installed alongside
+    # systemd. Windows treats X_OK as an existence check and chmod does not
+    # provide POSIX executable bits, so it must never advertise native update
+    # capability merely because a file happens to exist at this path.
+    return os.name == "posix" and target.is_file() and os.access(target, os.X_OK)
 
 
 def _required_manifest_moment(value: object, field: str) -> datetime:

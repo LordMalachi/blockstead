@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.0 - 2026-07-20
+
 - Keep Blockstead current from the newest passing `main` build. Required CI
   jobs automatically advance a stable `update-channel` release and publish a
   small `latest.json` manifest plus an approved `blockstead-linux.zip`, so no

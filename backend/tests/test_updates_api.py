@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from blockstead import __version__
 from blockstead.app import create_app
 from blockstead.config import Settings
 from blockstead.models import BackupRecord
@@ -117,7 +118,7 @@ def test_starting_up_does_not_reach_the_network(tmp_path: Path) -> None:
 def test_the_status_shows_what_is_installed(client: TestClient, auth: dict[str, str]) -> None:
     body = client.get("/api/v1/updates/status").json()
 
-    assert body["build"]["version"] == "0.1.0"
+    assert body["build"]["version"] == __version__
     assert body["decision"] == "current"
     assert body["supported"] is False
     assert body["installing"] is False

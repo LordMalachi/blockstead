@@ -12,7 +12,9 @@ SECRET_FILE = (
 
 
 def write_properties(server: Path, content: str = SECRET_FILE) -> None:
-    (server / "server.properties").write_text(content, encoding="utf-8")
+    # Keep these fixtures byte-for-byte stable on Windows; CRLF behavior is
+    # covered separately below instead of depending on host text translation.
+    (server / "server.properties").write_bytes(content.encode("utf-8"))
 
 
 def test_raw_view_hides_secret_values(tmp_path: Path) -> None:
@@ -198,6 +200,46 @@ def test_raw_editor_round_trips_a_real_vanilla_file(tmp_path: Path) -> None:
         assert response.status_code == 200
         written = (server / "server.properties").read_text(encoding="utf-8")
         assert written == VANILLA_FILE.replace("pvp=true", "pvp=false")
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_raw_editor_preserves_crlf_after_browser_normalizes_to_lf(tmp_path: Path) -> None:
+    client, auth, profile_id, server = editable_client(tmp_path)
+    try:
+        crlf_file = SECRET_FILE.replace("\n", "\r\n")
+        write_properties(server, crlf_file)
+        view = client.get(f"/api/v1/profiles/{profile_id}/settings/raw", headers=auth).json()
+
+        # Textarea values are commonly normalized to LF even when the source
+        # file uses CRLF. That alone must not appear as a change.
+        normalized = view["content"].replace("\r\n", "\n")
+        unchanged = client.post(
+            f"/api/v1/profiles/{profile_id}/settings/raw/preview",
+            headers=auth,
+            json={"revision": view["revision"], "content": normalized},
+        ).json()
+        assert unchanged["valid"] is True
+        assert unchanged["no_changes"] is True
+
+        edited = normalized.replace("max-players=20\n", "")
+        preview = client.post(
+            f"/api/v1/profiles/{profile_id}/settings/raw/preview",
+            headers=auth,
+            json={"revision": view["revision"], "content": edited},
+        ).json()
+        assert preview["removed_known"] == ["max-players"]
+
+        response = client.put(
+            f"/api/v1/profiles/{profile_id}/settings/raw",
+            headers=auth,
+            json={"revision": view["revision"], "content": edited},
+        )
+        assert response.status_code == 200
+        written = (server / "server.properties").read_bytes()
+        assert b"max-players" not in written
+        assert b"\r\n" in written
+        assert b"\n" not in written.replace(b"\r\n", b"")
     finally:
         client.__exit__(None, None, None)
 

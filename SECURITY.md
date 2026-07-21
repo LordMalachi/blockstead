@@ -1,7 +1,8 @@
 # Security policy
 
-Blockstead is pre-release software and should not be exposed to the public
-internet. It binds to localhost by default.
+Blockstead 1.x is intended for local or trusted private-network use and should
+not be exposed directly to the public internet. It binds to localhost by
+default.
 
 Report suspected vulnerabilities privately to the repository owner. Do not put
 credentials, session cookies, server worlds, player data, or exploit details in

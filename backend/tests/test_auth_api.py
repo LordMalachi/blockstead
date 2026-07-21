@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from starlette.websockets import WebSocketDisconnect
 
+from blockstead import __version__
 from blockstead.cli import reset_administrator_password
 from blockstead.models import Administrator, LoginSession
 from blockstead.security import SESSION_COOKIE, digest
@@ -18,7 +19,7 @@ def test_health_reveals_no_server_details(client: TestClient) -> None:
     response = client.get("/api/v1/health")
     assert response.json() == {
         "status": "ok",
-        "version": "0.1.0",
+        "version": __version__,
         "commit": None,
         "short_commit": None,
     }

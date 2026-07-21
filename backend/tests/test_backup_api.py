@@ -1,3 +1,4 @@
+import os
 import shutil
 import tarfile
 import time
@@ -103,7 +104,8 @@ def test_manual_backup_creates_private_archive_and_history(
         / profile_id
         / body["file_name"]
     )
-    assert archive_path.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert archive_path.stat().st_mode & 0o777 == 0o600
     with tarfile.open(archive_path) as archive:
         assert "world" in archive.getnames()
 
