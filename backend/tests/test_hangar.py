@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -137,11 +139,26 @@ async def test_plan_prefers_release_and_verifies(client: httpx.AsyncClient) -> N
     assert planned[0].file_name == "Essentials-2.21.0.jar"
     assert planned[0].checksum_algorithm == "sha256"
     assert planned[0].checksum == "a" * 64
+    assert planned[0].required_plugins == ["Vault"]
 
 
 async def test_plan_refuses_external_files(client: httpx.AsyncClient) -> None:
     with pytest.raises(HangarError, match="hosted outside Hangar"):
         await plan_install(client, "paper", "1.21.1", "EssentialsX/Essentials", "2.22.0-beta")
+
+
+async def test_plan_refuses_a_file_without_a_published_checksum() -> None:
+    records = json.loads(json.dumps(VERSIONS_RESULT))
+    records["result"][0]["downloads"]["PAPER"]["fileInfo"].pop("sha256Hash")
+
+    def missing_hash(request: httpx.Request) -> httpx.Response:
+        if str(request.url).split("?")[0].endswith("/versions"):
+            return httpx.Response(200, json=records)
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(missing_hash))
+    with pytest.raises(HangarError, match="checksum"):
+        await plan_install(client, "paper", "1.21.1", "EssentialsX/Essentials")
 
 
 async def test_plan_refuses_unknown_version(client: httpx.AsyncClient) -> None:

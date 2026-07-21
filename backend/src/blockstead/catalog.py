@@ -5,7 +5,7 @@ these models so the dashboard can search, list versions, and plan
 installs the same way regardless of where a project is hosted.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CatalogError(ValueError):
@@ -42,7 +42,7 @@ class ProjectVersion(BaseModel):
     game_versions: list[str]
     loaders: list[str]
     external_url: str | None = None
-    required_plugins: list[str] = []
+    required_plugins: list[str] = Field(default_factory=list)
 
 
 class PlannedFile(BaseModel):
@@ -54,3 +54,6 @@ class PlannedFile(BaseModel):
     checksum_algorithm: str | None
     checksum: str | None
     required_by: str | None
+    #: Paper plugin dependencies are named, rather than catalog-addressable IDs.
+    #: The API checks that they are already present before installing the jar.
+    required_plugins: list[str] = []

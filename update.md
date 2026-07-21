@@ -1,6 +1,6 @@
 # Blockstead upgrade plan and progress
 
-Last updated: 2026-07-19
+Last updated: 2026-07-21
 
 This document explains the next Blockstead UI and product upgrades and tracks
 their implementation. The full product specification lives in
@@ -43,6 +43,20 @@ remain available without dominating normal server care.
 | 6. Activity and notifications | Next | Human-readable audit history and important operational alerts |
 | 7. Safe file workspace | Planned | Restricted editing, uploads, downloads, archives, and recovery protection |
 | 8. Player and mobile improvements | Planned | Online-player insights, quicker actions, and installable mobile-friendly access |
+
+## Release status
+
+**Blockstead 1.0.0 was released on 2026-07-20.** The release establishes the
+owner-focused server-management baseline: guided profile creation and
+management, safe backups and restores, settings editing with recovery, health
+and scheduling workspaces, extensions and modpacks, account recovery,
+diagnostics, in-app help, and Linux Mint installation and upkeep. See
+[CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+
+The current work sequence remains unchanged: Milestone 6 (Activity and
+notifications) is next, followed by the safe file workspace and player/mobile
+improvements. The two remaining shared-map refinements are tracked separately
+below.
 
 ## Current baseline
 
@@ -372,6 +386,17 @@ Before marking any milestone complete:
 - [ ] The progress summary and progress log below are updated.
 
 ## Progress log
+
+- **2026-07-20 — Blockstead 1.0.0 released.** Prepared the first stable
+  release after the complete visual foundation, server workspace, Backup
+  Center, guided settings editor, owner-focused overview, and automation
+  milestones. The release also adds automatic updates from the newest passing
+  `main` build, extension catalogs and safe extension updates, persistent
+  backup destinations, authentication recovery, downloadable diagnostics and
+  logs, a searchable Help workspace with an optional tour, and squaremap's
+  configured browser address. The detailed owner-facing release record lives
+  in [CHANGELOG.md](CHANGELOG.md). Follow-up work starts with Milestone 6;
+  Activity and notification preferences are not part of 1.0.0.
 
 - **2026-07-19 — Automation upgrade complete.** Replaced the single daily
   schedule with weekday-aware recurring plans, Weekdays/Every night/Weekend

@@ -169,6 +169,8 @@ def _parse_mods_toml(raw: bytes, loader: str, found: _Metadata) -> None:
     mods = data.get("mods")
     first = mods[0] if isinstance(mods, list) and mods and isinstance(mods[0], dict) else {}
     found.loaders.append(loader)
+    if data.get("clientSideOnly") is True:
+        found.fill("environment", "client")
     found.fill("identifier", _clean(first.get("modId")))
     found.fill("display_name", _clean(first.get("displayName")))
     found.fill("version", _clean(first.get("version")))
@@ -209,6 +211,23 @@ def _parse_plugin_yml(raw: bytes, found: _Metadata) -> None:
     depend = data.get("depend")
     if isinstance(depend, list) and not found.dependencies:
         found.dependencies = sorted(str(item)[:100] for item in depend if isinstance(item, str))
+    # Paper's modern paper-plugin.yml puts dependencies in bootstrap and
+    # server sections rather than Bukkit's legacy top-level `depend` list.
+    nested = data.get("dependencies")
+    required: list[str] = []
+    if isinstance(nested, dict):
+        for phase in ("bootstrap", "server"):
+            records = nested.get(phase)
+            if not isinstance(records, dict):
+                continue
+            required.extend(
+                name[:100]
+                for name, options in records.items()
+                if isinstance(name, str)
+                and (not isinstance(options, dict) or options.get("required", True) is not False)
+            )
+    if required and not found.dependencies:
+        found.dependencies = sorted(set(required))
 
 
 def _kind_of(loaders: list[str]) -> Kind:

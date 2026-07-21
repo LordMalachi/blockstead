@@ -54,7 +54,8 @@ Blockstead manages the process around them.
   the server is safely stopped. A one-click vanilla switch parks every
   extension without deleting anything, ready for the next game night
 - checks installed plugins and mods for newer releases listed for that setup and updates
-  a file in place once the verified download succeeds
+  the changed file with any newly required Modrinth dependencies once the full
+  verified set is ready
 - creates private, verified manual and scheduled world backups, keeps a clear
   per-server history, lets you save a portable copy when you need one, and can
   mirror successful archives to approved folders on another drive

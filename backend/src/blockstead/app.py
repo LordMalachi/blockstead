@@ -44,7 +44,7 @@ from .backups import (
     perform_restore,
     plan_restore,
 )
-from .catalog import CatalogError
+from .catalog import CatalogError, PlannedFile
 from .command_catalog import GuidedCommandRequest, catalog_payload, render_guided_command
 from .config import Settings
 from .curseforge import (
@@ -1797,6 +1797,109 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, "This server distribution does not load plugins or mods.")
         return profile, directory / info.extension_directory
 
+    def require_published_checksums(planned: list[PlannedFile]) -> None:
+        """Catalog installs must have a publisher digest, not merely HTTPS."""
+        missing = [
+            item.file_name for item in planned if not item.checksum_algorithm or not item.checksum
+        ]
+        if missing:
+            raise HTTPException(
+                409,
+                "Blockstead will not automatically install files without a published "
+                f"checksum: {', '.join(missing)}.",
+            )
+
+    async def stage_extension_install(
+        extension_dir: Path,
+        planned: list[PlannedFile],
+        *,
+        replace_names: frozenset[str] = frozenset(),
+    ) -> tuple[list[dict[str, object]], list[str]]:
+        """Download a catalog plan outside the live loadout, then promote it.
+
+        A failed dependency download used to leave the preceding jars live. A
+        staging directory guarantees the loadout is untouched until every new
+        file has downloaded and passed its published checksum.
+        """
+        require_published_checksums(planned)
+        names = [item.file_name for item in planned]
+        if len(names) != len(set(names)):
+            raise HTTPException(409, "The catalog returned duplicate extension file names.")
+        extension_dir.mkdir(mode=0o755, exist_ok=True)
+        staging = extension_dir / f".blockstead-install-{secrets.token_hex(8)}"
+        staging.mkdir(mode=0o700)
+        staged: list[tuple[PlannedFile, str]] = []
+        skipped: list[str] = []
+        try:
+            for planned_file in planned:
+                target = extension_dir / planned_file.file_name
+                if target.exists() and planned_file.file_name not in replace_names:
+                    skipped.append(planned_file.file_name)
+                    continue
+                try:
+                    sha256 = await download_verified_file(
+                        http_client,
+                        planned_file.url,
+                        staging,
+                        planned_file.file_name,
+                        planned_file.checksum_algorithm,
+                        planned_file.checksum,
+                    )
+                except ProvisionError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+                staged.append((planned_file, sha256))
+
+            # Recheck immediately before moving anything into the live folder.
+            # The server is stopped, but a second browser request can still race
+            # this one; never overwrite a separately installed extension.
+            for planned_file, _ in staged:
+                target = extension_dir / planned_file.file_name
+                if target.exists() and planned_file.file_name not in replace_names:
+                    raise HTTPException(
+                        409,
+                        f"A file named {planned_file.file_name} was installed while this "
+                        "catalog download was in progress.",
+                    )
+            for planned_file, _ in staged:
+                (staging / planned_file.file_name).replace(
+                    extension_dir / planned_file.file_name
+                )
+        except OSError as exc:
+            raise HTTPException(
+                409, "Blockstead could not place the verified extension files."
+            ) from exc
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        return (
+            [
+                {
+                    "file_name": item.file_name,
+                    "version_number": item.version_number,
+                    "required_by": item.required_by,
+                    "sha256": sha256,
+                }
+                for item, sha256 in staged
+            ],
+            skipped,
+        )
+
+    def missing_paper_dependencies(
+        directory: Path, profile: Profile, planned: list[PlannedFile]
+    ) -> list[str]:
+        """Paper names dependencies, but Hangar cannot safely map them to jars."""
+        installed = {
+            entry.identifier.casefold()
+            for entry in read_extensions(directory, profile.distribution).entries
+            if entry.identifier
+        }
+        required = {
+            name
+            for item in planned
+            for name in item.required_plugins
+            if name.casefold() not in installed
+        }
+        return sorted(required, key=str.casefold)
+
     def require_server_stopped() -> None:
         if manager.state.value not in {"STOPPED", "CRASHED"}:
             raise HTTPException(409, "Stop the server before changing mods or configuration.")
@@ -1993,32 +2096,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
         except CatalogError as exc:
             raise HTTPException(400, str(exc)) from exc
-        extension_dir.mkdir(mode=0o755, exist_ok=True)
-        installed: list[dict[str, object]] = []
-        skipped: list[str] = []
-        try:
-            for planned_file in planned:
-                if (extension_dir / planned_file.file_name).exists():
-                    skipped.append(planned_file.file_name)
-                    continue
-                sha256 = await download_verified_file(
-                    http_client,
-                    planned_file.url,
-                    extension_dir,
-                    planned_file.file_name,
-                    planned_file.checksum_algorithm,
-                    planned_file.checksum,
+        if payload.source == "hangar":
+            missing = missing_paper_dependencies(extension_dir.parent, profile, planned)
+            if missing:
+                raise HTTPException(
+                    409,
+                    "This Paper plugin requires installed plugins that Blockstead cannot "
+                    f"safely resolve from Hangar: {', '.join(missing)}.",
                 )
-                installed.append(
-                    {
-                        "file_name": planned_file.file_name,
-                        "version_number": planned_file.version_number,
-                        "required_by": planned_file.required_by,
-                        "sha256": sha256,
-                    }
-                )
-        except ProvisionError as exc:
-            raise HTTPException(400, str(exc)) from exc
+        installed, skipped = await stage_extension_install(extension_dir, planned)
         db.add(
             AuditEvent(
                 admin_id=admin.id,
@@ -2132,16 +2218,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if planned.file_name != entry.file_name and (extension_dir / planned.file_name).exists():
             raise HTTPException(409, "A file with the new version's name already exists.")
         try:
-            sha256 = await download_verified_file(
+            update_plan = await plan_install(
                 http_client,
-                planned.url,
-                extension_dir,
-                planned.file_name,
-                planned.checksum_algorithm,
-                planned.checksum,
+                profile.distribution,
+                profile.minecraft_version,
+                planned.project_id,
+                planned.version_id,
             )
-        except ProvisionError as exc:
+        except CatalogError as exc:
             raise HTTPException(400, str(exc)) from exc
+        if (
+            not update_plan
+            or update_plan[0].project_id != planned.project_id
+            or update_plan[0].file_name != planned.file_name
+        ):
+            raise HTTPException(409, "Modrinth returned an unusable extension update plan.")
+        installed, _ = await stage_extension_install(
+            extension_dir,
+            update_plan,
+            replace_names=frozenset({entry.file_name}),
+        )
+        sha256 = next(
+            (
+                str(item["sha256"])
+                for item in installed
+                if item["file_name"] == planned.file_name
+            ),
+            None,
+        )
+        if sha256 is None:
+            raise HTTPException(409, "The updated extension file was not installed.")
         if planned.file_name != entry.file_name:
             try:
                 remove_extension(extension_dir, entry.file_name)
@@ -2162,6 +2268,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "file_name": planned.file_name,
             "replaced": entry.file_name,
             "version_number": planned.version_number,
+            "dependencies_installed": [
+                item["file_name"] for item in installed if item["file_name"] != planned.file_name
+            ],
             "restart_required": True,
         }
 

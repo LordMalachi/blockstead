@@ -184,6 +184,49 @@ async def test_wrong_loader_version_is_refused(client: httpx.AsyncClient) -> Non
         await plan_install(client, "paper", "1.21.1", "proj-tech", "ver-tech")
 
 
+async def test_required_external_dependency_is_not_silently_dropped() -> None:
+    external = version_record(
+        "proj-tech",
+        "ver-tech",
+        "cool-tech-1.0.0.jar",
+        MOD_URL,
+        [{"file_name": "outside-library.jar", "dependency_type": "required"}],
+    )
+
+    def external_handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).split("?")[0] == f"{MODRINTH_API}/project/proj-tech/version":
+            return httpx.Response(200, json=[external])
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(external_handler))
+    with pytest.raises(ModrinthError, match="outside Modrinth"):
+        await plan_install(client, "fabric", "1.21.1", "proj-tech")
+
+
+async def test_pinned_dependency_must_match_the_server() -> None:
+    incompatible = version_record("proj-core", "wrong-core", "core.jar", DEP_URL)
+    root = version_record(
+        "proj-tech",
+        "ver-tech",
+        "cool-tech-1.0.0.jar",
+        MOD_URL,
+        [{"version_id": "wrong-core", "dependency_type": "required"}],
+    )
+    incompatible["loaders"] = ["forge"]
+
+    def incompatible_handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url).split("?")[0]
+        if url == f"{MODRINTH_API}/project/proj-tech/version":
+            return httpx.Response(200, json=[root])
+        if url == f"{MODRINTH_API}/version/wrong-core":
+            return httpx.Response(200, json=incompatible)
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(incompatible_handler))
+    with pytest.raises(ModrinthError, match="required dependency.*loader"):
+        await plan_install(client, "fabric", "1.21.1", "proj-tech")
+
+
 async def test_check_updates_distinguishes_current_from_stale() -> None:
     stale_hash = "b" * 128
     current_hash = JAR_SHA512

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Make catalog extension changes transactional: every file in a dependency
+  plan now downloads and checksum-verifies in staging before Blockstead changes
+  the live mod or plugin folder. Catalog files without a published checksum
+  are refused instead of being called verified.
+- Resolve a Modrinth update's required dependencies alongside the updated jar,
+  reject incompatible or externally hosted required dependencies with clear
+  guidance, and require named Paper prerequisites to be installed before a
+  Hangar plugin is added.
+- Recognize Forge and NeoForge client-only metadata plus modern
+  `paper-plugin.yml` required dependencies in the Extension Workshop.
+
 ## 1.0.0 - 2026-07-20
 
 - Keep Blockstead current from the newest passing `main` build. Required CI

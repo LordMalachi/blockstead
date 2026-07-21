@@ -33,6 +33,13 @@ CurseForge needs its own API key before that catalog can be searched. The
 workshop asks for it only when you choose that source, and says clearly if
 saving or searching the key does not work.
 
+Catalog installs are only offered when the publisher supplied a checksum, and
+Blockstead verifies every file before it reaches the live `mods` or `plugins`
+folder. If a project needs several catalog dependencies, they are all checked
+before any of them are made live. Paper plugins sometimes name prerequisites
+without a catalog address; Blockstead asks you to install those named plugins
+first instead of guessing which jar to fetch.
+
 ### Keep your loadout tidy
 
 **Manage** separates active files from files you have disabled. Each item shows
@@ -40,8 +47,9 @@ what Blockstead could recognize: version, file name, size, loader, and declared
 Minecraft version information when available.
 
 - **Check for updates** looks for a newer release listed for this setup for
-  recognized Modrinth files. The old jar stays put until the checksum-verified
-  replacement is ready.
+  recognized Modrinth files. Any required dependencies for the chosen update
+  are resolved and verified with it. The old jar stays put until the
+  checksum-verified replacement set is ready.
 - **Disable** parks a jar in Blockstead's managed disabled area. It is a great
   way to troubleshoot or run a plain-Minecraft session without losing your
   usual setup.

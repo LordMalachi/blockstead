@@ -196,6 +196,19 @@ async def test_plan_refuses_blocked_download(client: httpx.AsyncClient) -> None:
         await plan_install(client, KEY, "fabric", "1.21.1", "238222", "5002")
 
 
+async def test_plan_refuses_a_file_without_a_published_checksum() -> None:
+    records = {**FILES_RESULT, "data": [{**FILES_RESULT["data"][0], "hashes": []}]}
+
+    def missing_hash(request: httpx.Request) -> httpx.Response:
+        if str(request.url).split("?")[0] == f"{CURSEFORGE_API}/mods/238222/files":
+            return httpx.Response(200, json=records)
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(missing_hash))
+    with pytest.raises(CurseForgeError, match="checksum"):
+        await plan_install(client, KEY, "fabric", "1.21.1", "238222")
+
+
 async def test_hostile_project_ids_are_refused(client: httpx.AsyncClient) -> None:
     for hostile in ("../etc", "abc", "1; drop", ""):
         with pytest.raises(CurseForgeError):

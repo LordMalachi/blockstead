@@ -244,6 +244,16 @@ def test_update_check_and_apply(
         checksum="f" * 128,
         required_by=None,
     )
+    dependency = PlannedFile(
+        project_id="core",
+        version_id="core-3",
+        version_number="3.0",
+        file_name="new-core-3.0.jar",
+        url="https://cdn.example/core.jar",
+        checksum_algorithm="sha512",
+        checksum="e" * 128,
+        required_by="old-plugin-2.0.jar",
+    )
 
     async def fake_check(
         _client: httpx.AsyncClient,
@@ -263,11 +273,24 @@ def test_update_check_and_apply(
         checksum_algorithm: str | None,
         checksum: str | None,
     ) -> str:
-        assert url == "https://cdn.example/new.jar"
-        (directory / file_name).write_bytes(b"new bytes")
+        assert url in {"https://cdn.example/new.jar", "https://cdn.example/core.jar"}
+        (directory / file_name).write_bytes(url.encode())
         return "a" * 64
 
+    async def fake_plan(
+        _client: httpx.AsyncClient,
+        distribution: str,
+        minecraft_version: str | None,
+        project_id: str,
+        version_id: str | None = None,
+    ) -> list[PlannedFile]:
+        assert (distribution, minecraft_version, project_id, version_id) == (
+            "paper", "1.21.1", "proj", "ver-2"
+        )
+        return [planned, dependency]
+
     monkeypatch.setattr("blockstead.app.modrinth_check_updates", fake_check)
+    monkeypatch.setattr("blockstead.app.plan_install", fake_plan)
     monkeypatch.setattr("blockstead.app.download_verified_file", fake_download)
 
     check = client.get(f"/api/v1/profiles/{paper_profile}/extensions/updates", headers=headers)
@@ -295,6 +318,8 @@ def test_update_check_and_apply(
     assert applied.json()["file_name"] == "old-plugin-2.0.jar"
     assert applied.json()["replaced"] == "old-plugin-1.0.jar"
     assert (plugins / "old-plugin-2.0.jar").is_file()
+    assert applied.json()["dependencies_installed"] == ["new-core-3.0.jar"]
+    assert (plugins / "new-core-3.0.jar").is_file()
     assert not (plugins / "old-plugin-1.0.jar").exists()
 
     missing = client.post(
@@ -517,3 +542,55 @@ def test_install_downloads_planned_files(
         json={"project_id": "proj"},
     )
     assert again.json()["skipped"] == ["thing.jar"]
+
+
+def test_failed_dependency_download_does_not_change_the_live_loadout(
+    api: tuple[TestClient, Path],
+    headers: dict[str, str],
+    paper_profile: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, root = api
+    planned = [
+        PlannedFile(
+            project_id="project", version_id="one", version_number="1", file_name="one.jar",
+            url="https://cdn.example/one.jar", checksum_algorithm="sha512", checksum="a" * 128,
+            required_by=None,
+        ),
+        PlannedFile(
+            project_id="dependency", version_id="two", version_number="1", file_name="two.jar",
+            url="https://cdn.example/two.jar", checksum_algorithm="sha512", checksum="b" * 128,
+            required_by="one.jar",
+        ),
+    ]
+
+    async def fake_plan(*_args: object, **_kwargs: object) -> list[PlannedFile]:
+        return planned
+
+    async def fake_download(
+        _client: httpx.AsyncClient,
+        url: str,
+        directory: Path,
+        file_name: str,
+        _algorithm: str | None,
+        _checksum: str | None,
+    ) -> str:
+        if url.endswith("two.jar"):
+            from blockstead.provisioning import ProvisionError
+
+            raise ProvisionError("second download failed")
+        (directory / file_name).write_bytes(b"first")
+        return "c" * 64
+
+    monkeypatch.setattr("blockstead.app.plan_install", fake_plan)
+    monkeypatch.setattr("blockstead.app.download_verified_file", fake_download)
+    response = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/install",
+        headers=headers,
+        json={"project_id": "project"},
+    )
+
+    assert response.status_code == 400
+    plugins = root / "paper-server" / "plugins"
+    assert not (plugins / "one.jar").exists()
+    assert not (plugins / "two.jar").exists()

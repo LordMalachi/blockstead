@@ -231,6 +231,11 @@ def _planned_from(version: dict[str, object], required_by: str | None) -> Planne
         if isinstance(value, str):
             algorithm, checksum = candidate, value
             break
+    if algorithm is None or checksum is None:
+        raise ModrinthError(
+            "A Modrinth file has no supported published checksum, so Blockstead "
+            "will not install it automatically."
+        )
     project_id = version.get("project_id")
     version_id = version.get("id")
     if not isinstance(project_id, str) or not isinstance(version_id, str):
@@ -246,6 +251,29 @@ def _planned_from(version: dict[str, object], required_by: str | None) -> Planne
         checksum=checksum,
         required_by=required_by,
     )
+
+
+def _validate_version_compatibility(
+    version: dict[str, object], loaders: list[str], minecraft_version: str | None
+) -> None:
+    """Refuse a pinned dependency that cannot run on this server.
+
+    A dependency can point at an exact Modrinth version, which bypasses the
+    filtered project-version query used for ordinary dependencies. Validate
+    that record just as strictly as the root selection.
+    """
+    version_loaders = version.get("loaders")
+    if isinstance(version_loaders, list) and not (set(version_loaders) & set(loaders)):
+        raise ModrinthError("A required dependency does not support this server's loader.")
+    game_versions = version.get("game_versions")
+    if (
+        minecraft_version
+        and isinstance(game_versions, list)
+        and minecraft_version not in game_versions
+    ):
+        raise ModrinthError(
+            "A required dependency does not support this Minecraft version."
+        )
 
 
 MAX_UPDATE_HASHES = 200
@@ -335,16 +363,12 @@ async def plan_install(
     loaders = _loaders_for(distribution)
     if version_id:
         root = await _version_by_id(client, version_id)
-        root_loaders = root.get("loaders")
-        if isinstance(root_loaders, list) and not (set(root_loaders) & set(loaders)):
-            raise ModrinthError("That Modrinth version does not support this server's loader.")
-        game_versions = root.get("game_versions")
-        if (
-            minecraft_version
-            and isinstance(game_versions, list)
-            and minecraft_version not in game_versions
-        ):
-            raise ModrinthError("That Modrinth version does not support this Minecraft version.")
+        try:
+            _validate_version_compatibility(root, loaders, minecraft_version)
+        except ModrinthError as exc:
+            raise ModrinthError(
+                str(exc).replace("A required dependency", "That Modrinth version")
+            ) from exc
     else:
         root = await _best_version(client, project_id, loaders, minecraft_version)
     planned: list[PlannedFile] = [_planned_from(root, None)]
@@ -362,6 +386,7 @@ async def plan_install(
             dep_project_id = dependency.get("project_id")
             if isinstance(dep_version_id, str):
                 dep_version = await _version_by_id(client, dep_version_id)
+                _validate_version_compatibility(dep_version, loaders, minecraft_version)
             elif isinstance(dep_project_id, str):
                 if dep_project_id in seen_projects:
                     continue
@@ -369,7 +394,14 @@ async def plan_install(
                     client, dep_project_id, loaders, minecraft_version
                 )
             else:
-                continue
+                file_name = dependency.get("file_name")
+                detail = (
+                    f" ({file_name})" if isinstance(file_name, str) and file_name else ""
+                )
+                raise ModrinthError(
+                    "A required dependency is hosted outside Modrinth" + detail +
+                    "; install it manually before trying this project."
+                )
             entry = _planned_from(dep_version, parent_name)
             if entry.project_id in seen_projects:
                 continue

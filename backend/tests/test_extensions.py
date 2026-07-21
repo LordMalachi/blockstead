@@ -29,12 +29,37 @@ modId = "somecore"
 versionRange = "[2.0,)"
 """
 
+FORGE_CLIENT_ONLY_TOML = """
+clientSideOnly = true
+
+[[mods]]
+modId = "client-map"
+displayName = "Client Map"
+version = "1.0.0"
+"""
+
 PLUGIN_YML = """
 name: Essentials
 version: 5.7.0
 api-version: '1.21'
 main: com.example.Essentials
 depend: [Vault]
+"""
+
+PAPER_PLUGIN_YML = """
+name: ModernPlugin
+version: 1.0.0
+api-version: '1.21'
+dependencies:
+  bootstrap:
+    RegistryPlugin:
+      required: true
+  server:
+    OptionalPlugin:
+      required: false
+    RequiredPlugin:
+      load: AFTER
+      required: true
 """
 
 
@@ -96,6 +121,20 @@ def test_wrong_loader_and_client_only_warnings(tmp_path: Path) -> None:
     write_jar(fabric / "mods" / "shaders.jar", {"fabric.mod.json": json.dumps(CLIENT_MOD)})
     view = read_extensions(fabric, "fabric")
     assert any(warning.code == "client-only" for warning in view.warnings)
+
+    forge = make_server(tmp_path / "forge", "mods")
+    write_jar(forge / "mods" / "client-map.jar", {"META-INF/mods.toml": FORGE_CLIENT_ONLY_TOML})
+    view = read_extensions(forge, "forge")
+    assert any(warning.code == "client-only" for warning in view.warnings)
+
+
+def test_modern_paper_plugin_dependencies_are_inventoried(tmp_path: Path) -> None:
+    paper = make_server(tmp_path, "plugins")
+    write_jar(paper / "plugins" / "modern.jar", {"paper-plugin.yml": PAPER_PLUGIN_YML})
+
+    plugin = read_extensions(paper, "paper").entries[0]
+
+    assert plugin.dependencies == ["RegistryPlugin", "RequiredPlugin"]
 
 
 def test_duplicate_and_unreadable_warnings(tmp_path: Path) -> None:

@@ -324,6 +324,11 @@ def _planned_from(
             if isinstance(value, str):
                 sha1 = value
                 break
+    if sha1 is None:
+        raise CurseForgeError(
+            "CurseForge did not publish a SHA-1 checksum for that file, so "
+            "Blockstead will not install it automatically."
+        )
     file_id = record.get("id")
     display = record.get("displayName")
     return PlannedFile(
@@ -332,7 +337,7 @@ def _planned_from(
         version_number=display[:100] if isinstance(display, str) else None,
         file_name=file_name,
         url=download_url,
-        checksum_algorithm="sha1" if sha1 else None,
+        checksum_algorithm="sha1",
         checksum=sha1,
         required_by=required_by,
     )

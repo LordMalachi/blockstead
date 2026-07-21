@@ -265,6 +265,20 @@ async def plan_install(
     if not isinstance(file_name, str) or not JAR_NAME_PATTERN.match(file_name):
         raise HangarError("A Hangar file had a name Blockstead does not accept.")
     sha256 = file_info.get("sha256Hash") if isinstance(file_info, dict) else None
+    if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+        raise HangarError(
+            "Hangar did not publish a SHA-256 checksum for that file, so "
+            "Blockstead will not install it automatically."
+        )
+    plugin_deps = record.get("pluginDependencies")
+    raw_plugins = plugin_deps.get("PAPER") if isinstance(plugin_deps, dict) else None
+    required_plugins = sorted(
+        str(dependency["name"])[:100]
+        for dependency in (raw_plugins if isinstance(raw_plugins, list) else [])
+        if isinstance(dependency, dict)
+        and dependency.get("required")
+        and isinstance(dependency.get("name"), str)
+    )
     name = record.get("name")
     return [
         PlannedFile(
@@ -273,8 +287,9 @@ async def plan_install(
             version_number=name if isinstance(name, str) else None,
             file_name=file_name,
             url=url,
-            checksum_algorithm="sha256" if isinstance(sha256, str) else None,
-            checksum=sha256 if isinstance(sha256, str) else None,
+            checksum_algorithm="sha256",
+            checksum=sha256,
             required_by=None,
+            required_plugins=required_plugins,
         )
     ]
