@@ -117,6 +117,16 @@ PY
   fail "updater never reported state $wanted"
 }
 
+wait_for_path() {
+  local wanted=$1 description=$2
+  local attempt
+  for attempt in {1..200}; do
+    [[ -e $wanted ]] && return 0
+    sleep 0.05
+  done
+  fail "$description"
+}
+
 rm -rf "$FIXTURE_ROOT" /var/lib/blockstead /var/lib/blockstead-update /var/log/blockstead-update
 mkdir -p "$FIXTURE_ROOT/archive/blockstead-$APPROVED_COMMIT/scripts"
 
@@ -385,7 +395,10 @@ write_request "$APPROVED_COMMIT"
 "$HELPER" >"$FIXTURE_ROOT/first-helper.log" 2>&1 &
 first_pid=$!
 wait_for_state installing
-[[ -e $FAKE_INSTALL_STARTED ]] || fail "installer did not reach its controlled wait"
+# The helper publishes `installing` immediately before it execs the installer.
+# A fast runner can observe that durable status in the tiny interval before the
+# fixture creates its marker, so wait for both independently bounded events.
+wait_for_path "$FAKE_INSTALL_STARTED" "installer did not reach its controlled wait"
 assert_status installing "$APPROVED_COMMIT"
 assert_exact_contents "$FAKE_ATTEMPT_RECORD" "$DEFAULT_ATTEMPT"
 
