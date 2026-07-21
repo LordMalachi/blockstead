@@ -270,6 +270,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     metrics_task: asyncio.Task[None] | None = None
     update_task: asyncio.Task[None] | None = None
+    update_wakeup = asyncio.Event()
+    update_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -285,15 +287,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 record.result = "Blockstead stopped before this backup completed."
                 record.completed_at = datetime.now(timezone.utc)  # noqa: UP017
             db.commit()
-        scheduler.begin()
         metrics_task = asyncio.create_task(metrics_loop())
         # A first-ever start has nothing to announce, so the build that is
         # already running is recorded quietly. Anything different arriving later
         # is a real update and is announced once the owner sees it.
         if updates.read_state(config.data_dir).acknowledged_commit is None:
             updates.acknowledge(config.data_dir, installed_build)
-        if update_checks_run_here():
+        update_state = updates.read_state(config.data_dir)
+        if update_state.resume_profile_id is not None:
+            # Resolve an interrupted or completed handoff before scheduled
+            # starts can claim the single managed process for another profile.
+            await resume_server_after_update()
+            update_state = updates.read_state(config.data_dir)
+        if update_checks_run_here() or update_state.resume_profile_id is not None:
             update_task = asyncio.create_task(update_loop())
+        scheduler.begin()
         log.info(
             "Blockstead %s started; dashboard bound to %s:%s",
             installed_build.label,
@@ -321,9 +329,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.process_manager = manager
     app.state.diagnostics = diagnostics
     app.state.active_profile_id = None
+    app.state.update_handoff_active = False
+    app.state.update_waiting_for_critical_operation = False
     app.state.websocket_auth_recheck_seconds = 5.0
     # Profiles with a restore in flight; starting or backing up one is refused.
     restoring_profiles: set[str] = set()
+    # Long-running world mutations must finish before the service can hand an
+    # update to the root helper. Tokens make concurrent backups independently
+    # visible without holding the update lock for their full duration.
+    critical_update_operations: set[str] = set()
 
     def collect_metric_sample(profile: Profile, *, include_process: bool) -> MetricSample:
         memory = psutil.virtual_memory()
@@ -376,13 +390,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     Db = Annotated[Session, Depends(get_db)]
 
-    async def scheduled_start(profile: Profile) -> None:
-        arguments, cwd, label = launch_spec(profile, "normal")
+    async def start_profile(profile: Profile, mode: str = "normal") -> str:
+        """Start one profile after its caller has acquired update_lock."""
+        arguments, cwd, label = launch_spec(profile, mode)
         await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)
         app.state.active_profile_id = profile.id
+        return label
+
+    async def scheduled_start(profile: Profile) -> None:
+        async with update_lock:
+            if update_install_in_progress():
+                raise InvalidTransition(
+                    "Blockstead is being updated. The server can start when it finishes."
+                )
+            await start_profile(profile)
+
+    async def begin_critical_update_operation(kind: str) -> str:
+        async with update_lock:
+            if update_install_in_progress():
+                raise InvalidTransition(
+                    "Blockstead is being updated. Try this operation after it finishes."
+                )
+            token = f"{kind}:{secrets.token_hex(16)}"
+            critical_update_operations.add(token)
+            return token
+
+    def end_critical_update_operation(token: str) -> None:
+        critical_update_operations.discard(token)
+        update_wakeup.set()
 
     scheduler = Scheduler(
-        factory, manager, scheduled_start, config.data_dir, config.server_root
+        factory,
+        manager,
+        scheduled_start,
+        config.data_dir,
+        config.server_root,
+        begin_critical_operation=begin_critical_update_operation,
+        end_critical_operation=end_critical_update_operation,
     )
 
     # Blockstead follows a branch rather than tagged releases, so the commit the
@@ -403,9 +447,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return None
             return await scheduler.online_players(profile)
 
+    def helper_status() -> updates.HelperStatus | None:
+        return updates.read_helper_status(config.update_status_file)
+
+    def critical_update_operation_in_progress() -> bool:
+        if critical_update_operations or restoring_profiles:
+            return True
+        with factory() as db:
+            pending = db.scalar(
+                select(func.count())
+                .select_from(BackupRecord)
+                .where(BackupRecord.status == "in_progress")
+            )
+        return bool(pending)
+
+    def update_install_in_progress() -> bool:
+        return bool(app.state.update_handoff_active) or updates.install_in_progress(
+            config.data_dir,
+            config.update_status_file,
+            max_age=timedelta(minutes=config.update_status_max_age_minutes),
+            installed_commit=installed_build.commit,
+        )
+
     def update_status() -> dict[str, object]:
         state = updates.read_state(config.data_dir)
         latest = app.state.latest_commit
+        status = helper_status()
         return {
             "build": installed_build.payload(),
             "automatic": config.update_auto,
@@ -414,18 +481,159 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "latest": latest.payload() if latest else None,
             "checked_at": state.last_checked_at.isoformat() if state.last_checked_at else None,
             "error": state.last_error,
-            "installing": updates.pending_request(config.data_dir) is not None,
-            "last_result": updates.read_result(config.data_dir),
+            "installing": update_install_in_progress(),
+            "last_result": status.payload() if status else None,
             "announcement": updates.announcement(installed_build, state),
         }
 
-    async def check_for_update(*, install: bool = True) -> dict[str, object]:
+    def queue_update(
+        latest: updates.RemoteCommit,
+        state: updates.State,
+        *,
+        resume_profile_id: str | None = None,
+    ) -> updates.State:
+        """Persist all recovery context before making the helper request visible."""
+        requested_at = datetime.now(timezone.utc)  # noqa: UP017
+        requested_attempt = secrets.token_hex(16)
+        queued = replace(
+            state,
+            requested_commit=latest.commit,
+            requested_summary=latest.summary,
+            requested_at=requested_at,
+            requested_attempt=requested_attempt,
+            resume_profile_id=resume_profile_id,
+            resume_commit=latest.commit if resume_profile_id else None,
+        )
+        app.state.update_handoff_active = True
+        try:
+            updates.write_state(config.data_dir, queued)
+            updates.request_install(
+                config.data_dir,
+                latest.commit,
+                attempt=requested_attempt,
+                requested_at=requested_at,
+            )
+        except OSError:
+            # If making the request visible fails after an empty server was
+            # stopped, mark the attempt as never handed off. The monitor can
+            # then resume that server without waiting for a helper status that
+            # will never arrive.
+            try:
+                updates.write_state(
+                    config.data_dir,
+                    replace(queued, requested_at=None, requested_attempt=None),
+                )
+            except OSError:
+                log.exception("Could not persist update handoff recovery state")
+            raise
+        finally:
+            app.state.update_handoff_active = False
+            update_wakeup.set()
+        return queued
+
+    async def resume_server_after_update() -> bool:
+        """Resume an empty server stopped solely to let the helper update.
+
+        The helper starts Blockstead before it writes its final status, because
+        the installer first waits for this API's health endpoint. Consequently
+        this must run in the background and poll instead of blocking startup.
+        """
+        async with update_lock:
+            state = updates.read_state(config.data_dir)
+            if state.resume_profile_id is None or state.resume_commit is None:
+                return False
+            request_pending = updates.pending_request(config.data_dir) is not None
+            if request_pending:
+                return False
+            status = helper_status()
+            if state.requested_at is not None and not updates.status_completes_request(
+                state,
+                status,
+                installed_commit=installed_build.commit,
+                request_pending=request_pending,
+            ):
+                return False
+
+            profile_id = state.resume_profile_id
+            cleared = replace(
+                state,
+                requested_at=None,
+                requested_attempt=None,
+                resume_profile_id=None,
+                resume_commit=None,
+            )
+            snapshot = manager.snapshot()
+            if snapshot["state"] in {"RUNNING", "STARTING", "STOPPING", "DEGRADED"}:
+                running_profile_id = app.state.active_profile_id
+                detail = (
+                    None
+                    if running_profile_id == profile_id
+                    else "The server was not resumed because another profile is running."
+                )
+                updates.write_state(
+                    config.data_dir,
+                    replace(cleared, last_error=detail or state.last_error),
+                )
+                return detail is None
+
+            with factory() as db:
+                profile = db.get(Profile, profile_id)
+                if profile is None:
+                    updates.write_state(
+                        config.data_dir,
+                        replace(
+                            cleared,
+                            last_error=(
+                                "Blockstead finished updating, but the server profile "
+                                "that was running no longer exists."
+                            ),
+                        ),
+                    )
+                    return False
+                try:
+                    # update_lock is already held here; use the coordinated
+                    # primitive directly instead of recursively taking it.
+                    await start_profile(profile)
+                except Exception:
+                    log.exception("Could not resume profile %s after the update", profile_id)
+                    updates.write_state(
+                        config.data_dir,
+                        replace(
+                            cleared,
+                            last_error=(
+                                "Blockstead finished updating, but it could not restart "
+                                "the server automatically. Start it from the dashboard."
+                            ),
+                        ),
+                    )
+                    return False
+
+            updates.write_state(config.data_dir, cleared)
+            log.info("Resumed profile %s after the update helper finished.", profile_id)
+            return True
+
+    async def _check_for_update(*, install: bool = True) -> dict[str, object]:
         """Look at GitHub and, when the moment is polite, ask for the install."""
+        if update_install_in_progress():
+            # Do not replace a request or refetch the channel while the helper
+            # is already downloading/installing this (or another) commit.
+            app.state.update_decision = updates.Decision.INSTALL
+            return update_status()
+        if critical_update_operation_in_progress():
+            # Backups and restores mutate owner data for much longer than one
+            # event-loop turn. Their completion wakes the updater immediately.
+            app.state.update_waiting_for_critical_operation = True
+            return update_status()
+        app.state.update_waiting_for_critical_operation = False
+
         state = updates.read_state(config.data_dir)
         now = datetime.now(timezone.utc)  # noqa: UP017
         try:
             latest = await updates.fetch_latest(
-                http_client, config.update_repo, config.update_branch
+                http_client,
+                config.update_repo,
+                config.update_branch,
+                config.update_manifest_url,
             )
         except (httpx.HTTPError, ValueError) as exc:
             log.warning("Blockstead could not check for updates: %s", exc)
@@ -447,13 +655,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             state = replace(state, baseline_commit=latest.commit)
 
         snapshot = manager.snapshot()
-        running = snapshot["state"] in {"RUNNING", "STARTING", "DEGRADED"}
+        running = snapshot["state"] in {"RUNNING", "STARTING", "STOPPING", "DEGRADED"}
         decision = updates.decide(
             behind=updates.is_behind(installed_build, latest, baseline=state.baseline_commit),
             auto=config.update_auto,
             capable=updates.update_capable(),
             server_running=running,
             players_online=await players_online_now() if running else None,
+            failed=updates.failed_commit_suppressed(helper_status(), latest.commit, now=now),
         )
         state = replace(state, last_checked_at=now, last_error=None)
 
@@ -461,31 +670,109 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Nobody is playing, and the installer refuses to run while the
             # service still owns a Minecraft process, so close it down politely.
             log.info("Stopping the empty Minecraft server so Blockstead can update.")
-            if await manager.stop(timeout=60.0):
-                decision = updates.Decision.INSTALL
-            else:
+            resume_profile_id = app.state.active_profile_id
+            if not isinstance(resume_profile_id, str):
                 decision = updates.Decision.WAITING_FOR_PLAYERS
-                log.warning("The Minecraft server did not stop, so the update waits.")
+            else:
+                # Write the recovery intent before stopping Java. If this
+                # process dies between the graceful stop and helper request,
+                # the next start sees requested_at=None and brings it back.
+                state = replace(
+                    state,
+                    requested_at=None,
+                    requested_attempt=None,
+                    resume_profile_id=resume_profile_id,
+                    resume_commit=latest.commit,
+                )
+                updates.write_state(config.data_dir, state)
+                app.state.update_handoff_active = True
+                try:
+                    stopped = await manager.stop(timeout=60.0)
+                except (InvalidTransition, OSError):
+                    stopped = False
+                except Exception:
+                    app.state.update_handoff_active = False
+                    updates.write_state(
+                        config.data_dir,
+                        replace(state, resume_profile_id=None, resume_commit=None),
+                    )
+                    raise
+                if stopped:
+                    app.state.active_profile_id = None
+                    decision = updates.Decision.INSTALL
+                else:
+                    app.state.update_handoff_active = False
+                    decision = updates.Decision.WAITING_FOR_PLAYERS
+                    state = replace(state, resume_profile_id=None, resume_commit=None)
+                    log.warning("The Minecraft server did not stop, so the update waits.")
 
         if install and decision is updates.Decision.INSTALL:
-            updates.request_install(config.data_dir, latest.commit)
-            state = replace(
-                state, requested_commit=latest.commit, requested_summary=latest.summary
+            state = queue_update(
+                latest,
+                state,
+                resume_profile_id=(
+                    state.resume_profile_id if state.resume_commit == latest.commit else None
+                ),
             )
 
         app.state.update_decision = decision
         updates.write_state(config.data_dir, state)
         return update_status()
 
+    async def check_for_update(*, install: bool = True) -> dict[str, object]:
+        async with update_lock:
+            return await _check_for_update(install=install)
+
+    def next_update_delay() -> float:
+        state = updates.read_state(config.data_dir)
+        if update_install_in_progress() or state.resume_profile_id is not None:
+            return config.update_status_poll_seconds
+        if app.state.update_waiting_for_critical_operation:
+            return config.update_wait_minutes * 60
+        if app.state.update_decision is updates.Decision.WAITING_FOR_PLAYERS:
+            return config.update_wait_minutes * 60
+        status = helper_status()
+        if (
+            app.state.update_decision is updates.Decision.INSTALL
+            and updates.status_completes_request(
+                state,
+                status,
+                installed_commit=installed_build.commit,
+                request_pending=updates.pending_request(config.data_dir) is not None,
+            )
+        ):
+            # Reconcile a final note written by the helper after the previous
+            # loop iteration inspected its request or active status.
+            return config.update_status_poll_seconds
+        retry_delay = updates.retry_delay_seconds(
+            status,
+            now=datetime.now(timezone.utc),  # noqa: UP017
+            normal_seconds=config.update_check_hours * 3600,
+            minimum_seconds=config.update_wait_minutes * 60,
+        )
+        if retry_delay is not None:
+            return retry_delay
+        return config.update_check_hours * 3600
+
     async def update_loop() -> None:
         while True:
             try:
-                await check_for_update()
+                await resume_server_after_update()
+                if update_checks_run_here():
+                    await check_for_update()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("The Blockstead update check stopped unexpectedly.")
-            await asyncio.sleep(config.update_check_hours * 3600)
+            state = updates.read_state(config.data_dir)
+            if not update_checks_run_here() and state.resume_profile_id is None:
+                return
+            try:
+                await asyncio.wait_for(update_wakeup.wait(), timeout=next_update_delay())
+            except TimeoutError:
+                pass
+            finally:
+                update_wakeup.clear()
 
     def update_checks_run_here() -> bool:
         """Only an installation that could act on an update checks by itself.
@@ -585,10 +872,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/v1/health")
-    def health() -> dict[str, str]:
+    def health() -> dict[str, object]:
         return {
             "status": "ok",
-            "version": __version__,
+            "version": installed_build.version,
+            "commit": installed_build.commit,
+            "short_commit": installed_build.short_commit,
         }
 
     @app.get("/api/v1/setup/status")
@@ -868,26 +1157,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile_id: str, request: Request, db: Db
     ) -> dict[str, object]:
         admin = mutation(request, db)
-        profile = db.get(Profile, profile_id)
-        if profile is None:
-            raise HTTPException(404, "That profile was not found.")
-        pending = db.scalar(
-            select(BackupRecord).where(
-                BackupRecord.profile_id == profile_id,
-                BackupRecord.status == "in_progress",
+        async with update_lock:
+            if update_install_in_progress():
+                raise HTTPException(
+                    409, "Blockstead is being updated. Create the backup after it finishes."
+                )
+            profile = db.get(Profile, profile_id)
+            if profile is None:
+                raise HTTPException(404, "That profile was not found.")
+            pending = db.scalar(
+                select(BackupRecord).where(
+                    BackupRecord.profile_id == profile_id,
+                    BackupRecord.status == "in_progress",
+                )
             )
-        )
-        if pending is not None:
-            raise HTTPException(409, "A backup is already in progress for this server.")
-        if profile.id in restoring_profiles:
-            raise HTTPException(
-                409, "A restore is in progress for this server. Wait for it to finish."
-            )
+            if pending is not None:
+                raise HTTPException(409, "A backup is already in progress for this server.")
+            if profile.id in restoring_profiles:
+                raise HTTPException(
+                    409, "A restore is in progress for this server. Wait for it to finish."
+                )
 
-        created_at = datetime.now(timezone.utc)  # noqa: UP017
-        record = BackupRecord(profile_id=profile.id, trigger="manual", created_at=created_at)
-        db.add(record)
-        db.commit()
+            created_at = datetime.now(timezone.utc)  # noqa: UP017
+            record = BackupRecord(profile_id=profile.id, trigger="manual", created_at=created_at)
+            db.add(record)
+            # The durable in-progress row is the update gate after this lock is
+            # released; lifespan marks it failed if the process is interrupted.
+            db.commit()
         started = time.monotonic()
         archive: BackupArchive | None = None
         failure: str | None = None
@@ -992,6 +1288,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         )
         db.commit()
+        update_wakeup.set()
         if failure:
             raise HTTPException(409, failure)
         return backup_payload(record)
@@ -1083,11 +1380,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, object]:
         admin = mutation(request, db)
         profile, record, server_directory = restore_context(profile_id, backup_id, db)
-        blockers = restore_blockers(profile, db)
-        if blockers:
-            raise HTTPException(409, " ".join(blockers))
-        assert record.file_name and record.manifest_name
-        restoring_profiles.add(profile.id)
+        async with update_lock:
+            if update_install_in_progress():
+                raise HTTPException(
+                    409, "Blockstead is being updated. Restore the backup after it finishes."
+                )
+            blockers = restore_blockers(profile, db)
+            if blockers:
+                raise HTTPException(409, " ".join(blockers))
+            assert record.file_name and record.manifest_name
+            restoring_profiles.add(profile.id)
         try:
             result = await asyncio.to_thread(
                 perform_restore,
@@ -1112,6 +1414,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, str(exc)) from exc
         finally:
             restoring_profiles.discard(profile.id)
+            update_wakeup.set()
         db.add(
             AuditEvent(
                 admin_id=admin.id,
@@ -2475,41 +2778,60 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/v1/updates/install")
     async def updates_install(request: Request, db: Db) -> dict[str, object]:
         mutation(request, db)
-        if not updates.update_capable():
-            raise HTTPException(
-                409,
-                "This copy of Blockstead cannot update itself. "
-                "Install it with scripts/install-linux.sh to enable updates.",
+        async with update_lock:
+            if not updates.update_capable():
+                raise HTTPException(
+                    409,
+                    "This copy of Blockstead cannot update itself. "
+                    "Install it with scripts/install-linux.sh to enable updates.",
+                )
+            if update_install_in_progress():
+                raise HTTPException(409, "A Blockstead update is already in progress.")
+            if critical_update_operation_in_progress():
+                raise HTTPException(
+                    409,
+                    "Wait for the current backup or restore to finish before updating.",
+                )
+            latest = app.state.latest_commit
+            if latest is None:
+                raise HTTPException(409, "Blockstead has not checked for an update yet.")
+            state = updates.read_state(config.data_dir)
+            if not updates.is_behind(
+                installed_build,
+                latest,
+                baseline=state.baseline_commit,
+            ):
+                raise HTTPException(409, "Blockstead is already up to date.")
+            if manager.snapshot()["state"] in {
+                "RUNNING",
+                "STARTING",
+                "STOPPING",
+                "DEGRADED",
+            }:
+                raise HTTPException(
+                    409,
+                    "Stop the Minecraft server before updating, so players are not "
+                    "disconnected partway through.",
+                )
+            # This endpoint is an administrator's explicit retry. It is allowed
+            # to re-request a commit that automatic checks suppressed after a
+            # non-retryable failure.
+            queue_update(
+                latest,
+                state,
+                resume_profile_id=(
+                    state.resume_profile_id if state.resume_commit == latest.commit else None
+                ),
             )
-        latest = app.state.latest_commit
-        if latest is None:
-            raise HTTPException(409, "Blockstead has not checked for an update yet.")
-        if not updates.is_behind(
-            installed_build,
-            latest,
-            baseline=updates.read_state(config.data_dir).baseline_commit,
-        ):
-            raise HTTPException(409, "Blockstead is already up to date.")
-        if manager.snapshot()["state"] in {"RUNNING", "STARTING", "DEGRADED"}:
-            raise HTTPException(
-                409,
-                "Stop the Minecraft server before updating, so players are not "
-                "disconnected partway through.",
-            )
-        updates.request_install(config.data_dir, latest.commit)
-        state = updates.read_state(config.data_dir)
-        updates.write_state(
-            config.data_dir,
-            replace(state, requested_commit=latest.commit, requested_summary=latest.summary),
-        )
-        app.state.update_decision = updates.Decision.INSTALL
-        return update_status()
+            app.state.update_decision = updates.Decision.INSTALL
+            return update_status()
 
     @app.post("/api/v1/updates/acknowledge")
-    def updates_acknowledge(request: Request, db: Db) -> dict[str, object]:
+    async def updates_acknowledge(request: Request, db: Db) -> dict[str, object]:
         mutation(request, db)
-        updates.acknowledge(config.data_dir, installed_build)
-        return update_status()
+        async with update_lock:
+            updates.acknowledge(config.data_dir, installed_build)
+            return update_status()
 
     @app.get("/api/v1/server/state")
     def process_state(request: Request, db: Db) -> dict[str, object]:
@@ -2777,18 +3099,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/v1/server/start", status_code=202)
     async def process_start(payload: StartRequest, request: Request, db: Db) -> dict[str, object]:
         admin = mutation(request, db)
-        profile = db.get(Profile, payload.profile_id)
-        if profile is None:
-            raise HTTPException(404, "That profile was not found.")
-        if profile.id in restoring_profiles:
-            raise HTTPException(
-                409, "A restore is in progress for this server. Wait for it to finish."
-            )
-        try:
-            arguments, cwd, label = launch_spec(profile, payload.mode)
-            await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)
-        except InvalidTransition as exc:
-            raise HTTPException(409, str(exc)) from exc
+        async with update_lock:
+            if update_install_in_progress():
+                raise HTTPException(
+                    409, "Blockstead is being updated. Start the server after it finishes."
+                )
+            profile = db.get(Profile, payload.profile_id)
+            if profile is None:
+                raise HTTPException(404, "That profile was not found.")
+            if profile.id in restoring_profiles:
+                raise HTTPException(
+                    409, "A restore is in progress for this server. Wait for it to finish."
+                )
+            try:
+                label = await start_profile(profile, payload.mode)
+            except InvalidTransition as exc:
+                raise HTTPException(409, str(exc)) from exc
         log.info("Starting the %s server for profile %s", label, profile.name)
         db.add(
             AuditEvent(
@@ -2799,7 +3125,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         )
         db.commit()
-        app.state.active_profile_id = profile.id
         return {**manager.snapshot(), "profile_id": profile.id}
 
     @app.post("/api/v1/server/command", status_code=202)
@@ -2857,21 +3182,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/v1/server/restart", status_code=202)
     async def process_restart(payload: StartRequest, request: Request, db: Db) -> dict[str, object]:
         admin = mutation(request, db)
-        try:
-            if app.state.active_profile_id != payload.profile_id:
-                raise InvalidTransition("Restart the profile that is currently running.")
-            if not await manager.stop():
-                raise InvalidTransition(
-                    "The server did not stop before the timeout. "
-                    "Force stop it, then start it again."
+        async with update_lock:
+            if update_install_in_progress():
+                raise HTTPException(
+                    409, "Blockstead is being updated. Restart the server after it finishes."
                 )
-            profile = db.get(Profile, payload.profile_id)
-            if profile is None:
-                raise HTTPException(404, "That profile was not found.")
-            arguments, cwd, label = launch_spec(profile, payload.mode)
-            await manager.start(arguments, cwd=cwd, label=label, owner=profile.id)
-        except InvalidTransition as exc:
-            raise HTTPException(409, str(exc)) from exc
+            try:
+                if app.state.active_profile_id != payload.profile_id:
+                    raise InvalidTransition("Restart the profile that is currently running.")
+                if not await manager.stop():
+                    raise InvalidTransition(
+                        "The server did not stop before the timeout. "
+                        "Force stop it, then start it again."
+                    )
+                profile = db.get(Profile, payload.profile_id)
+                if profile is None:
+                    raise HTTPException(404, "That profile was not found.")
+                label = await start_profile(profile, payload.mode)
+            except InvalidTransition as exc:
+                raise HTTPException(409, str(exc)) from exc
         log.info("Restarting the %s server for profile %s", label, profile.name)
         db.add(
             AuditEvent(

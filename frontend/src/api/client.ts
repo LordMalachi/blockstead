@@ -64,12 +64,21 @@ export interface UpdateStatus {
   automatic: boolean;
   /** Whether this installation has the privileged helper that can install an update. */
   supported: boolean;
-  decision: "current" | "install" | "stop_server_first" | "waiting_for_players" | "manual";
+  decision: "current" | "install" | "stop_server_first" | "waiting_for_players" | "manual" | "failed";
   latest: UpdateLatest | null;
   checked_at: string | null;
   error: string | null;
   installing: boolean;
-  last_result: { state: string; detail: string; at: string } | null;
+  last_result: {
+    state: "downloading" | "installing" | "succeeded" | "failed";
+    commit: string | null;
+    detail: string;
+    at: string;
+    rolled_back?: boolean;
+    retryable?: boolean;
+    retry_after?: string | null;
+    attempt?: string;
+  } | null;
   announcement: UpdateAnnouncement | null;
 }
 export interface OverviewMetricPoint { at: string; cpu_percent: number; memory_percent: number; disk_percent: number; process_memory_bytes: number | null; world_size_bytes: number | null }

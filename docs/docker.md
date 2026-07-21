@@ -114,17 +114,39 @@ network port.
 
 ## Logs, shutdown, and upgrades
 
-```bash
-docker compose logs -f blockstead
-docker compose --env-file docker.env stop
-docker compose --env-file docker.env build --pull
-docker compose --env-file docker.env up -d
-```
+The automatic updater described for native Linux installations is deliberately
+not present in the container. A container cannot safely replace its own image;
+Docker Compose remains responsible for that lifecycle. This repository's
+Compose file builds Blockstead from the current folder. `build --pull` refreshes
+the base images only; it does not download newer Blockstead source.
 
 Stop Minecraft in the dashboard before an intentional upgrade. If Compose
 stops the container while Minecraft is running, Blockstead receives the stop
 signal and asks Minecraft to save and exit; the 45-second grace period leaves
 time for that shutdown before Docker escalates.
+
+For a Git checkout, move to the newest CI-approved `update-channel` tag before
+rebuilding:
+
+```bash
+docker compose --env-file docker.env stop
+git fetch --force origin refs/tags/update-channel:refs/tags/update-channel
+git checkout --detach update-channel
+docker compose --env-file docker.env build --pull
+docker compose --env-file docker.env up -d
+```
+
+For a ZIP installation, [download the newest approved Linux ZIP](https://github.com/LordMalachi/blockstead/releases/download/update-channel/blockstead-linux.zip),
+extract it to a new folder, copy your existing `docker.env` into that folder,
+and run the final two Compose commands there. The Compose project has a fixed
+name, so it reconnects the replacement container to the existing
+`blockstead-data` and `blockstead-servers` volumes.
+
+View live container logs at any time with:
+
+```bash
+docker compose logs -f blockstead
+```
 
 ## Container limitations
 

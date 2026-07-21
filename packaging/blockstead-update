@@ -1,132 +1,582 @@
 #!/usr/bin/env bash
-# Install a newer Blockstead on behalf of the unprivileged dashboard service.
-#
-# The dashboard cannot do this itself: its systemd unit sets NoNewPrivileges,
-# which stops sudo working, and ProtectSystem=strict leaves /opt read-only. It
-# also must not do this itself, because installing stops the dashboard service
-# and would kill the process doing the work partway through. So the dashboard
-# only writes a request file, and a root-owned path unit runs this helper.
-#
-# The request carries a commit and nothing else. The repository lives here,
-# where the service account cannot edit it, so a compromised dashboard can at
-# worst pick which commit of this repository to install.
+# Privileged half of Blockstead's automatic updater. The dashboard may request
+# a commit, but this root-owned helper independently checks the promoted update
+# channel and installs only the exact passing commit currently approved there.
 set -euo pipefail
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 REPO=LordMalachi/blockstead
-DATA_DIR=/var/lib/blockstead
-LOG_DIR=/var/log/blockstead
-REQUEST=$DATA_DIR/update-request.json
-RESULT=$DATA_DIR/update-result.json
-LOCK=/run/blockstead-update.lock
+BRANCH=main
+MANIFEST_URL=https://github.com/LordMalachi/blockstead/releases/download/update-channel/latest.json
+REQUEST_DIR=/var/lib/blockstead
+REQUEST=$REQUEST_DIR/update-request.json
+STATE_DIR=/var/lib/blockstead-update
+STATUS=$STATE_DIR/status.json
+QUARANTINE=$STATE_DIR/quarantine
+LOG_DIR=/var/log/blockstead-update
 LOG=$LOG_DIR/update.log
+LOCK=/run/blockstead-update.lock
+LOCK_WAIT_SECONDS=900
 
-main() {
-  local commit workdir tarball extracted status=1 detail
+CURRENT_COMMIT=""
+CURRENT_ATTEMPT=""
+WORKDIR=""
 
-  [[ ${EUID} -eq 0 ]] || { echo "This helper must run as root." >&2; exit 1; }
-  [[ -f $REQUEST ]] || { echo "No update was requested." >&2; exit 0; }
+ensure_secure_paths() {
+  local path
+  for path in "$STATE_DIR" "$LOG_DIR"; do
+    if [[ -L $path || ( -e $path && ! -d $path ) ]]; then
+      echo "Refusing unsafe updater directory: $path" >&2
+      exit 1
+    fi
+    install -d -o root -g root -m 0755 "$path"
+  done
+  if [[ -L $QUARANTINE || ( -e $QUARANTINE && ! -d $QUARANTINE ) ]]; then
+    echo "Refusing unsafe updater quarantine: $QUARANTINE" >&2
+    exit 1
+  fi
+  install -d -o root -g root -m 0700 "$QUARANTINE"
+  if [[ -L $LOG || ( -e $LOG && ! -f $LOG ) ]]; then
+    echo "Refusing unsafe updater log: $LOG" >&2
+    exit 1
+  fi
+  if [[ -e $LOG ]] && ! python3 - "$LOG" <<'PY'
+import os
+import stat
+import sys
+info = os.lstat(sys.argv[1])
+raise SystemExit(0 if stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 else 1)
+PY
+  then
+    echo "Refusing an updater log that is not a singly-linked root-owned file: $LOG" >&2
+    exit 1
+  fi
+  touch "$LOG"
+  chown root:root "$LOG"
+  chmod 0644 "$LOG"
+}
 
-  commit=$(python3 -c 'import json, sys
+record() {
+  local state=$1 commit=$2 attempt=$3 detail=$4
+  local retryable=${5:-} retry_after=${6:-} rolled_back=${7:-}
+  python3 - "$STATUS" "$state" "$commit" "$attempt" "$detail" "$(date -Is)" \
+    "$retryable" "$retry_after" "$rolled_back" <<'PY'
+import json
+import os
+import sys
+import tempfile
+
+path, state, commit, attempt, detail, at, retryable, retry_after, rolled_back = sys.argv[1:]
+payload = {"state": state, "commit": commit, "detail": detail, "at": at}
+if attempt:
+    payload["attempt"] = attempt
+if retryable:
+    payload["retryable"] = retryable == "true"
+if retry_after:
+    payload["retry_after"] = retry_after
+if rolled_back:
+    payload["rolled_back"] = rolled_back == "true"
+directory = os.path.dirname(path)
+fd, temporary = tempfile.mkstemp(prefix=".status.", dir=directory)
 try:
-    print(json.load(open(sys.argv[1]))["commit"])
-except Exception:
-    raise SystemExit(1)' "$REQUEST" 2>/dev/null) || {
-    record failed "The update request could not be read."
-    rm -f "$REQUEST"
-    exit 2
-  }
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        os.fchmod(handle.fileno(), 0o644)
+    os.replace(temporary, path)
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+PY
+  echo "$state: $detail"
+}
 
-  # The only value that crosses the privilege boundary, so it is pinned to
-  # exactly the shape of a git commit before it reaches curl or tar.
-  if [[ ! $commit =~ ^[0-9a-f]{40}$ ]]; then
-    record failed "The update request did not name a valid commit."
-    rm -f "$REQUEST"
-    exit 2
-  fi
+retry_in_one_hour() {
+  date --iso-8601=seconds --date='+1 hour'
+}
 
-  # Consume the request straight away. The path unit only fires again once the
-  # file has gone, and leaving it behind would retrigger this helper forever.
-  rm -f "$REQUEST"
+# Claim the service-owned request without following links. A valid request is
+# made durable as an active root-owned status before its watched directory entry
+# disappears. Unsafe entries are atomically moved into a root-only quarantine,
+# which consumes the PathExists trigger without traversing or recursively
+# deleting attacker-controlled content.
+claim_request() {
+  python3 - "$REQUEST_DIR" "${REQUEST##*/}" "$STATUS" "$QUARANTINE" <<'PY'
+import datetime as dt
+import errno
+import json
+import os
+import re
+import stat
+import sys
+import tempfile
 
-  echo "Installing Blockstead commit $commit"
-  record running "Downloading Blockstead ${commit:0:7}."
+directory, name, status_path, quarantine = sys.argv[1:]
+directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+quarantine_fd = os.open(quarantine, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+file_fd = None
+request_valid = False
+claimed_name = f"request.{os.getpid()}.{dt.datetime.now(dt.timezone.utc).timestamp():.0f}"
 
-  workdir=$(mktemp -d /tmp/blockstead-update.XXXXXX)
-  # shellcheck disable=SC2064  # workdir is fixed now; expand it now too.
-  trap "rm -rf '$workdir'" EXIT
-  tarball=$workdir/source.tar.gz
 
-  if ! curl --fail --silent --show-error --location --max-time 300 \
-    --output "$tarball" "https://codeload.github.com/$REPO/tar.gz/$commit"; then
-    record failed "Blockstead could not download the update. It will try again later."
-    exit 1
-  fi
+def move_entry():
+    try:
+        os.rename(
+            name,
+            claimed_name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=quarantine_fd,
+        )
+        return quarantine_fd, claimed_name
+    except OSError as error:
+        if error.errno != errno.EXDEV:
+            raise
+        # A separately mounted data directory cannot rename into the root state
+        # directory. Renaming within the service-owned parent still consumes the
+        # exact watched name without following or deleting the entry.
+        fallback = f".rejected-{claimed_name}"
+        os.rename(name, fallback, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        return directory_fd, fallback
 
-  mkdir -p "$workdir/source"
-  if ! tar -xzf "$tarball" -C "$workdir/source"; then
-    record failed "The downloaded update could not be unpacked."
-    exit 1
-  fi
 
-  extracted=$(find "$workdir/source" -mindepth 1 -maxdepth 1 -type d | head -n 1)
-  if [[ -z $extracted || ! -x $extracted/scripts/install-linux.sh ]]; then
-    record failed "The downloaded update did not contain an installer."
-    exit 1
-  fi
+def quarantine_entry() -> None:
+    try:
+        move_entry()
+    except FileNotFoundError:
+        pass
 
-  record running "Installing Blockstead ${commit:0:7}."
-  # Hand the exact commit to the installer so it stamps what really landed
-  # rather than guessing. The date comes along too, because it is what stops a
-  # rewritten branch from later installing older code over this one.
-  BLOCKSTEAD_INSTALL_COMMIT=$commit
-  BLOCKSTEAD_INSTALL_COMMIT_AT=$(curl --fail --silent --max-time 15 \
-    "https://api.github.com/repos/$REPO/commits/$commit" 2>/dev/null |
-    python3 -c 'import json, sys
+
+def write_active(commit: str, attempt: str) -> None:
+    payload = {
+        "state": "downloading",
+        "commit": commit,
+        "attempt": attempt,
+        "detail": f"Authorizing Blockstead {commit[:7]} against the approved update channel.",
+        "at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    status_directory = os.path.dirname(status_path)
+    fd, temporary = tempfile.mkstemp(prefix=".status.", dir=status_directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), 0o644)
+        os.replace(temporary, status_path)
+        state_fd = os.open(status_directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(state_fd)
+        finally:
+            os.close(state_fd)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
 try:
-    print(json.loads(sys.stdin.read())["commit"]["committer"]["date"])
-except Exception:
-    pass' 2>/dev/null || true)
-  export BLOCKSTEAD_INSTALL_COMMIT BLOCKSTEAD_INSTALL_COMMIT_AT
+    try:
+        file_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=directory_fd,
+        )
+    except FileNotFoundError:
+        raise SystemExit(3)
+    except OSError as error:
+        quarantine_entry()
+        print(f"The update request was unsafe: {error}", file=sys.stderr)
+        raise SystemExit(2)
 
-  # The installer restores the previous version by itself if the new one does
-  # not come up healthy, so a failure here is reported, not repaired.
-  if "$extracted/scripts/install-linux.sh" --yes; then
-    status=0
-    detail="Blockstead was updated to ${commit:0:7}."
-  else
-    detail="The update did not install cleanly, so the previous version was kept."
-  fi
+    opened = os.fstat(file_fd)
+    if not stat.S_ISREG(opened.st_mode) or opened.st_size > 65536:
+        raise ValueError("request must be a small regular file")
+    chunks = []
+    remaining = 65537
+    while remaining:
+        chunk = os.read(file_fd, min(remaining, 8192))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    if remaining == 0:
+        raise ValueError("request is too large")
 
-  if [[ $status -eq 0 ]]; then
-    record succeeded "$detail"
-  else
-    record failed "$detail"
+    payload = json.loads(b"".join(chunks).decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("request was not a JSON object")
+    commit = payload.get("commit")
+    attempt = payload.get("attempt")
+    requested_at = payload.get("requested_at")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("request did not contain a valid commit")
+    if not isinstance(attempt, str) or not re.fullmatch(r"[0-9a-f]{32}", attempt):
+        raise ValueError("request did not contain a valid attempt")
+    if not isinstance(requested_at, str):
+        raise ValueError("request did not contain a timestamp")
+    requested = dt.datetime.fromisoformat(requested_at.replace("Z", "+00:00"))
+    if requested.tzinfo is None or requested.utcoffset() is None:
+        raise ValueError("request timestamp did not include a timezone")
+
+    current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+        raise ValueError("request changed while it was being read")
+
+    # Status precedes removal of the watched request. A crash can therefore
+    # leave both artifacts temporarily, but never leaves neither artifact.
+    request_valid = True
+    write_active(commit, attempt)
+    claimed_fd, actual_claimed_name = move_entry()
+    claimed = os.stat(actual_claimed_name, dir_fd=claimed_fd, follow_symlinks=False)
+    if (claimed.st_dev, claimed.st_ino) != (opened.st_dev, opened.st_ino):
+        raise ValueError("request changed while it was being claimed")
+    os.unlink(actual_claimed_name, dir_fd=claimed_fd)
+    print(commit)
+    print(attempt)
+except (AttributeError, ValueError, UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
+    if not request_valid:
+        quarantine_entry()
+    print(f"The update request could not be read safely: {error}", file=sys.stderr)
+    raise SystemExit(2)
+finally:
+    if file_fd is not None:
+        os.close(file_fd)
+    os.close(directory_fd)
+    os.close(quarantine_fd)
+PY
+}
+
+read_manifest() {
+  local path=$1
+  python3 - "$path" "$REPO" "$BRANCH" <<'PY'
+import datetime as dt
+import json
+import re
+import sys
+
+path, expected_repository, expected_branch = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    expected_keys = {
+        "schema", "repository", "branch", "commit", "committed_at", "summary", "published_at"
+    }
+    if not isinstance(manifest, dict) or set(manifest) != expected_keys:
+        raise ValueError("unexpected manifest fields")
+    commit = manifest["commit"]
+    committed_at = manifest["committed_at"]
+    summary = manifest["summary"]
+    published_at = manifest["published_at"]
+    if type(manifest.get("schema")) is not int or manifest["schema"] != 1:
+        raise ValueError("unsupported schema")
+    if manifest.get("repository") != expected_repository:
+        raise ValueError("wrong repository")
+    if manifest.get("branch") != expected_branch:
+        raise ValueError("wrong branch")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("invalid commit")
+    if not isinstance(summary, str) or not summary.strip() or summary != summary.strip():
+        raise ValueError("invalid summary")
+    if "\n" in summary or "\r" in summary or len(summary) > 500:
+        raise ValueError("invalid summary")
+    moments = []
+    for field, value in (("committed_at", committed_at), ("published_at", published_at)):
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"invalid {field}")
+        moment = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if moment.tzinfo is None or moment.utcoffset() is None:
+            raise ValueError(f"{field} has no timezone")
+        moments.append(moment)
+except (KeyError, OSError, ValueError, json.JSONDecodeError, TypeError) as error:
+    print(f"The Blockstead update manifest is invalid: {error}", file=sys.stderr)
+    raise SystemExit(1)
+print(commit)
+print(committed_at)
+print(published_at)
+PY
+}
+
+installed_commit() {
+  python3 - /opt/blockstead/BUILD <<'PY' 2>/dev/null || true
+import json
+import re
+import sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8")).get("commit")
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value):
+        print(value)
+except (OSError, ValueError, TypeError):
+    pass
+PY
+}
+
+installation_is_complete() {
+  local commit=$1
+  [[ $(installed_commit) == "$commit" \
+    && -x /opt/blockstead/scripts/update-linux.sh \
+    && -x /opt/blockstead/scripts/uninstall-linux.sh \
+    && -x /usr/lib/blockstead/blockstead-update \
+    && -f /etc/systemd/system/blockstead-update.path \
+    && -f /etc/systemd/system/blockstead-update.service \
+    && -x /usr/local/bin/blockstead ]]
+}
+
+compare_relation() {
+  local installed=$1 approved=$2 response
+  response=$(curl --fail --silent --show-error --location --max-time 30 \
+    "https://api.github.com/repos/$REPO/compare/$installed...$approved") || return 1
+  python3 -c 'import json, sys
+try:
+    value = json.loads(sys.stdin.read()).get("status")
+except (AttributeError, ValueError, TypeError):
+    raise SystemExit(1)
+if value not in {"ahead", "behind", "diverged", "identical"}:
+    raise SystemExit(1)
+print(value)' <<<"$response"
+}
+
+status_is_final() {
+  local commit=$1 attempt=$2 expected_state=${3:-}
+  python3 - "$STATUS" "$commit" "$attempt" "$expected_state" <<'PY'
+import json
+import sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError, TypeError):
+    raise SystemExit(1)
+valid = (
+    isinstance(value, dict)
+    and value.get("state") in {"succeeded", "failed"}
+    and value.get("commit") == sys.argv[2]
+    and value.get("attempt") == sys.argv[3]
+    and (not sys.argv[4] or value.get("state") == sys.argv[4])
+)
+raise SystemExit(0 if valid else 1)
+PY
+}
+
+# Called indirectly by the EXIT trap after a request has been claimed.
+# shellcheck disable=SC2317
+# Invoked indirectly by `trap finalize_helper EXIT` after a request is claimed.
+# shellcheck disable=SC2329
+finalize_helper() {
+  local status=$?
+  trap - EXIT
+  if [[ -n $WORKDIR ]]; then rm -rf "$WORKDIR" || true; fi
+  if [[ -n $CURRENT_COMMIT && -n $CURRENT_ATTEMPT ]] \
+      && ! status_is_final "$CURRENT_COMMIT" "$CURRENT_ATTEMPT"; then
+    record failed "$CURRENT_COMMIT" "$CURRENT_ATTEMPT" \
+      "The automatic update ended before it could confirm a safe result. Review the update log before retrying." \
+      false "" false || true
   fi
   exit "$status"
 }
 
-# Leave a note the dashboard can read once it comes back up.
-record() {
-  local state=$1 detail=$2
-  python3 -c 'import json, sys
-json.dump({"state": sys.argv[1], "detail": sys.argv[2], "at": sys.argv[3]},
-          open(sys.argv[4], "w"), indent=2)' \
-    "$state" "$detail" "$(date -Is)" "$RESULT" 2>/dev/null || true
-  chmod 0644 "$RESULT" 2>/dev/null || true
-  echo "$state: $detail"
+finalize_interrupted_status() {
+  python3 - "$STATUS" <<'PY'
+import datetime as dt
+import json
+import os
+import re
+import sys
+import tempfile
+
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+except (OSError, ValueError, TypeError):
+    raise SystemExit(0)
+if not isinstance(payload, dict) or payload.get("state") not in {"downloading", "installing"}:
+    raise SystemExit(0)
+commit = payload.get("commit")
+attempt = payload.get("attempt")
+if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+    raise SystemExit(0)
+if not isinstance(attempt, str) or not re.fullmatch(r"[0-9a-f]{32}", attempt):
+    raise SystemExit(0)
+replacement = {
+    "state": "failed",
+    "commit": commit,
+    "attempt": attempt,
+    "detail": "The automatic update was interrupted before rollback could be verified. Review the update log before retrying.",
+    "at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    "retryable": False,
+    "rolled_back": False,
+}
+directory = os.path.dirname(path)
+fd, temporary = tempfile.mkstemp(prefix=".status.", dir=directory)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(replacement, handle, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        os.fchmod(handle.fileno(), 0o644)
+    os.replace(temporary, path)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+PY
 }
 
-mkdir -p "$LOG_DIR"
-# One update at a time, so an automatic run and `sudo blockstead update` cannot
-# race each other over /opt/blockstead.
-exec 9>"$LOCK"
-if ! flock --nonblock 9; then
-  echo "Another Blockstead update is already running." >&2
+main() {
+  local manifest approved committed_at published_at current extracted retry_after relation
+  local status=1
+  local -a claimed approved_manifest
+
+  [[ ${EUID} -eq 0 ]] || { echo "This helper must run as root." >&2; exit 1; }
+  if [[ ! -e $REQUEST && ! -L $REQUEST ]]; then
+    echo "No update was requested."
+    exit 0
+  fi
+  mapfile -t claimed < <(claim_request)
+  if (( ${#claimed[@]} != 2 )); then
+    echo "The update request could not be claimed safely." >&2
+    finalize_interrupted_status
+    exit 2
+  fi
+  CURRENT_COMMIT=${claimed[0]}
+  CURRENT_ATTEMPT=${claimed[1]}
+  trap finalize_helper EXIT
+
+  WORKDIR=$(mktemp -d /tmp/blockstead-update.XXXXXX)
+  manifest=$WORKDIR/latest.json
+
+  echo "Authorizing requested Blockstead commit ${CURRENT_COMMIT:0:7} against the update channel."
+  if ! curl --fail --silent --show-error --location --max-time 30 \
+    --output "$manifest" "$MANIFEST_URL"; then
+    retry_after=$(retry_in_one_hour)
+    record failed "$CURRENT_COMMIT" "$CURRENT_ATTEMPT" \
+      "Blockstead could not download the approved update manifest. It will retry later." \
+      true "$retry_after"
+    exit 1
+  fi
+  mapfile -t approved_manifest < <(read_manifest "$manifest")
+  if (( ${#approved_manifest[@]} != 3 )); then
+    retry_after=$(retry_in_one_hour)
+    record failed "$CURRENT_COMMIT" "$CURRENT_ATTEMPT" \
+      "Blockstead could not validate the approved update manifest. It will retry later." \
+      true "$retry_after"
+    exit 1
+  fi
+  approved=${approved_manifest[0]}
+  committed_at=${approved_manifest[1]}
+  published_at=${approved_manifest[2]}
+  if [[ $CURRENT_COMMIT != "$approved" ]]; then
+    retry_after=$(retry_in_one_hour)
+    record failed "$CURRENT_COMMIT" "$CURRENT_ATTEMPT" \
+      "The requested commit and approved manifest did not match; no code was run, and Blockstead will retry after GitHub caches settle." \
+      true "$retry_after"
+    exit 1
+  fi
+
+  current=$(installed_commit)
+  if [[ -n $current && $current == "$approved" ]] && installation_is_complete "$approved"; then
+    record succeeded "$approved" "$CURRENT_ATTEMPT" \
+      "Blockstead is already current at ${approved:0:7}." false
+    exit 0
+  fi
+  if [[ -n $current && $current != "$approved" ]]; then
+    if ! relation=$(compare_relation "$current" "$approved"); then
+      retry_after=$(retry_in_one_hour)
+      record failed "$approved" "$CURRENT_ATTEMPT" \
+        "Blockstead could not verify that the approved channel would not downgrade this installation. It will retry later." \
+        true "$retry_after"
+      exit 1
+    fi
+    if [[ $relation != ahead ]]; then
+      record failed "$approved" "$CURRENT_ATTEMPT" \
+        "The approved channel is not a direct newer descendant of the installed build, so Blockstead refused to replace it." false
+      exit 2
+    fi
+  fi
+
+  record downloading "$approved" "$CURRENT_ATTEMPT" "Downloading Blockstead ${approved:0:7}."
+  if ! curl --fail --silent --show-error --location --max-time 300 \
+    --output "$WORKDIR/source.tar.gz" "https://codeload.github.com/$REPO/tar.gz/$approved"; then
+    retry_after=$(retry_in_one_hour)
+    record failed "$approved" "$CURRENT_ATTEMPT" \
+      "Blockstead could not download the approved update. It will retry later." \
+      true "$retry_after"
+    exit 1
+  fi
+  mkdir "$WORKDIR/source"
+  if ! tar --no-same-owner -xzf "$WORKDIR/source.tar.gz" -C "$WORKDIR/source"; then
+    retry_after=$(retry_in_one_hour)
+    record failed "$approved" "$CURRENT_ATTEMPT" \
+      "The downloaded update could not be unpacked. It will retry later." \
+      true "$retry_after"
+    exit 1
+  fi
+  extracted=$(find "$WORKDIR/source" -mindepth 1 -maxdepth 1 -type d -print -quit)
+  if [[ -z $extracted || ! -f $extracted/scripts/install-linux.sh ]]; then
+    record failed "$approved" "$CURRENT_ATTEMPT" \
+      "The approved update did not contain a Linux installer." false
+    exit 1
+  fi
+  chmod +x "$extracted/scripts/install-linux.sh"
+
+  record installing "$approved" "$CURRENT_ATTEMPT" "Installing Blockstead ${approved:0:7}."
+  if BLOCKSTEAD_INSTALL_APPROVED=1 \
+    BLOCKSTEAD_INSTALL_COMMIT=$approved \
+    BLOCKSTEAD_INSTALL_COMMIT_AT=$committed_at \
+    BLOCKSTEAD_INSTALL_PUBLISHED_AT=$published_at \
+    BLOCKSTEAD_UPDATE_ATTEMPT=$CURRENT_ATTEMPT \
+    BLOCKSTEAD_INSTALL_SOURCE=automatic \
+    "$extracted/scripts/install-linux.sh" --yes; then
+    status=0
+  fi
+
+  if [[ $status -eq 0 ]]; then
+    if ! installation_is_complete "$approved"; then
+      record failed "$approved" "$CURRENT_ATTEMPT" \
+        "The installer exited without leaving a complete approved installation, so success could not be verified." \
+        false "" false
+      status=1
+    else
+      record succeeded "$approved" "$CURRENT_ATTEMPT" \
+        "Blockstead was updated successfully to ${approved:0:7}." false
+    fi
+  elif ! status_is_final "$approved" "$CURRENT_ATTEMPT" failed; then
+    record failed "$approved" "$CURRENT_ATTEMPT" \
+      "The installer failed without confirming that rollback completed. Review the update log before retrying." \
+      false "" false
+  fi
+  exit "$status"
+}
+
+ensure_secure_paths
+if [[ ${1:-} == --finalize-interrupted ]]; then
+  exec >>"$LOG" 2>&1
+  exec 9>"$LOCK"
+  if flock --wait 30 9; then finalize_interrupted_status; fi
   exit 0
 fi
 
-main "$@" 2>&1 | tee -a "$LOG"
-exit "${PIPESTATUS[0]}"
+# The directory is root-owned, and the regular-file/symlink check above occurs
+# before this descriptor is opened. Unprivileged code cannot race replacement.
+exec >>"$LOG" 2>&1
+echo "$(date -Is) Blockstead automatic update helper started."
+exec 9>"$LOCK"
+if ! flock --wait "$LOCK_WAIT_SECONDS" 9; then
+  echo "Another Blockstead maintenance task still owns the update lock; the queued request remains for a later retry." >&2
+  exit 1
+fi
+export BLOCKSTEAD_UPDATE_LOCKED=1
+main "$@"

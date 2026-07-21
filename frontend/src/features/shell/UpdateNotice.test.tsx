@@ -83,6 +83,70 @@ test("a copy that cannot update itself says so instead of pretending", async () 
   vi.unstubAllGlobals();
 });
 
+test("a failed build explains that it will not retry on its own", async () => {
+  serve({
+    ...current,
+    decision: "failed",
+    latest: { commit: "b".repeat(40), short_commit: "bbbbbbb", committed_at: "2026-07-20T12:00:00+00:00", summary: "Add a thing" },
+    last_result: {
+      state: "failed",
+      commit: "b".repeat(40),
+      detail: "The update failed, so the previous version was restored.",
+      at: "2026-07-20T12:05:00+00:00",
+      rolled_back: true,
+    },
+  });
+  const client = renderNotice();
+
+  expect(await screen.findByRole("status")).toHaveTextContent(/Open System.*retry/);
+
+  client.clear();
+  vi.unstubAllGlobals();
+});
+
+test("a transient download failure explains its automatic retry", async () => {
+  serve({
+    ...current,
+    decision: "failed",
+    last_result: {
+      state: "failed",
+      commit: "b".repeat(40),
+      detail: "Blockstead could not download the approved build.",
+      at: "2026-07-20T12:05:00+00:00",
+      retryable: true,
+      retry_after: "2026-07-20T13:05:00+00:00",
+    },
+  });
+  const client = renderNotice();
+
+  expect(await screen.findByRole("status")).toHaveTextContent(/Next automatic try/);
+
+  client.clear();
+  vi.unstubAllGlobals();
+});
+
+test("a failed build stays actionable when automatic updates are off", async () => {
+  serve({
+    ...current,
+    automatic: false,
+    decision: "manual",
+    latest: { commit: "b".repeat(40), short_commit: "bbbbbbb", committed_at: "2026-07-20T12:00:00+00:00", summary: "Add a thing" },
+    last_result: {
+      state: "failed",
+      commit: "b".repeat(40),
+      detail: "The previous version was restored.",
+      at: "2026-07-20T12:05:00+00:00",
+      rolled_back: true,
+    },
+  });
+  const client = renderNotice();
+
+  expect(await screen.findByRole("status")).toHaveTextContent(/Open System.*retry/);
+
+  client.clear();
+  vi.unstubAllGlobals();
+});
+
 test("a completed update announces the version the owner is now on", async () => {
   serve({
     ...current,

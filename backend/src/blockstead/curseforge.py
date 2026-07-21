@@ -162,11 +162,13 @@ async def search(
         distribution_allowed = record.get("allowModDistribution")
         summary = record.get("summary")
         download_count = record.get("downloadCount")
+        slug = record.get("slug")
+        title = record.get("name")
         projects.append(
             CatalogProject(
                 project_id=str(mod_id),
-                slug=record.get("slug") if isinstance(record.get("slug"), str) else None,
-                title=record.get("name") if isinstance(record.get("name"), str) else None,
+                slug=slug if isinstance(slug, str) else None,
+                title=title if isinstance(title, str) else None,
                 description=summary[:300] if isinstance(summary, str) else None,
                 downloads=(
                     int(download_count)

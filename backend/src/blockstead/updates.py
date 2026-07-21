@@ -1,8 +1,10 @@
 """Keep Blockstead current without the owner downloading anything by hand.
 
-Blockstead follows the ``main`` branch of its GitHub repository. Every commit
-carries the same release version, so the version string alone cannot say whether
-an installation is behind; the commit itself is the identity, and the version is
+Blockstead follows the newest *passing* commit on the ``main`` branch of its
+GitHub repository. A GitHub Actions workflow promotes that commit by publishing
+a small manifest only after the test suite succeeds. Every commit carries the
+same release version, so the version string alone cannot say whether an
+installation is behind; the commit itself is the identity, and the version is
 kept only as the label an owner recognises.
 
 The application runs as an unprivileged service that cannot write ``/opt`` and
@@ -25,7 +27,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -42,7 +44,17 @@ REQUEST_NAME = "update-request.json"
 STATE_NAME = "update-state.json"
 RESULT_NAME = "update-result.json"
 
+DEFAULT_MANIFEST_URL = (
+    "https://github.com/LordMalachi/blockstead/releases/download/update-channel/latest.json"
+)
+MANIFEST_SCHEMA = 1
+
+HELPER_STATES = frozenset({"downloading", "installing", "succeeded", "failed"})
+HELPER_ACTIVE_STATES = frozenset({"downloading", "installing"})
+HELPER_FINAL_STATES = frozenset({"succeeded", "failed"})
+
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+ATTEMPT_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +72,8 @@ class Decision(str, Enum):
     WAITING_FOR_PLAYERS = "waiting_for_players"
     #: Newer code exists but this installation cannot update itself.
     MANUAL = "manual"
+    #: This exact commit already failed and will not be retried automatically.
+    FAILED = "failed"
 
 
 @dataclass(frozen=True)
@@ -93,11 +107,12 @@ class Build:
 
 @dataclass(frozen=True)
 class RemoteCommit:
-    """The newest commit on the branch Blockstead follows."""
+    """The newest passing commit on the branch Blockstead follows."""
 
     commit: str
     committed_at: datetime
     summary: str
+    published_at: datetime | None = None
 
     @property
     def short_commit(self) -> str:
@@ -109,7 +124,55 @@ class RemoteCommit:
             "short_commit": self.short_commit,
             "committed_at": self.committed_at.isoformat(),
             "summary": self.summary,
+            "published_at": self.published_at.isoformat() if self.published_at else None,
         }
+
+
+@dataclass(frozen=True)
+class HelperStatus:
+    """Durable progress written by the root-owned update helper."""
+
+    state: str
+    commit: str
+    detail: str
+    at: datetime
+    rolled_back: bool | None = None
+    retryable: bool = False
+    retry_after: datetime | None = None
+    attempt: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.state in HELPER_ACTIVE_STATES
+
+    @property
+    def final(self) -> bool:
+        return self.state in HELPER_FINAL_STATES
+
+    def fresh(
+        self, *, now: datetime | None = None, max_age: timedelta = timedelta(minutes=60)
+    ) -> bool:
+        """Whether an active status is recent enough to describe live work."""
+        current = now or datetime.now(timezone.utc)  # noqa: UP017
+        age = current - self.at
+        # A little forward clock skew is harmless; a wildly future-dated status
+        # must not suppress updates forever.
+        return -timedelta(minutes=5) <= age <= max_age
+
+    def payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "state": self.state,
+            "commit": self.commit,
+            "detail": self.detail,
+            "at": self.at.isoformat(),
+            "retryable": self.retryable,
+            "retry_after": self.retry_after.isoformat() if self.retry_after else None,
+        }
+        if self.rolled_back is not None:
+            payload["rolled_back"] = self.rolled_back
+        if self.attempt is not None:
+            payload["attempt"] = self.attempt
+        return payload
 
 
 @dataclass(frozen=True)
@@ -126,6 +189,13 @@ class State:
     #: announcement after the restart can say what arrived.
     requested_commit: str | None = None
     requested_summary: str | None = None
+    requested_at: datetime | None = None
+    requested_attempt: str | None = None
+    #: An empty server stopped specifically for an update is brought back after
+    #: the helper reaches a final state, including after a failed attempt rolls
+    #: the previous application back.
+    resume_profile_id: str | None = None
+    resume_commit: str | None = None
     last_checked_at: datetime | None = None
     last_error: str | None = None
 
@@ -135,6 +205,10 @@ class State:
             "baseline_commit": self.baseline_commit,
             "requested_commit": self.requested_commit,
             "requested_summary": self.requested_summary,
+            "requested_at": self.requested_at.isoformat() if self.requested_at else None,
+            "requested_attempt": self.requested_attempt,
+            "resume_profile_id": self.resume_profile_id,
+            "resume_commit": self.resume_commit,
             "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else None,
             "last_error": self.last_error,
         }
@@ -173,6 +247,17 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
             os.fsync(handle.fileno())
         os.chmod(handle.name, 0o600)
         os.replace(handle.name, path)
+        try:
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            # Directory fsync makes rename ordering durable on Linux. Some
+            # supported development platforms/filesystems do not permit it;
+            # the successfully replaced file remains valid there.
+            log.debug("Directory fsync is unavailable for %s", path.parent)
     except OSError:
         Path(handle.name).unlink(missing_ok=True)
         raise
@@ -200,11 +285,19 @@ def read_state(data_dir: Path) -> State:
         value = raw.get(key)
         return value if isinstance(value, str) and value else None
 
+    requested_attempt = text("requested_attempt")
+    if requested_attempt is not None and not ATTEMPT_PATTERN.fullmatch(requested_attempt):
+        requested_attempt = None
+
     return State(
         acknowledged_commit=text("acknowledged_commit"),
         baseline_commit=text("baseline_commit"),
         requested_commit=text("requested_commit"),
         requested_summary=text("requested_summary"),
+        requested_at=_parse_moment(raw.get("requested_at")),
+        requested_attempt=requested_attempt,
+        resume_profile_id=text("resume_profile_id"),
+        resume_commit=text("resume_commit"),
         last_checked_at=_parse_moment(raw.get("last_checked_at")),
         last_error=text("last_error"),
     )
@@ -220,43 +313,84 @@ def update_capable(*, helper: Path | None = None) -> bool:
     return target.is_file() and os.access(target, os.X_OK)
 
 
+def _required_manifest_moment(value: object, field: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"The update manifest has no usable {field}.")
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"The update manifest has no usable {field}.") from exc
+    if moment.tzinfo is None:
+        raise ValueError(f"The update manifest {field} must include a timezone.")
+    return moment
+
+
 async def fetch_latest(
-    client: httpx.AsyncClient, repo: str, branch: str = "main"
+    client: httpx.AsyncClient,
+    repository: str,
+    branch: str = "main",
+    manifest_url: str = DEFAULT_MANIFEST_URL,
 ) -> RemoteCommit:
-    """Ask GitHub for the newest commit on the branch Blockstead follows."""
-    response = await client.get(
-        f"https://api.github.com/repos/{repo}/commits/{branch}",
-        headers={"Accept": "application/vnd.github+json"},
-    )
+    """Read and authenticate the promoted latest-passing-main manifest.
+
+    The repository and branch in the document must exactly match local policy.
+    This prevents either the unprivileged application or a malformed channel
+    document from redirecting the root helper to unrelated code.
+    """
+    response = await client.get(manifest_url, headers={"Accept": "application/json"})
     response.raise_for_status()
     body = response.json()
-    commit = body.get("sha")
+    if not isinstance(body, dict):
+        raise ValueError("The update manifest was not a JSON object.")
+    expected_fields = {
+        "schema",
+        "repository",
+        "branch",
+        "commit",
+        "committed_at",
+        "summary",
+        "published_at",
+    }
+    if set(body) != expected_fields:
+        raise ValueError("The update manifest contained unexpected fields.")
+    if type(body.get("schema")) is not int or body["schema"] != MANIFEST_SCHEMA:
+        raise ValueError("The update manifest uses an unsupported schema.")
+    if body.get("repository") != repository:
+        raise ValueError("The update manifest named an unexpected repository.")
+    if body.get("branch") != branch:
+        raise ValueError("The update manifest named an unexpected branch.")
+    commit = body.get("commit")
     if not isinstance(commit, str) or not COMMIT_PATTERN.match(commit):
-        raise ValueError("GitHub did not return a usable commit for that branch.")
-    details = body.get("commit") or {}
-    committed_at = _parse_moment((details.get("committer") or {}).get("date"))
-    if committed_at is None:
-        raise ValueError("GitHub did not say when that commit was made.")
-    message = details.get("message")
-    summary = message.splitlines()[0].strip() if isinstance(message, str) and message else ""
-    return RemoteCommit(commit=commit, committed_at=committed_at, summary=summary)
+        raise ValueError("The update manifest did not name a usable commit.")
+    summary = body.get("summary")
+    if (
+        not isinstance(summary, str)
+        or not summary.strip()
+        or summary != summary.strip()
+        or "\n" in summary
+        or "\r" in summary
+        or len(summary) > 500
+    ):
+        raise ValueError("The update manifest did not contain a usable summary.")
+    return RemoteCommit(
+        commit=commit,
+        committed_at=_required_manifest_moment(body.get("committed_at"), "committed_at"),
+        summary=summary,
+        published_at=_required_manifest_moment(body.get("published_at"), "published_at"),
+    )
 
 
 def is_behind(build: Build, remote: RemoteCommit, *, baseline: str | None = None) -> bool:
-    """Is the installed build older than what the branch now holds?
+    """Whether the installed build differs from the promoted channel build.
 
-    The commit date has to move forward as well as the commit changing. That
-    keeps a rewritten branch, or a development checkout that is ahead of the
-    published branch, from installing older code over newer code.
+    Git timestamps are not an ordering primitive: successive commits can share
+    a second and a contributor's clock can run behind. The post-CI manifest is
+    the authority, so a different promoted SHA is the update signal.
     """
     known = build.commit or baseline
     if known is None:
         return False
-    if known == remote.commit:
-        return False
-    if build.committed_at is not None and remote.committed_at <= build.committed_at:
-        return False
-    return True
+    return known != remote.commit
 
 
 def decide(
@@ -266,6 +400,7 @@ def decide(
     capable: bool,
     server_running: bool,
     players_online: int | None,
+    failed: bool = False,
 ) -> Decision:
     """Decide whether it is a polite moment to install.
 
@@ -279,6 +414,8 @@ def decide(
         return Decision.CURRENT
     if not capable or not auto:
         return Decision.MANUAL
+    if failed:
+        return Decision.FAILED
     if not server_running:
         return Decision.INSTALL
     if players_online is None or players_online > 0:
@@ -286,20 +423,27 @@ def decide(
     return Decision.STOP_SERVER_FIRST
 
 
-def request_install(data_dir: Path, commit: str) -> None:
+def request_install(
+    data_dir: Path, commit: str, *, attempt: str, requested_at: datetime
+) -> None:
     """Ask the privileged helper to install a commit.
 
-    Only the commit travels. The helper holds its own copy of the repository
-    address and ignores anything else here, so this file cannot redirect an
-    update somewhere else even if the service account were taken over.
+    Only build identity and an opaque correlation ID travel. The helper holds
+    its own repository address and ignores anything else here, so this file
+    cannot redirect an update even if the service account were taken over.
     """
     if not COMMIT_PATTERN.match(commit):
         raise ValueError("That is not a commit Blockstead can install.")
+    if not ATTEMPT_PATTERN.fullmatch(attempt):
+        raise ValueError("That is not a usable Blockstead update attempt.")
+    if requested_at.tzinfo is None:
+        raise ValueError("An update request timestamp must include a timezone.")
     _write_json(
         data_dir / REQUEST_NAME,
         {
             "commit": commit,
-            "requested_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
+            "attempt": attempt,
+            "requested_at": requested_at.isoformat(),
         },
     )
     log.info("Requested Blockstead update to commit %s", commit[:7])
@@ -315,6 +459,174 @@ def read_result(data_dir: Path) -> dict[str, object] | None:
     """What the privileged helper reported about the last attempt."""
     result = _read_json(data_dir / RESULT_NAME)
     return result or None
+
+
+def read_helper_status(status_file: Path) -> HelperStatus | None:
+    """Read a status file that only the privileged helper may write."""
+    raw = _read_json(status_file)
+    state = raw.get("state")
+    commit = raw.get("commit")
+    detail = raw.get("detail")
+    at = _parse_moment(raw.get("at"))
+    if (
+        not isinstance(state, str)
+        or state not in HELPER_STATES
+        or not isinstance(commit, str)
+        or not COMMIT_PATTERN.match(commit)
+        or not isinstance(detail, str)
+        or not detail
+        or len(detail) > 2000
+        or at is None
+    ):
+        return None
+    rolled_back = raw.get("rolled_back")
+    if rolled_back is not None and not isinstance(rolled_back, bool):
+        return None
+    retryable = raw.get("retryable", False)
+    if not isinstance(retryable, bool):
+        return None
+    retry_after_raw = raw.get("retry_after")
+    retry_after = _parse_moment(retry_after_raw)
+    if retry_after_raw is not None and retry_after is None:
+        return None
+    attempt = raw.get("attempt")
+    if attempt is not None and (
+        not isinstance(attempt, str) or not ATTEMPT_PATTERN.fullmatch(attempt)
+    ):
+        return None
+    return HelperStatus(
+        state=state,
+        commit=commit,
+        detail=detail,
+        at=at,
+        rolled_back=rolled_back,
+        retryable=retryable,
+        retry_after=retry_after,
+        attempt=attempt,
+    )
+
+
+def status_completes_request(
+    state: State,
+    status: HelperStatus | None,
+    *,
+    installed_commit: str | None = None,
+    request_pending: bool | None = None,
+) -> bool:
+    """Whether a final helper note belongs to the persisted handoff.
+
+    New requests carry a random attempt identifier so rapid retries of the same
+    SHA cannot be confused. A manual update can supersede an older handoff, but
+    only after its request has disappeared and its success is newer than that
+    handoff. The timestamp fallback also finishes updates that crossed the
+    upgrade from the older status contract. Callers that have not inspected the
+    request file leave ``request_pending`` unknown, which conservatively
+    disables manual supersession.
+    """
+    if request_pending is True:
+        return False
+    requested_commit = state.requested_commit or state.resume_commit
+    if (
+        status is not None
+        and status.final
+        and status.attempt is None
+        and status.state == "succeeded"
+        and installed_commit is not None
+        and request_pending is False
+        and state.requested_at is not None
+        and status.commit == installed_commit
+        and status.at >= state.requested_at
+    ):
+        # A manual updater owns the same OS lock as the automatic helper. Once
+        # no request remains, a newer success matching the BUILD that is
+        # actually running proves it superseded the persisted handoff, even if
+        # that handoff named a different commit. Automatic attempts still need
+        # their exact opaque ID below.
+        return True
+    if (
+        status is None
+        or not status.final
+        or requested_commit is None
+        or status.commit != requested_commit
+    ):
+        return False
+    if state.requested_attempt is not None:
+        if status.attempt is not None:
+            return status.attempt == state.requested_attempt
+        # A legacy/manual helper cannot echo the random ID. It may still finish
+        # a handoff, but only a final note strictly after the precise request
+        # boundary qualifies; an older same-SHA result remains non-authoritative.
+        return state.requested_at is not None and status.at >= state.requested_at
+    if state.requested_at is None:
+        return False
+    legacy_boundary = state.requested_at.replace(microsecond=0)
+    return status.at >= legacy_boundary
+
+
+def install_in_progress(
+    data_dir: Path,
+    status_file: Path,
+    *,
+    now: datetime | None = None,
+    max_age: timedelta = timedelta(minutes=60),
+    installed_commit: str | None = None,
+) -> bool:
+    """Whether an update is queued, handed off, or reporting live work."""
+    request_pending = pending_request(data_dir) is not None
+    if request_pending:
+        return True
+    status = read_helper_status(status_file)
+    if status and status.active and status.fresh(now=now, max_age=max_age):
+        return True
+    state = read_state(data_dir)
+    if state.requested_at is None or state.requested_commit is None:
+        return False
+    if status_completes_request(
+        state,
+        status,
+        installed_commit=installed_commit,
+        request_pending=request_pending,
+    ):
+        return False
+    current = now or datetime.now(timezone.utc)  # noqa: UP017
+    age = current - state.requested_at
+    return -timedelta(minutes=5) <= age <= max_age
+
+
+def failed_commit_suppressed(
+    status: HelperStatus | None, commit: str, *, now: datetime | None = None
+) -> bool:
+    """Whether automatic installation should leave a failed commit alone.
+
+    Bad builds remain suppressed until the channel moves or an administrator
+    explicitly retries. A transient failure may opt into a bounded retry by
+    providing both ``retryable`` and ``retry_after``.
+    """
+    if status is None or status.state != "failed" or status.commit != commit:
+        return False
+    if not status.retryable or status.retry_after is None:
+        return True
+    current = now or datetime.now(timezone.utc)  # noqa: UP017
+    return current < status.retry_after
+
+
+def retry_delay_seconds(
+    status: HelperStatus | None,
+    *,
+    now: datetime,
+    normal_seconds: float,
+    minimum_seconds: float,
+) -> float | None:
+    """Return the next transient retry delay directly from durable status."""
+    if (
+        status is None
+        or status.state != "failed"
+        or not status.retryable
+        or status.retry_after is None
+    ):
+        return None
+    remaining = (status.retry_after - now).total_seconds()
+    return max(minimum_seconds, min(normal_seconds, remaining))
 
 
 def announcement(build: Build, state: State) -> dict[str, object] | None:
@@ -343,8 +655,15 @@ def acknowledge(data_dir: Path, build: Build) -> State:
     updated = State(
         acknowledged_commit=build.commit or state.acknowledged_commit,
         baseline_commit=state.baseline_commit,
-        requested_commit=None,
-        requested_summary=None,
+        requested_commit=state.requested_commit if state.resume_profile_id else None,
+        requested_summary=state.requested_summary if state.resume_profile_id else None,
+        # The helper may still be finishing after the new dashboard becomes
+        # healthy. Keep the attempt boundary until the stopped server has been
+        # resumed, so an old same-SHA status cannot satisfy that recovery work.
+        requested_at=state.requested_at if state.resume_profile_id else None,
+        requested_attempt=state.requested_attempt if state.resume_profile_id else None,
+        resume_profile_id=state.resume_profile_id,
+        resume_commit=state.resume_commit,
         last_checked_at=state.last_checked_at,
         last_error=state.last_error,
     )

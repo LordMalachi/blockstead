@@ -2,23 +2,29 @@
 
 ## Unreleased
 
-- Keep Blockstead current by itself. On startup, and every few hours after
-  that, Blockstead compares the commit it was built from against the project's
-  `main` branch and installs a newer one without the owner downloading
-  anything. Updating waits while people are playing and stops an empty server
-  first, because the installer will not run while a Minecraft process is still
-  attached. When the new version comes up, the dashboard says which version it
-  is now on and what changed. This works the same whether Blockstead came from
-  `git clone` or a downloaded ZIP: `scripts/update-linux.sh` now fetches the
-  new code itself instead of refusing to run outside a git checkout.
+- Keep Blockstead current from the newest passing `main` build. Required CI
+  jobs automatically advance a stable `update-channel` release and publish a
+  small `latest.json` manifest plus an approved `blockstead-linux.zip`, so no
+  manual version tag is required and neither new installers nor installed
+  copies are offered a push while its checks are running or failing. Serialized
+  publishers verify main ancestry and the existing manifest before advancing,
+  so an old workflow re-run cannot move the channel backward. Native ZIP and
+  Git installations use the same pinned-archive flow; a stale installation can
+  bootstrap once from the approved ZIP, and future updates become automatic.
+  Updating waits while people are playing, safely stops and restores a
+  previously running empty server, and reports durable downloading, installing,
+  success, or failure status in the dashboard.
   Updates cross the privilege boundary through a root-owned systemd path unit
   rather than `sudo`, since the dashboard's own unit sets `NoNewPrivileges` and
   cannot write `/opt`, and an update has to outlive the restart it causes. The
-  only value that crosses is a commit hash, checked against `^[0-9a-f]{40}$`;
-  the repository address lives in the root-owned helper where the service
-  account cannot change it. A new System panel shows the installed build, the
-  newest available, and a manual "Check now"; a copy that cannot update itself
-  says so plainly instead of pretending.
+  root-owned helper independently verifies that the requested SHA exactly
+  matches the approved manifest, uses a shared lock for every manual and
+  automatic entry point, and keeps its state and logs in symlink-safe,
+  root-owned directories. Rollback now restores the application, database,
+  updater units, enabled state, and prior running state. A failed commit is
+  remembered instead of retried after every restart, and its detailed log is
+  available through `blockstead update-logs`; transient manifest or archive
+  failures leave the installed version unchanged and retry after a delay.
 - Add a one-click vanilla switch to the Extensions panel: disable every
   installed plugin or mod at once to play plain Minecraft, then bring them all
   back exactly as they were. Nothing is deleted; files move to the managed

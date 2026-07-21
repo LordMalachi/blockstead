@@ -12,8 +12,11 @@ CONFIG_DIR=/etc/blockstead
 ENV_FILE=$CONFIG_DIR/blockstead.env
 SOURCE_RECORD=$CONFIG_DIR/install-source
 DATA_DIR=/var/lib/blockstead
+UPDATE_STATUS=/var/lib/blockstead-update/status.json
+UPDATE_LOG=/var/log/blockstead-update/update.log
 SERVER_ROOT=/srv/minecraft
 SERVICE=blockstead.service
+UPDATE_SERVICE=blockstead-update.service
 UNIT_PATH=/etc/systemd/system/$SERVICE
 ICON_PATH=/usr/share/icons/hicolor/scalable/apps/blockstead.svg
 
@@ -26,6 +29,8 @@ Usage: blockstead <command>
 Everyday commands:
   status               Is the dashboard running, and where do I open it?
   logs [-f] [lines]    Show recent dashboard messages (-f follows live)
+  update-logs [-f] [lines]
+                       Show updater messages (-f follows live)
   doctor               Check for common problems and suggest fixes
   url                  Print the dashboard address
   launch               Start the service (if stopped) and open the dashboard
@@ -170,6 +175,30 @@ cmd_logs() {
   fi
 }
 
+cmd_update_logs() {
+  local follow=false lines=100 arg
+  for arg in "$@"; do
+    case $arg in
+      -f | --follow) follow=true ;;
+      '' ) ;;
+      *[!0-9]*) die "Usage: blockstead update-logs [-f] [lines]" ;;
+      *) lines=$arg ;;
+    esac
+  done
+  if [[ -f $UPDATE_LOG && -r $UPDATE_LOG ]]; then
+    if [[ $follow == true ]]; then
+      echo "Following updater messages. Press Ctrl+C to stop."
+      tail -n "$lines" -F "$UPDATE_LOG"
+    else
+      tail -n "$lines" "$UPDATE_LOG"
+    fi
+  elif [[ $follow == true ]]; then
+    journalctl -u "$UPDATE_SERVICE" -n "$lines" -f
+  else
+    journalctl -u "$UPDATE_SERVICE" -n "$lines" --no-pager
+  fi
+}
+
 cmd_start() {
   require_root start
   systemctl start "$SERVICE"
@@ -211,25 +240,25 @@ cmd_reset_password() {
 cmd_update() {
   require_root update
   local src=""
+  # The installed updater is always preferred: the original ZIP or clone was
+  # bootstrap material and may now be stale, moved, or deleted.
+  if [[ -x $APP_DIR/scripts/update-linux.sh ]]; then
+    exec "$APP_DIR/scripts/update-linux.sh" "$@"
+  fi
   if [[ -f $SOURCE_RECORD ]]; then
     src=$(<"$SOURCE_RECORD")
   fi
   if [[ -n $src && -x $src/scripts/update-linux.sh ]]; then
     exec "$src/scripts/update-linux.sh" "$@"
   fi
-  # The folder Blockstead was installed from is often a download that has since
-  # been deleted or moved. The installed copy of the updater can fetch the new
-  # version by itself, so that is a perfectly good place to run it from.
-  if [[ -x $APP_DIR/scripts/update-linux.sh ]]; then
-    exec "$APP_DIR/scripts/update-linux.sh" "$@"
-  fi
   cat >&2 <<EOF
 Blockstead cannot find the folder it was installed from
 (${src:-no location was recorded}), and the installed copy has no updater.
 
 To update:
-  1. Download or clone the newest Blockstead release.
-  2. Open a terminal in that folder.
+  1. Download the approved Linux ZIP:
+     https://github.com/LordMalachi/blockstead/releases/download/update-channel/blockstead-linux.zip
+  2. Extract it and open a terminal in the blockstead-linux folder.
   3. Run: sudo ./scripts/install-linux.sh
 
 The installer recognizes the existing installation and keeps your settings,
@@ -291,6 +320,7 @@ check_free_space() {
 cmd_doctor() {
   require_root doctor
   local version state enabled url health hversion ctype port busy java_line java_major count
+  local update_state update_detail
 
   echo "Checking this Blockstead installation…"
   echo
@@ -317,6 +347,33 @@ cmd_doctor() {
   else
     problem "The system service file is missing." \
       "Run the installer again: sudo ./scripts/install-linux.sh"
+  fi
+
+  if [[ -f $UPDATE_STATUS ]]; then
+    mapfile -t update_fields < <(python3 - "$UPDATE_STATUS" <<'PY'
+import json
+import sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+    print(value.get("state", ""))
+    print(value.get("detail", ""))
+except (OSError, ValueError, TypeError):
+    pass
+PY
+)
+    update_state=${update_fields[0]:-}
+    update_detail=${update_fields[1]:-}
+    case $update_state in
+      failed)
+        note "The most recent Blockstead update failed." \
+          "${update_detail:-Read details with: sudo blockstead update-logs}  Logs: sudo blockstead update-logs"
+        ;;
+      downloading | installing)
+        note "A Blockstead update is currently $update_state." \
+          "Follow it with: sudo blockstead update-logs -f"
+        ;;
+      succeeded) ok "The most recent Blockstead update succeeded." ;;
+    esac
   fi
 
   enabled=$(systemctl is-enabled "$SERVICE" 2>/dev/null || true)
@@ -475,6 +532,7 @@ shift || true
 case $command in
   status)      cmd_status "$@" ;;
   logs)        cmd_logs "$@" ;;
+  update-logs) cmd_update_logs "$@" ;;
   url)         dashboard_url ;;
   launch)      cmd_launch "$@" ;;
   start)       cmd_start "$@" ;;

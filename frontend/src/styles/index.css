@@ -874,6 +874,7 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
    its actions, and more than one paragraph to separate. */
 .update-dialog .walkthrough-copy { display: grid; gap: .55rem; }
 .update-dialog .walkthrough-actions { margin-top: 1.15rem; }
+.update-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; }
 .walkthrough-layer { z-index: 101; }
 .walkthrough-target { outline: 3px solid #8fd1a6!important; outline-offset: 3px; box-shadow: 0 0 0 8px rgba(143,209,166,.28)!important; }
 

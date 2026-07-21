@@ -85,20 +85,39 @@ volumes.
 
 The normal installation does not require a terminal:
 
-1. Choose **Code → Download ZIP** on the Blockstead repository page.
-2. Open the downloaded ZIP and extract the `blockstead` folder.
+1. [Download the approved Blockstead Linux ZIP](https://github.com/LordMalachi/blockstead/releases/download/update-channel/blockstead-linux.zip).
+   This fixed link always points to the newest `main` build that passed CI.
+2. Open the downloaded ZIP and extract the `blockstead-linux` folder.
 3. Open that folder and double-click **Install Blockstead**. If Linux Mint asks
    whether to trust or launch it, choose **Trust and Launch**.
 4. Choose **Install** and enter your administrator password when Linux asks.
 
 The installer checks the computer, installs any missing requirements, shows a
 progress window, adds the Blockstead app icon, and opens the dashboard when it
-is ready. Keep the extracted folder: opening **Install Blockstead** from a newer
-download safely updates the existing installation.
+is ready. The ZIP itself is produced from the exact commit that passed
+Blockstead's required checks. Its installer verifies the update-channel
+manifest and installs that approved build; the extracted folder is not needed
+for later updates.
 
-For a terminal-based installation or automation, use:
+If Blockstead was installed from a ZIP downloaded before automatic updates were
+introduced, download the approved ZIP from the link above and run **Install
+Blockstead** one more time. That one-time bootstrap installs the updater; future
+updates require no new ZIP and preserve the existing settings, accounts,
+backups, and worlds.
+
+From the extracted approved ZIP, a terminal-based installation or automation
+can use:
 
 ```bash
+sudo bash ./scripts/install-linux.sh
+```
+
+If you prefer Git, check out the CI-approved moving tag rather than executing
+an installer from the live, still-being-tested `main` branch:
+
+```bash
+git clone --branch update-channel --single-branch https://github.com/LordMalachi/blockstead.git
+cd blockstead
 sudo bash ./scripts/install-linux.sh
 ```
 
@@ -150,6 +169,10 @@ exposes a general-purpose shell in the browser.
 
 Docker is optional. It is a convenient app wrapper on Linux, macOS, or Windows
 when you would rather keep Blockstead and Java out of the host operating system.
+Docker installations do not run the native self-update helper. Refresh their
+local source from the approved ZIP or `update-channel` Git tag, then rebuild the
+container with Compose; [the Docker guide](docs/docker.md#logs-shutdown-and-upgrades)
+has the exact update commands.
 
 ```bash
 cp docker.env.example docker.env
@@ -170,11 +193,8 @@ down. `docker compose down` keeps both volumes. **Do not run
 `docker compose down -v` unless you intend to delete Blockstead's data and all
 managed Minecraft servers.**
 
-```bash
-docker compose logs -f blockstead
-docker compose --env-file docker.env build --pull
-docker compose --env-file docker.env up -d
-```
+View live container logs with `docker compose logs -f blockstead`. Use the
+approved-source refresh steps in the Docker guide before rebuilding an upgrade.
 
 LAN dashboard access, existing-world imports, extra ports used by mods, volume
 backup guidance, and container limitations are covered in the
@@ -223,6 +243,7 @@ terminal:
 | `blockstead status` | Is everything running, and where do I open it? |
 | `blockstead doctor` | Checks for common problems and says how to fix them |
 | `blockstead logs` | Shows recent dashboard messages (`-f` follows live) |
+| `blockstead update-logs` | Shows native updater messages (`-f` follows live) |
 | `blockstead url` | Prints the dashboard address |
 | `sudo blockstead start` / `stop` / `restart` | Controls the dashboard service |
 | `sudo blockstead update` | Downloads and installs the newest Blockstead |
@@ -235,26 +256,34 @@ dashboard, so saves are flushed and players are treated politely.
 
 **Blockstead keeps itself up to date. Normally there is nothing to do.**
 
-When Blockstead starts, and every few hours after that, it asks GitHub whether
-newer code exists. If it does, Blockstead downloads and installs it on its own,
-then tells you which version you are now on and what changed. This works the
-same whether you cloned the repository or downloaded the ZIP — you never need
-to download a new ZIP by hand again.
+When Blockstead starts, and every few hours after that, it asks GitHub for the
+newest commit on `main` that passed every required CI check. A push that is
+still being tested, or one whose tests fail, is never offered to installed
+copies. Blockstead downloads that exact approved archive, installs it, and
+then tells you which build you are now on and what changed.
+
+All native Linux installations use this same flow. It does not matter whether
+the first copy came from the approved Git tag or approved ZIP, and updates do
+not depend on the original folder still existing. The repository owner does not
+have to create version tags, and installed users do not repeat ZIP downloads.
 
 Updating is polite about your players:
 
 | What is happening | What Blockstead does |
 | --- | --- |
 | No Minecraft server running | Updates straight away |
-| Server running, nobody online | Stops the server, updates, and leaves it stopped |
+| Server running, nobody online | Stops it safely, updates, then starts it again if it was running before |
 | Players online | Waits, and says so in the dashboard, until the server is empty |
 
 Your settings, administrator accounts, backups, and Minecraft folders are
-always preserved. The update builds the replacement before stopping the
-dashboard, backs up the application database, runs database migrations, and
-verifies the new version's health endpoint — if anything fails, the previous
-application and database are restored automatically and the old version keeps
-running.
+always preserved. A check or download problem changes nothing and is retried
+later. Once installation begins, Blockstead builds the replacement before
+stopping the dashboard, backs up the application database, runs database
+migrations, and verifies the new version's health endpoint. If that installation
+or health check fails, the previous application and database are restored and
+the old version keeps running. Blockstead remembers that broken commit and does
+not automatically try it in a loop. It can try again after a different commit
+passes CI, or when an owner explicitly retries with `sudo blockstead update`.
 
 **System → Blockstead updates** shows the installed version, the newest
 available, and when it last looked. To update on the spot rather than waiting
@@ -265,22 +294,31 @@ sudo blockstead update
 ```
 
 Do not copy files directly into `/opt/blockstead`; that can leave obsolete
-dependencies or mismatched dashboard assets behind.
+dependencies or mismatched dashboard assets behind. Update progress and the
+last result appear in **System → Blockstead updates**. Read the updater's own
+log with `blockstead update-logs` (add `-f` to follow it live).
 
 ### How the update is allowed to happen
 
 The dashboard runs as an unprivileged account that cannot write `/opt` and
 cannot use `sudo`. It never installs anything itself. It writes a small request
-naming one commit into its own data folder; a root-owned systemd path unit sees
-that file and runs `/usr/lib/blockstead/blockstead-update`. That helper accepts
-nothing but a commit hash, holds its own copy of the repository address where
-the service account cannot edit it, and downloads that exact commit over HTTPS.
-Running as a separate unit is also what lets the update survive the dashboard
-restart it causes.
+naming the approved commit into its own data folder; a root-owned systemd path
+unit sees that file and runs `/usr/lib/blockstead/blockstead-update`. The helper
+accepts nothing but a commit hash and independently fetches the fixed update
+channel whose repository and URL live in that root-owned helper. It proceeds
+only when the requested hash exactly matches the newest passing `main` commit,
+then downloads that exact archive over HTTPS. The request cannot redirect the
+helper to another repository or choose an arbitrary historical commit. Running
+as a separate unit is also what lets the update survive the dashboard restart
+it causes.
 
-Because Blockstead follows the `main` branch rather than tagged releases, every
-push reaches installed copies. The health check and automatic rollback are what
-protect you if a release does not come up cleanly.
+The fixed `update-channel` GitHub release and its small `latest.json` manifest
+are advanced automatically only after the cross-platform tests, quality
+checks, browser tests, packaging checks, and native updater integration tests
+pass. That workflow also publishes the approved `blockstead-linux.zip` used for
+new installations, and refuses to move the channel backward if an older job is
+re-run or finishes late. The application still verifies its health after
+installation and rolls back if the approved release does not start cleanly.
 
 ## If something goes wrong
 
@@ -299,7 +337,8 @@ cases:
 | The dashboard page will not load | `blockstead status`, then `sudo blockstead start` if stopped |
 | The server will not start, dashboard is fine | Java missing (`sudo apt install openjdk-21-jre-headless`) or `eula.txt` not accepted — the dashboard's readiness panel says which |
 | “Port already in use” | Another program owns the port; `blockstead doctor` names it — stop it or change `BLOCKSTEAD_PORT` in `/etc/blockstead/blockstead.env`, then `sudo blockstead restart` |
-| An update failed | Nothing to do — the previous version was restored automatically; `blockstead logs` shows why |
+| An update check or download failed | The installed version was not changed; Blockstead retries transient failures later, and `blockstead update-logs` has details |
+| An installation or health check failed | The previous version was restored and that broken commit will not retry automatically; inspect `blockstead update-logs` |
 
 To read live dashboard messages: `blockstead logs -f`.
 
@@ -327,6 +366,7 @@ exactly where it left them.
 | `/var/lib/blockstead/` | Administrator accounts, private data, world backups |
 | `/etc/blockstead/blockstead.env` | Dashboard settings (address, port) |
 | `/var/log/blockstead/` | Application logs |
+| `/var/log/blockstead-update/update.log` | Root-owned native updater log (`blockstead update-logs`) |
 | `/opt/blockstead/` | The application itself (replaced on update) |
 
 ## How it stays safe

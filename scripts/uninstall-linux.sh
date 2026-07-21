@@ -5,6 +5,9 @@ APP_DIR=/opt/blockstead
 CONFIG_DIR=/etc/blockstead
 DATA_DIR=/var/lib/blockstead
 LOG_DIR=/var/log/blockstead
+UPDATE_STATE_DIR=/var/lib/blockstead-update
+UPDATE_LOG_DIR=/var/log/blockstead-update
+UPDATE_LOCK=/run/blockstead-update.lock
 SERVER_ROOT=/srv/minecraft
 SERVICE=blockstead.service
 UNIT_PATH=/etc/systemd/system/$SERVICE
@@ -48,20 +51,54 @@ for arg in "$@"; do
   esac
 done
 
-# Never pull the service down while it is still supervising a Minecraft
-# process; the owner should stop the server from the dashboard first.
-if systemctl is-active --quiet "$SERVICE"; then
-  main_pid=$(systemctl show "$SERVICE" --property MainPID --value)
-  child_file=/proc/$main_pid/task/$main_pid/children
-  if [[ -r $child_file ]]; then
-    read -r child_pids <"$child_file" || true
-    if [[ -n ${child_pids:-} ]]; then
-      echo "A managed Minecraft process still appears to be running." >&2
-      echo "Stop it from the Blockstead dashboard, then run this command again." >&2
-      exit 1
+command -v flock >/dev/null \
+  || { echo "Missing required command: flock (part of util-linux)." >&2; exit 1; }
+
+ensure_no_managed_server() {
+  local main_pid child_file child_pids=""
+  # Never pull the service down while it is still supervising a Minecraft
+  # process; the owner should stop the server from the dashboard first.
+  if systemctl is-active --quiet "$SERVICE"; then
+    main_pid=$(systemctl show "$SERVICE" --property MainPID --value)
+    child_file=/proc/$main_pid/task/$main_pid/children
+    if [[ -r $child_file ]]; then
+      read -r child_pids <"$child_file" || true
+      if [[ -n $child_pids ]]; then
+        echo "A managed Minecraft process still appears to be running." >&2
+        echo "Stop it from the Blockstead dashboard, then run this command again." >&2
+        exit 1
+      fi
     fi
   fi
-fi
+}
+
+quarantine_data_entry() {
+  local name=$1
+  python3 - "$DATA_DIR" "$name" <<'PY'
+import os
+import secrets
+import sys
+
+directory, name = sys.argv[1:]
+try:
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+except FileNotFoundError:
+    raise SystemExit(0)
+try:
+    destination = f".removed-{name}.{secrets.token_hex(8)}"
+    try:
+        # renameat consumes the directory entry itself regardless of whether it
+        # is a file, symlink, FIFO, or nonempty directory. Nothing is followed
+        # or recursively deleted from the service-owned data directory.
+        os.rename(name, destination, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+    except FileNotFoundError:
+        pass
+finally:
+    os.close(directory_fd)
+PY
+}
+
+ensure_no_managed_server
 
 if [[ $assume_yes == false ]]; then
   echo "This removes the Blockstead application, system service, terminal"
@@ -96,12 +133,76 @@ if [[ $assume_yes == false ]]; then
   fi
 fi
 
-systemctl disable --now "$SERVICE" 2>/dev/null || true
+update_path_existed=false
+update_path_was_enabled=false
+update_path_was_active=false
+uninstall_committed=false
+if [[ -f $UPDATE_PATH_UNIT ]]; then update_path_existed=true; fi
+if systemctl is-enabled --quiet blockstead-update.path; then update_path_was_enabled=true; fi
+if systemctl is-active --quiet blockstead-update.path; then update_path_was_active=true; fi
+
+restore_watcher_on_abort() {
+  local status=$?
+  trap - EXIT
+  if [[ $uninstall_committed == false && $update_path_existed == true ]]; then
+    systemctl daemon-reload 2>/dev/null || true
+    if [[ $update_path_was_enabled == true ]]; then
+      systemctl enable blockstead-update.path 2>/dev/null || true
+    else
+      systemctl disable blockstead-update.path 2>/dev/null || true
+    fi
+    if [[ $update_path_was_active == true ]]; then
+      systemctl start blockstead-update.path 2>/dev/null || true
+    else
+      systemctl stop blockstead-update.path 2>/dev/null || true
+    fi
+  fi
+  exit "$status"
+}
+trap restore_watcher_on_abort EXIT
+
 # The update watcher is a separate unit, so it has to be stopped separately or
-# it would sit there waiting to reinstall what was just removed.
+# it would sit there waiting to reinstall what was just removed. Stop and wait
+# for the oneshot helper before taking the shared lock: an in-flight installer
+# owns that lock and handles TERM by rolling itself back first.
 systemctl disable --now blockstead-update.path 2>/dev/null || true
+systemctl stop blockstead-update.service 2>/dev/null || true
+for _ in {1..60}; do
+  systemctl is-active --quiet blockstead-update.service || break
+  sleep 1
+done
+if systemctl is-active --quiet blockstead-update.service; then
+  echo "The Blockstead update service did not stop safely; uninstall was cancelled." >&2
+  exit 1
+fi
+
+if [[ ${BLOCKSTEAD_UPDATE_LOCKED:-} == 1 && -e /proc/$$/fd/9 \
+    && $(readlink -f /proc/$$/fd/9 2>/dev/null || true) == "$UPDATE_LOCK" ]]; then
+  : # A trusted parent already owns the shared lock.
+else
+  unset BLOCKSTEAD_UPDATE_LOCKED
+  exec 9>"$UPDATE_LOCK"
+  if ! flock --wait 1800 9; then
+    echo "Another Blockstead maintenance task did not finish; uninstall was cancelled." >&2
+    exit 1
+  fi
+  export BLOCKSTEAD_UPDATE_LOCKED=1
+fi
+
+# Recheck under the lock, then stop both watcher and dashboard. A manual update
+# that was already finishing may have re-enabled the watcher while we waited.
+ensure_no_managed_server
+systemctl disable --now blockstead-update.path 2>/dev/null || true
+systemctl stop blockstead-update.service 2>/dev/null || true
+quarantine_data_entry update-request.json
+quarantine_data_entry update-result.json
+uninstall_committed=true
+systemctl disable --now "$SERVICE" 2>/dev/null || true
 rm -f "$UNIT_PATH" "$POWER_HELPER" "$SUDOERS_PATH" "$CLI_PATH" "$DESKTOP_PATH" "$ICON_PATH" \
   "$UPDATE_HELPER" "$UPDATE_PATH_UNIT" "$UPDATE_SERVICE_UNIT"
+# The service-owned request/result entries were atomically quarantined above,
+# before destructive uninstall work began. A preserved data directory therefore
+# cannot reinstall Blockstead later, even if either entry was an unsafe directory.
 if [[ -n "${SUDO_USER:-}" ]]; then
   USER_DESKTOP=$(runuser -u "$SUDO_USER" -- xdg-user-dir DESKTOP 2>/dev/null || echo "")
   if [[ -n "$USER_DESKTOP" && -d "$USER_DESKTOP" ]]; then
@@ -110,6 +211,7 @@ if [[ -n "${SUDO_USER:-}" ]]; then
 fi
 rmdir /usr/lib/blockstead 2>/dev/null || true
 rm -rf "$APP_DIR"
+rm -rf "$UPDATE_STATE_DIR"
 systemctl daemon-reload
 if command -v update-desktop-database >/dev/null; then
   update-desktop-database -q /usr/share/applications || true
@@ -119,7 +221,7 @@ if command -v gtk-update-icon-cache >/dev/null; then
 fi
 
 if [[ $purge == true ]]; then
-  rm -rf "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+  rm -rf "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$UPDATE_LOG_DIR"
   if id -u blockstead >/dev/null 2>&1; then
     userdel blockstead 2>/dev/null || true
   fi

@@ -26,11 +26,26 @@ class Settings(BaseSettings):
     #: application asks for, so changing it here alone cannot redirect an update.
     update_repo: str = "LordMalachi/blockstead"
     update_branch: str = "main"
+    #: Promoted only after the configured branch passes its GitHub Actions
+    #: checks. Installed copies never follow the live branch tip directly.
+    update_manifest_url: str = (
+        "https://github.com/LordMalachi/blockstead/releases/download/update-channel/latest.json"
+    )
     #: Where the installer recorded the commit this copy was built from. Left
     #: unset, Blockstead looks beside the installed application.
     update_build_file: Path | None = None
+    #: Durable progress owned by root and readable by the dashboard service.
+    update_status_file: Path = Path("/var/lib/blockstead-update/status.json")
+    #: An active helper status older than this no longer hides a stalled update.
+    update_status_max_age_minutes: int = Field(default=60, ge=1)
+    #: Poll helper progress promptly so an empty server can be resumed after the
+    #: installer or rollback finishes.
+    update_status_poll_seconds: float = Field(default=5.0, ge=0.1, le=300)
     #: How long to wait between update checks while the application keeps running.
     update_check_hours: int = Field(default=6, ge=1)
+    #: Once an update is waiting for players to leave, check frequently instead
+    #: of waiting for the normal six-hour channel interval.
+    update_wait_minutes: float = Field(default=5.0, ge=0.1, le=60)
 
     @field_validator("bind_host")
     @classmethod

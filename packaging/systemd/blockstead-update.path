@@ -8,6 +8,10 @@ Documentation=https://github.com/LordMalachi/blockstead
 # systemd sandbox lets it write, and that is what starts the update.
 PathExists=/var/lib/blockstead/update-request.json
 Unit=blockstead-update.service
+# Avoid a malformed request causing a tight systemd restart loop. The helper
+# normally consumes every request, including invalid and unauthorized ones.
+TriggerLimitIntervalSec=60s
+TriggerLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target

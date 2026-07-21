@@ -2,6 +2,7 @@ import shutil
 import tarfile
 import time
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -12,6 +13,7 @@ from blockstead.app import create_app
 from blockstead.backups import BackupError
 from blockstead.config import Settings
 from blockstead.models import BackupRecord
+from blockstead.updates import request_install
 
 FIXTURE = Path(__file__).parents[2] / "fixtures" / "servers" / "vanilla-fixture"
 OWNER = {"username": "owner", "password": "correct horse battery staple"}
@@ -114,6 +116,23 @@ def test_manual_backup_creates_private_archive_and_history(
 
     history = client.get(f"/api/v1/profiles/{profile_id}/backups").json()
     assert history == [body]
+
+
+def test_manual_backup_is_refused_while_an_update_is_handed_off(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    profile_id = import_fixture(client, auth)
+    request_install(
+        client.app.state.settings.data_dir,
+        "b" * 40,
+        attempt="1" * 32,
+        requested_at=datetime.now(UTC),
+    )
+
+    response = client.post(f"/api/v1/profiles/{profile_id}/backups", headers=auth)
+
+    assert response.status_code == 409
+    assert "being updated" in response.json()["error"]["message"]
 
 
 def test_manual_backup_mirrors_to_every_approved_destination(
@@ -278,6 +297,31 @@ def test_restore_is_refused_while_the_server_runs(owned_client: TestClient) -> N
     finally:
         assert owned_client.post("/api/v1/server/stop", headers=auth).status_code == 202
         wait_for_state(owned_client, "STOPPED")
+
+
+def test_restore_is_refused_while_an_update_is_handed_off(
+    owned_client: TestClient,
+) -> None:
+    auth = owned_auth(owned_client)
+    profile_id, server = import_writable_copy(owned_client, auth)
+    (server / "world" / "level.dat").write_bytes(b"protected")
+    backup = owned_client.post(
+        f"/api/v1/profiles/{profile_id}/backups", headers=auth
+    ).json()
+    request_install(
+        owned_client.app.state.settings.data_dir,
+        "b" * 40,
+        attempt="1" * 32,
+        requested_at=datetime.now(UTC),
+    )
+
+    response = owned_client.post(
+        f"/api/v1/profiles/{profile_id}/backups/{backup['id']}/restore",
+        headers=auth,
+    )
+
+    assert response.status_code == 409
+    assert "being updated" in response.json()["error"]["message"]
 
 
 def test_restore_rejects_a_tampered_archive(owned_client: TestClient) -> None:

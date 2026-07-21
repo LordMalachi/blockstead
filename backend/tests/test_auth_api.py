@@ -16,7 +16,12 @@ NEW_PASSWORD = "an entirely new password"  # noqa: S105 - deliberately fake test
 
 def test_health_reveals_no_server_details(client: TestClient) -> None:
     response = client.get("/api/v1/health")
-    assert response.json() == {"status": "ok", "version": "0.1.0"}
+    assert response.json() == {
+        "status": "ok",
+        "version": "0.1.0",
+        "commit": None,
+        "short_commit": None,
+    }
     assert response.headers["x-frame-options"] == "DENY"
 
 

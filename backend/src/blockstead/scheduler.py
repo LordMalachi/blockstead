@@ -139,10 +139,14 @@ class Scheduler:
         data_dir: Path,
         server_root: Path,
         power_helper: Path = POWER_HELPER,
+        begin_critical_operation: Callable[[str], Awaitable[str]] | None = None,
+        end_critical_operation: Callable[[str], None] | None = None,
     ) -> None:
         self.factory, self.manager, self.start = factory, manager, start
         self.data_dir, self.server_root = data_dir, server_root
         self.power_helper = power_helper
+        self.begin_critical_operation = begin_critical_operation
+        self.end_critical_operation = end_critical_operation
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -418,6 +422,18 @@ class Scheduler:
 
     async def backup(
         self, db: Session, profile: Profile, now: datetime, trigger: str = "schedule"
+    ) -> BackupRecord:
+        critical_token: str | None = None
+        if self.begin_critical_operation is not None:
+            critical_token = await self.begin_critical_operation("backup")
+        try:
+            return await self._backup(db, profile, now, trigger)
+        finally:
+            if critical_token is not None and self.end_critical_operation is not None:
+                self.end_critical_operation(critical_token)
+
+    async def _backup(
+        self, db: Session, profile: Profile, now: datetime, trigger: str
     ) -> BackupRecord:
         record = BackupRecord(profile_id=profile.id, trigger=trigger, created_at=now)
         db.add(record)

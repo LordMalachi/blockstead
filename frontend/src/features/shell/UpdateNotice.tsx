@@ -27,16 +27,30 @@ function banner(status: UpdateStatus): { tone: string; message: string } | null 
         + "disconnected mid-game.",
     };
   }
+  const currentFailure = status.last_result?.state === "failed"
+    && (!status.latest || status.last_result.commit === status.latest.commit);
+  if (status.decision === "failed" || currentFailure) {
+    if (status.last_result?.retryable) {
+      const retryAt = status.last_result.retry_after
+        ? ` Next automatic try: ${new Date(status.last_result.retry_after).toLocaleString()}.`
+        : " Blockstead will try again automatically.";
+      return {
+        tone: "warning",
+        message: `${status.last_result.detail}${retryAt}`,
+      };
+    }
+    return {
+      tone: "error",
+      message: `${status.last_result?.detail ?? "The latest Blockstead update was rolled back."} Open System to review it or retry when you are ready.`,
+    };
+  }
   if (status.decision === "manual" && status.latest) {
     return {
       tone: "warning",
-      message:
-        `A newer Blockstead (${status.latest.short_commit}) is available. `
-        + "This copy cannot update itself, so install it the way you set it up.",
+      message: status.supported
+        ? `A newer Blockstead (${status.latest.short_commit}) is available. Automatic updates are off; open System when you are ready to install it.`
+        : `A newer Blockstead (${status.latest.short_commit}) is available. This copy cannot update itself, so install it the way you set it up.`,
     };
-  }
-  if (status.last_result?.state === "failed") {
-    return { tone: "error", message: status.last_result.detail };
   }
   return null;
 }

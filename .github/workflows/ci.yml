@@ -2,6 +2,10 @@ name: CI
 on:
   push:
   pull_request:
+
+permissions:
+  contents: read
+
 jobs:
   cross-platform:
     strategy:
@@ -46,5 +50,262 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y shellcheck desktop-file-utils
-      - run: shellcheck scripts/*.sh packaging/bin/blockstead packaging/blockstead-power packaging/blockstead-update
+      - run: shellcheck scripts/*.sh tests/integration/*.sh packaging/bin/blockstead packaging/blockstead-power packaging/blockstead-update
       - run: desktop-file-validate packaging/desktop/blockstead.desktop "Install Blockstead.desktop"
+      - name: Test the native updater in a disposable Linux container
+        run: tests/integration/run-native-update-tests.sh
+
+  publish-update-channel:
+    name: Publish latest passing main
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'LordMalachi/blockstead'
+    needs: [cross-platform, quality, end-to-end, packaging]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Publisher jobs are serialized, then independently prove that their commit
+    # is still on main and advances the manifest already being served. GitHub
+    # does not guarantee workflow-run ordering, and old runs can be re-run with
+    # their original SHA, so cancellation alone is not a release invariant.
+    concurrency:
+      group: blockstead-update-channel
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build update-channel assets
+        run: |
+          set -euo pipefail
+
+          jq --null-input \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg branch "main" \
+            --arg commit "$GITHUB_SHA" \
+            --arg committed_at "$(git show -s --format=%cI "$GITHUB_SHA")" \
+            --arg summary "$(git show -s --format=%s "$GITHUB_SHA")" \
+            --arg published_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            '{schema: 1, repository: $repository, branch: $branch, commit: $commit, committed_at: $committed_at, summary: $summary, published_at: $published_at}' \
+            > latest.json
+          jq --exit-status \
+            --arg commit "$GITHUB_SHA" \
+            '(keys | sort) == ["branch", "commit", "committed_at", "published_at", "repository", "schema", "summary"] and
+             .schema == 1 and
+             .repository == "LordMalachi/blockstead" and
+             .branch == "main" and
+             .commit == $commit and
+             (.commit | test("^[0-9a-f]{40}$")) and
+             (.committed_at | type == "string" and length > 0) and
+             (.summary | type == "string" and length > 0 and length <= 500) and
+             (.summary | test("^\\s|\\s$") | not) and
+             (.summary | test("[\\r\\n]") | not) and
+             (.published_at | type == "string" and length > 0)' \
+            latest.json >/dev/null
+
+          git archive \
+            --format=zip \
+            --prefix=blockstead-linux/ \
+            --output=blockstead-linux.zip \
+            "$GITHUB_SHA"
+          python3 - <<'PY'
+          import zipfile
+
+          required = {
+              "blockstead-linux/Install Blockstead.desktop",
+              "blockstead-linux/scripts/install-linux.sh",
+          }
+          with zipfile.ZipFile("blockstead-linux.zip") as archive:
+              names = set(archive.namelist())
+              missing = required - names
+              if missing:
+                  raise SystemExit(f"approved Linux ZIP is missing: {sorted(missing)}")
+              not_executable = {
+                  name for name in required
+                  if not (archive.getinfo(name).external_attr >> 16) & 0o111
+              }
+              if not_executable:
+                  raise SystemExit(
+                      f"approved Linux ZIP lost executable modes: {sorted(not_executable)}"
+                  )
+          PY
+      - name: Verify this is a forward main promotion
+        id: promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          live_main=$(gh api "repos/$REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          main_relation=$(
+            gh api "repos/$REPOSITORY/compare/$GITHUB_SHA...$live_main" --jq '.status'
+          )
+          case $main_relation in
+            ahead | identical) ;;
+            *)
+              echo "Skipping: $GITHUB_SHA is no longer an ancestor of main ($live_main)."
+              echo "publish=false" >>"$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          owner=${REPOSITORY%%/*}
+          repository_name=${REPOSITORY#*/}
+          # GraphQL returns null for a missing release but fails on API/network
+          # errors, so a transient lookup problem cannot be mistaken for an
+          # empty channel and authorize an unsafe old re-run.
+          # shellcheck disable=SC2016  # $owner/$name are GraphQL variables.
+          channel_metadata=$(
+            gh api graphql \
+              --raw-field owner="$owner" \
+              --raw-field name="$repository_name" \
+              --raw-field query='
+                query($owner: String!, $name: String!) {
+                  repository(owner: $owner, name: $name) {
+                    release(tagName: "update-channel") {
+                      releaseAssets(first: 100) { nodes { name } }
+                    }
+                    ref(qualifiedName: "refs/tags/update-channel") {
+                      target { oid }
+                    }
+                  }
+                }
+              ' \
+              --jq '.data.repository'
+          )
+          release_metadata=$(jq --compact-output '.release' <<<"$channel_metadata")
+          tag_commit=$(jq --raw-output '.ref.target.oid // empty' <<<"$channel_metadata")
+          if [[ -n $release_metadata && $release_metadata != null ]]; then
+            has_zip=false
+            if jq --exit-status \
+              'any(.releaseAssets.nodes[]; .name == "blockstead-linux.zip")' \
+              >/dev/null <<<"$release_metadata"; then
+              has_zip=true
+            fi
+
+            if jq --exit-status \
+              'any(.releaseAssets.nodes[]; .name == "latest.json")' \
+              >/dev/null <<<"$release_metadata"; then
+              mkdir previous-channel
+              gh release download update-channel \
+                --repo "$REPOSITORY" \
+                --pattern latest.json \
+                --dir previous-channel
+              previous_commit=$(
+                jq --exit-status --raw-output \
+                  'select(
+                    (keys | sort) == ["branch", "commit", "committed_at", "published_at", "repository", "schema", "summary"] and
+                    .schema == 1 and
+                    .repository == "LordMalachi/blockstead" and
+                    .branch == "main" and
+                    (.commit | type == "string" and test("^[0-9a-f]{40}$")) and
+                    (.committed_at | type == "string" and length > 0) and
+                    (.summary | type == "string" and length > 0 and length <= 500) and
+                    (.summary | test("^\\s|\\s$") | not) and
+                    (.summary | test("[\\r\\n]") | not) and
+                    (.published_at | type == "string" and length > 0)
+                  ) | .commit' \
+                  previous-channel/latest.json
+              )
+              if [[ $previous_commit == "$GITHUB_SHA" ]]; then
+                if [[ $has_zip == true ]]; then
+                  echo "The update channel already serves both assets for $GITHUB_SHA."
+                  echo "publish=false" >>"$GITHUB_OUTPUT"
+                  exit 0
+                fi
+                echo "Repairing the missing Linux ZIP for $GITHUB_SHA."
+              else
+                channel_relation=$(
+                  gh api "repos/$REPOSITORY/compare/$previous_commit...$GITHUB_SHA" --jq '.status'
+                )
+                if [[ $channel_relation != ahead ]]; then
+                  echo "Skipping non-forward promotion from $previous_commit to $GITHUB_SHA ($channel_relation)."
+                  echo "publish=false" >>"$GITHUB_OUTPUT"
+                  exit 0
+                fi
+              fi
+            else
+              # A first publication can be interrupted after creating the
+              # release/tag but before uploading the manifest. Use that tag as
+              # the recovery floor so an old re-run still cannot move backward.
+              echo "The channel release has no manifest; repairing it."
+              [[ -n $tag_commit ]] || {
+                echo "The existing channel release has neither a manifest nor a tag." >&2
+                exit 1
+              }
+            fi
+          fi
+
+          # The manifest is authoritative for clients, while the tag is also a
+          # floor because it may have advanced during a partially completed
+          # publication. Requiring both floors makes every repair monotonic.
+          if [[ -n $tag_commit && $tag_commit != "$GITHUB_SHA" ]]; then
+            tag_relation=$(
+              gh api "repos/$REPOSITORY/compare/$tag_commit...$GITHUB_SHA" --jq '.status'
+            )
+            if [[ $tag_relation != ahead ]]; then
+              echo "Skipping non-forward promotion from tag $tag_commit to $GITHUB_SHA ($tag_relation)."
+              echo "publish=false" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          # Narrow the race with a force-push by checking main again immediately
+          # before the release/tag mutation. Normal newer pushes are fine because
+          # this tested commit remains their ancestor.
+          live_main=$(gh api "repos/$REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          main_relation=$(
+            gh api "repos/$REPOSITORY/compare/$GITHUB_SHA...$live_main" --jq '.status'
+          )
+          case $main_relation in
+            ahead | identical) echo "publish=true" >>"$GITHUB_OUTPUT" ;;
+            *)
+              echo "Skipping: main was rewritten while assets were prepared."
+              echo "publish=false" >>"$GITHUB_OUTPUT"
+              ;;
+          esac
+      - name: Create or advance the stable update-channel release
+        if: steps.promotion.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if gh api "repos/$REPOSITORY/git/ref/tags/update-channel" >/dev/null 2>&1; then
+            gh api \
+              --method PATCH \
+              "repos/$REPOSITORY/git/refs/tags/update-channel" \
+              --field sha="$GITHUB_SHA" \
+              --field force=true >/dev/null
+          else
+            gh api \
+              --method POST \
+              "repos/$REPOSITORY/git/refs" \
+              --field ref="refs/tags/update-channel" \
+              --field sha="$GITHUB_SHA" >/dev/null
+          fi
+
+          if gh release view update-channel --repo "$REPOSITORY" >/dev/null 2>&1; then
+            gh release edit update-channel \
+              --repo "$REPOSITORY" \
+              --title "Blockstead automatic update channel" \
+              --notes "The latest commit on main that passed every required CI check. Download blockstead-linux.zip below for a CI-approved new installation. This release is managed automatically; no manual tag is needed."
+          else
+            gh release create update-channel \
+              --repo "$REPOSITORY" \
+              --verify-tag \
+              --prerelease \
+              --title "Blockstead automatic update channel" \
+              --notes "The latest commit on main that passed every required CI check. Download blockstead-linux.zip below for a CI-approved new installation. This release is managed automatically; no manual tag is needed."
+          fi
+
+          # Publish the human bootstrap first and the manifest pointer last, so
+          # the workflow never intentionally advertises a ZIP it has not
+          # successfully uploaded.
+          gh release upload update-channel blockstead-linux.zip \
+            --repo "$REPOSITORY" \
+            --clobber
+          gh release upload update-channel latest.json \
+            --repo "$REPOSITORY" \
+            --clobber
