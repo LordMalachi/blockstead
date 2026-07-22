@@ -40,6 +40,9 @@ def paper_profile(api: tuple[TestClient, Path], headers: dict[str, str]) -> str:
     folder.mkdir(parents=True)
     (folder / "server.properties").write_text("motd=hi\n", encoding="utf-8")
     (folder / "paper.yml").write_text("", encoding="utf-8")
+    (folder / "fake-server.json").write_text(
+        '{"minecraft_version":"1.21.1"}\n', encoding="utf-8"
+    )
     created = client.post(
         "/api/v1/profiles", headers=headers, json={"name": "Paper", "path": str(folder)}
     )
