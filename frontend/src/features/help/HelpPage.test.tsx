@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { HelpPage } from "./HelpPage";
 import { WalkthroughProvider } from "./Walkthrough";
@@ -66,8 +66,9 @@ test("searches common synonyms and clears an empty result", () => {
   expect(updateGuide!.querySelector("a")).toHaveAttribute("href", "/system#updates");
 
   fireEvent.change(search, { target: { value: "something impossible" } });
-  expect(screen.getByRole("link", { name: /Open Activity/ })).toHaveAttribute("href", "/activity");
-  expect(screen.getByRole("link", { name: /Open diagnostics/ })).toHaveAttribute("href", "/system");
+  const recoverySuggestions = within(screen.getByLabelText("Recovery suggestions"));
+  expect(recoverySuggestions.getByRole("link", { name: /Open Activity/ })).toHaveAttribute("href", "/activity");
+  expect(recoverySuggestions.getByRole("link", { name: /Open diagnostics/ })).toHaveAttribute("href", "/system");
   fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
   expect(search).toHaveValue("");
   expect(screen.getByRole("heading", { name: "Help friends join" })).toBeVisible();
@@ -78,6 +79,7 @@ test("offers focused recovery paths when a crash search has no task match", () =
 
   fireEvent.change(screen.getByRole("searchbox", { name: "Search help" }), { target: { value: "crashed suddenly" } });
 
-  expect(screen.getByRole("link", { name: /Open Activity/ })).toHaveTextContent("Find the failed event");
-  expect(screen.getByRole("link", { name: /Open diagnostics/ })).toHaveTextContent("Check Java, disk space");
+  const recoverySuggestions = within(screen.getByLabelText("Recovery suggestions"));
+  expect(recoverySuggestions.getByRole("link", { name: /Open Activity/ })).toHaveTextContent("Find the failed event");
+  expect(recoverySuggestions.getByRole("link", { name: /Open diagnostics/ })).toHaveTextContent("Check Java, disk space");
 });

@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import httpx
 import psutil
@@ -2906,7 +2906,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         mutation(request, db)
         properties = read_properties(profile_directory(profile_id, db))
         public_ip = await app.state.public_ip_discovery.discover(force=True)
-        return join_details(properties, public_ip)
+        return cast(dict[str, object], join_details(properties, public_ip))
 
     @app.post("/api/v1/profiles/{profile_id}/connection/enable-lan")
     def enable_profile_lan_connections(

@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import httpx
 import psutil
@@ -21,6 +21,28 @@ _LEVEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 PUBLIC_IP_DISCOVERY_URL = "https://api64.ipify.org?format=json"
 PUBLIC_IP_CACHE_SECONDS = 300.0
 PUBLIC_IP_FAILURE_CACHE_SECONDS = 15.0
+
+
+class PublicJoinDetails(TypedDict):
+    """Public-connection information that deliberately avoids a claimed endpoint."""
+
+    state: str
+    detected_ip: str | None
+    server_port: int
+    address: None
+    detail: str
+
+
+class JoinDetails(TypedDict):
+    """Owner-facing Minecraft connection information for one profile."""
+
+    host: str | None
+    port: int
+    address: str | None
+    bind_address: str | None
+    candidate_hosts: list[str]
+    local_only: bool
+    public: PublicJoinDetails
 
 
 class PublicIpDiscovery:
@@ -168,7 +190,7 @@ def _lan_addresses() -> list[str]:
 def join_details(
     values: dict[str, str],
     public_ip: dict[str, object],
-) -> dict[str, object]:
+) -> JoinDetails:
     """Describe LAN access and public-IP discovery without inventing an endpoint."""
 
     port = integer_property(values, "server-port", 25565, 1, 65535)
@@ -181,7 +203,8 @@ def join_details(
         host = candidates[0] if candidates else None
     display_host = f"[{host}]" if host and ":" in host and not host.startswith("[") else host
     public_available = public_ip.get("available") is True
-    detected_ip = public_ip.get("ip") if isinstance(public_ip.get("ip"), str) else None
+    possible_ip = public_ip.get("ip")
+    detected_ip = possible_ip if isinstance(possible_ip, str) else None
     if not public_available:
         public_state = "unavailable"
     elif local_only:
