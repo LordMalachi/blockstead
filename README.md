@@ -58,7 +58,11 @@ Blockstead manages the process around them.
   extension without deleting anything, ready for the next game night
 - checks installed plugins and mods for newer releases listed for that setup and updates
   the changed file with any newly required Modrinth dependencies once the full
-  verified set is ready
+  verified set is ready; changes promote as one transaction, so a failed file
+  move restores the prior loadout instead of leaving mixed versions behind
+- separates a detected LAN address from public reachability: it checks the
+  current public IP at the overview, never treats a configured or dashboard
+  address as public, and opens connection help when it cannot verify the route
 - creates private, verified manual and scheduled world backups, keeps a clear
   per-server history, lets you save a portable copy when you need one, and can
   mirror successful archives to approved folders on another drive
@@ -210,6 +214,28 @@ Day to day you only need the dashboard: start and stop the server, watch the
 live log, manage players, create backups, and set the weekly **Schedule**. The
 computer just needs to stay on (or wake on its schedule, where supported).
 
+### Help friends join
+
+The **Join this server** card distinguishes a LAN address from an internet
+address. It reads the actual Minecraft listening port from `server.properties`
+and learns a LAN address only from the server's real bind setting and host
+network interfaces. It never promotes the dashboard URL, a saved public IP, or
+a Docker port setting as an externally reachable Minecraft address.
+
+For an internet connection, Blockstead can ask a public-IP service for the
+network's current public IP. It does not persist that value, and it cannot prove
+which outside router port reaches Minecraft. Until the mapping is verified, it
+will not show a guessed public `IP:port` address. Use the nearby **Connection
+help** button to retry the check and work through the router, firewall,
+carrier-grade NAT, and outside-network test steps. If Minecraft is bound only
+to `127.0.0.1`, the same help offers an explicit, stopped-server-only repair to
+allow local-network listening; it creates a recovery snapshot before changing
+`server.properties`.
+
+Blockstead does not configure UPnP, router forwarding, or firewall rules. If
+you choose to invite players over the internet, make that mapping in your own
+router and verify it from a network outside your home.
+
 ### Mods, plugins, and backups without the guesswork
 
 The **Extension Workshop** is a good place to explore, even while friends are
@@ -282,12 +308,16 @@ Updating is polite about your players:
 Your settings, administrator accounts, backups, and Minecraft folders are
 always preserved. A check or download problem changes nothing and is retried
 later. Once installation begins, Blockstead builds the replacement before
-stopping the dashboard, backs up the application database, runs database
-migrations, and verifies the new version's health endpoint. If that installation
-or health check fails, the previous application and database are restored and
-the old version keeps running. Blockstead remembers that broken commit and does
-not automatically try it in a loop. It can try again after a different commit
-passes CI, or when an owner explicitly retries with `sudo blockstead update`.
+stopping the dashboard in a private sibling directory, flushes it to disk, and
+atomically swaps the complete application directory. It backs up the
+application database, runs database migrations, and verifies the new version's
+health endpoint. If installation or health verification fails, the previous
+application and database are restored through the same atomic swap (with a
+protected snapshot as a fallback), and the old version keeps running. Temporary
+replacement and rollback trees are securely removed only after success.
+Blockstead remembers that broken commit and does not automatically try it in a
+loop. It can try again after a different commit passes CI, or when an owner
+explicitly retries with `sudo blockstead update`.
 
 **System → Blockstead updates** shows the installed version, the newest
 available, and when it last looked. To update on the spot rather than waiting

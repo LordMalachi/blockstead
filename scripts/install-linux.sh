@@ -29,6 +29,7 @@ BRANCH=main
 MANIFEST_URL=https://github.com/LordMalachi/blockstead/releases/download/update-channel/latest.json
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPDATE_ATTEMPT=${BLOCKSTEAD_UPDATE_ATTEMPT:-}
+STAGED_APP=""
 
 if [[ ${EUID} -ne 0 ]]; then echo "Run this installer with sudo." >&2; exit 1; fi
 if [[ $(uname -s) != Linux ]]; then echo "Blockstead deployment requires Linux." >&2; exit 1; fi
@@ -355,6 +356,180 @@ restored_file_matches() {
   fi
 }
 
+remove_tree_without_following_links() {
+  # Transaction directories contain old application and database data. Remove
+  # them through directory descriptors so cleanup can never follow an entry
+  # that was unexpectedly replaced with a symlink. The caller always supplies
+  # a root-owned parent and one direct child name, never an arbitrary path.
+  local parent=$1 name=$2
+  python3 - "$parent" "$name" <<'PY'
+import os
+import stat
+import sys
+
+parent, name = sys.argv[1:]
+if not name or name in {".", ".."} or "/" in name:
+    raise SystemExit("Refusing an unsafe transaction cleanup name.")
+parent_info = os.lstat(parent)
+if (
+    not stat.S_ISDIR(parent_info.st_mode)
+    or parent_info.st_uid != 0
+    or stat.S_IMODE(parent_info.st_mode) & 0o022
+):
+    raise SystemExit(f"Refusing an unsafe transaction cleanup parent: {parent}")
+
+
+def remove_entry(directory_fd: int, entry: str) -> None:
+    try:
+        info = os.stat(entry, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(info.st_mode):
+        child_fd = os.open(
+            entry,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=directory_fd,
+        )
+        try:
+            for child in os.listdir(child_fd):
+                remove_entry(child_fd, child)
+            os.fsync(child_fd)
+        finally:
+            os.close(child_fd)
+        os.rmdir(entry, dir_fd=directory_fd)
+    else:
+        # unlink removes symlinks, FIFOs, sockets, and regular files without
+        # traversing them. This is intentionally not a recursive rm command.
+        os.unlink(entry, dir_fd=directory_fd)
+
+
+directory_fd = os.open(
+    parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+)
+try:
+    remove_entry(directory_fd, name)
+    os.fsync(directory_fd)
+finally:
+    os.close(directory_fd)
+PY
+}
+
+sync_staged_application() {
+  # A rename protects readers from a half-copied tree, but it does not make
+  # buffered staged files durable. Flush regular files and directories before
+  # publishing the staged release so a power loss cannot expose a torn app.
+  local staged=$1
+  python3 - "$staged" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+root_info = os.lstat(path)
+if not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode):
+    raise SystemExit("The staged Blockstead application is not a real directory.")
+
+
+def sync_directory(directory_fd: int) -> None:
+    for entry in os.listdir(directory_fd):
+        info = os.stat(entry, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISDIR(info.st_mode):
+            child_fd = os.open(
+                entry,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            try:
+                sync_directory(child_fd)
+            finally:
+                os.close(child_fd)
+        elif stat.S_ISREG(info.st_mode):
+            file_fd = os.open(
+                entry, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd
+            )
+            try:
+                os.fsync(file_fd)
+            finally:
+                os.close(file_fd)
+        elif not stat.S_ISLNK(info.st_mode):
+            raise SystemExit(f"The staged Blockstead application contains an unsafe entry: {entry}")
+    os.fsync(directory_fd)
+
+
+root_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+try:
+    sync_directory(root_fd)
+finally:
+    os.close(root_fd)
+PY
+}
+
+publish_staged_application() {
+  # Publish only a completed sibling directory. Updating in place used to
+  # delete /opt/blockstead before copying the new release, which meant a power
+  # loss could leave the host with no application tree to start or roll back.
+  # Linux renameat2(RENAME_EXCHANGE) swaps the two complete directories in one
+  # filesystem operation; the old tree remains at STAGED_APP until success.
+  local staged=$1 target=$2 had_previous=$3
+  python3 - "$staged" "$target" "$had_previous" <<'PY'
+import ctypes
+import errno
+import os
+import stat
+import sys
+
+staged, target, had_previous = sys.argv[1:]
+staged_parent = os.path.dirname(staged)
+target_parent = os.path.dirname(target)
+if os.path.realpath(staged_parent) != os.path.realpath(target_parent):
+    raise SystemExit("The staged application is not beside the live application.")
+for path in (staged_parent,):
+    info = os.lstat(path)
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_uid != 0
+        or stat.S_IMODE(info.st_mode) & 0o022
+    ):
+        raise SystemExit(f"Refusing an unsafe application parent: {path}")
+staged_info = os.lstat(staged)
+if not stat.S_ISDIR(staged_info.st_mode) or stat.S_ISLNK(staged_info.st_mode):
+    raise SystemExit("The staged Blockstead application is not a real directory.")
+if had_previous == "true":
+    target_info = os.lstat(target)
+    if (
+        not stat.S_ISDIR(target_info.st_mode)
+        or stat.S_ISLNK(target_info.st_mode)
+        or target_info.st_uid != 0
+        or staged_info.st_dev != target_info.st_dev
+    ):
+        raise SystemExit("The existing Blockstead application cannot be swapped safely.")
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    except AttributeError as error:
+        raise SystemExit("This Linux system does not support atomic application replacement.") from error
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    if renameat2(-100, staged.encode(), -100, target.encode(), 0x2) != 0:
+        error_number = ctypes.get_errno()
+        if error_number in {errno.ENOSYS, errno.EINVAL}:
+            raise SystemExit("This Linux system does not support atomic application replacement.")
+        raise OSError(error_number, os.strerror(error_number), target)
+else:
+    if os.path.lexists(target):
+        raise SystemExit("The live Blockstead application unexpectedly appeared while staging.")
+    os.rename(staged, target)
+
+parent_fd = os.open(
+    target_parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+)
+try:
+    os.fsync(parent_fd)
+finally:
+    os.close(parent_fd)
+PY
+}
+
 bootstrap_approved_release() {
   local workdir manifest commit committed_at published_at current extracted retry_after relation status=1
   local install_args=()
@@ -564,7 +739,11 @@ new_version=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[
 old_version="not installed"
 mode=install
 had_app=false
-if [[ -d $APP_DIR ]]; then
+if [[ -e $APP_DIR || -L $APP_DIR ]]; then
+  if [[ ! -d $APP_DIR || -L $APP_DIR ]]; then
+    echo "Refusing to update an application path that is not a real directory: $APP_DIR" >&2
+    exit 1
+  fi
   had_app=true
   mode=update
   if [[ -f $APP_DIR/VERSION ]]; then
@@ -595,8 +774,8 @@ Blockstead will $action.
 
 Configuration, administrator data, backups, and Minecraft server folders are
 preserved during updates. Stop any running Minecraft server from the dashboard
-before continuing. An update also keeps one previous application/database
-snapshot so a failed health check can be rolled back automatically.
+before continuing. An update keeps one previous application/database snapshot
+while it verifies the new release, then securely removes that temporary copy.
 EOF
   read -r -p "Continue? [y/N] " answer
   [[ $answer =~ ^[Yy]$ ]] || { echo "Installation cancelled."; exit 0; }
@@ -737,6 +916,29 @@ raise SystemExit(0 if body.get("status") == "ok" and (expected in {"", "unknown"
   return 1
 }
 
+restore_previous_application() {
+  # The normal rollback path swaps the two complete sibling trees back into
+  # place. The copied snapshot remains a conservative fallback if the staged
+  # tree was damaged or an operator removed it while recovery was in progress.
+  if [[ $had_app == true && -n $STAGED_APP && -d $STAGED_APP && ! -L $STAGED_APP ]]; then
+    if publish_staged_application "$STAGED_APP" "$APP_DIR" true; then
+      remove_tree_without_following_links "$(dirname "$STAGED_APP")" "$(basename "$STAGED_APP")"
+      STAGED_APP=""
+      return 0
+    fi
+    echo "Atomic application rollback was unavailable; restoring the protected snapshot." >&2
+  fi
+
+  remove_tree_without_following_links "$(dirname "$APP_DIR")" "$(basename "$APP_DIR")"
+  if [[ $had_app == true ]]; then
+    cp -a "$ROLLBACK_DIR/application" "$APP_DIR"
+  fi
+  if [[ -n $STAGED_APP && ( -e $STAGED_APP || -L $STAGED_APP ) ]]; then
+    remove_tree_without_following_links "$(dirname "$STAGED_APP")" "$(basename "$STAGED_APP")"
+    STAGED_APP=""
+  fi
+}
+
 rollback() {
   local status=${1:-1} rollback_performed=false restored_commit
   # This function exits deliberately. Clear every transaction trap first so
@@ -759,8 +961,7 @@ rollback() {
 
   if [[ $deployment_changed == true && $rollback_ready == true ]]; then
     rollback_performed=true
-    rollback_step rm -rf "$APP_DIR"
-    if [[ $had_app == true ]]; then rollback_step cp -a "$ROLLBACK_DIR/application" "$APP_DIR"; fi
+    rollback_step restore_previous_application
 
     rollback_step rm -f "$DATABASE" "$DATABASE-wal" "$DATABASE-shm"
     if [[ $had_database == true ]]; then
@@ -847,6 +1048,16 @@ rollback() {
     # first-install failure, by contrast, must not leave a new service active.
     if [[ $update_service_was_active == false ]]; then
       systemctl stop blockstead-update.service 2>/dev/null || true
+    fi
+  elif [[ -n $STAGED_APP && ( -e $STAGED_APP || -L $STAGED_APP ) ]]; then
+    # A build or dependency failure before publication never touched the live
+    # app. It still must not leave a root-owned staging tree holding code or
+    # credentials indefinitely.
+    if remove_tree_without_following_links "$(dirname "$STAGED_APP")" "$(basename "$STAGED_APP")"; then
+      STAGED_APP=""
+    else
+      rollback_ok=false
+      echo "The unpublished staged application could not be cleaned up safely." >&2
     fi
   fi
 
@@ -943,7 +1154,7 @@ rollback() {
 trap 'rollback $?' EXIT
 trap 'rollback 130' INT TERM
 
-rm -rf "$ROLLBACK_DIR"
+remove_tree_without_following_links "$UPDATE_STATE_DIR" "$(basename "$ROLLBACK_DIR")"
 install -d -o root -g root -m 0700 "$ROLLBACK_DIR"
 if [[ $had_app == true ]]; then cp -a "$APP_DIR" "$ROLLBACK_DIR/application"; fi
 if [[ -f $DATABASE ]]; then
@@ -963,26 +1174,32 @@ if [[ -f $ICON_PATH ]]; then had_icon=true; cp -a "$ICON_PATH" "$ROLLBACK_DIR/bl
 if [[ -f $SOURCE_RECORD ]]; then had_source_record=true; cp -a "$SOURCE_RECORD" "$ROLLBACK_DIR/install-source"; fi
 rollback_ready=true
 
-deployment_changed=true
-rm -rf "$APP_DIR"
-install -d -o root -g root -m 0755 "$APP_DIR" "$APP_DIR/frontend"
-cp -a "$ROOT/backend" "$APP_DIR/backend"
-cp -a "$ROOT/frontend/dist" "$APP_DIR/frontend/dist"
-cp -a "$ROOT/packaging" "$APP_DIR/packaging"
-cp -a "$ROOT/scripts" "$APP_DIR/scripts"
-printf '%s\n' "$new_version" >"$APP_DIR/VERSION"
+# Assemble all executable files and dependencies beside the running
+# installation. Nothing under /opt/blockstead changes until this complete tree
+# has been flushed and can be atomically exchanged with the old one.
+STAGED_APP=$(mktemp -d "${APP_DIR}.incoming.XXXXXX")
+install -d -o root -g root -m 0755 "$STAGED_APP" "$STAGED_APP/frontend"
+cp -a "$ROOT/backend" "$STAGED_APP/backend"
+cp -a "$ROOT/frontend/dist" "$STAGED_APP/frontend/dist"
+cp -a "$ROOT/packaging" "$STAGED_APP/packaging"
+cp -a "$ROOT/scripts" "$STAGED_APP/scripts"
+printf '%s\n' "$new_version" >"$STAGED_APP/VERSION"
 # What the dashboard reads to know whether a newer commit exists upstream.
 python3 -c 'import json, sys
 json.dump({"version": sys.argv[1], "commit": sys.argv[2] or None,
            "committed_at": sys.argv[3] or None, "published_at": sys.argv[4] or None,
            "source": sys.argv[5]}, open(sys.argv[6], "w"), indent=2)' \
   "$new_version" "$new_commit" "$new_commit_at" "$new_published_at" \
-  "$install_source" "$APP_DIR/BUILD"
-chmod 0644 "$APP_DIR/BUILD"
+  "$install_source" "$STAGED_APP/BUILD"
+chmod 0644 "$STAGED_APP/BUILD"
 
-python3 -m venv "$APP_DIR/venv"
-"$APP_DIR/venv/bin/pip" install --upgrade pip
-"$APP_DIR/venv/bin/pip" install "$APP_DIR/backend"
+python3 -m venv "$STAGED_APP/venv"
+"$STAGED_APP/venv/bin/pip" install --upgrade pip
+"$STAGED_APP/venv/bin/pip" install "$STAGED_APP/backend"
+sync_staged_application "$STAGED_APP"
+publish_staged_application "$STAGED_APP" "$APP_DIR" "$had_app"
+if [[ $had_app == false ]]; then STAGED_APP=""; fi
+deployment_changed=true
 
 runuser -u blockstead -- "$APP_DIR/venv/bin/python" -m blockstead.database_migrations \
   --database "$DATABASE" \
@@ -1103,6 +1320,15 @@ fi
 printf '%s\n' "managed:$MANIFEST_URL" >"$SOURCE_RECORD"
 chown root:blockstead "$SOURCE_RECORD"
 chmod 0640 "$SOURCE_RECORD"
+
+# Health checks and all global artifacts are now complete. The staged sibling
+# holds the superseded app after an atomic exchange, and the root-only snapshot
+# holds the fallback copy; neither should linger after a successful release.
+if [[ -n $STAGED_APP && ( -e $STAGED_APP || -L $STAGED_APP ) ]]; then
+  remove_tree_without_following_links "$(dirname "$STAGED_APP")" "$(basename "$STAGED_APP")"
+  STAGED_APP=""
+fi
+remove_tree_without_following_links "$UPDATE_STATE_DIR" "$(basename "$ROLLBACK_DIR")"
 
 record_update_status succeeded "$new_commit" \
   "Blockstead was updated successfully to ${new_commit:0:7}." false

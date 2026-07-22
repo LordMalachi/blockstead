@@ -48,8 +48,10 @@ Minecraft version information when available.
 
 - **Check for updates** looks for a newer release listed for this setup for
   recognized Modrinth files. Any required dependencies for the chosen update
-  are resolved and verified with it. The old jar stays put until the
-  checksum-verified replacement set is ready.
+  are resolved and verified with it. Blockstead stages the complete replacement
+  set, then promotes every jar as one transaction. It parks the old jars in a
+  private rollback area until every promotion succeeds; a failure restores the
+  prior loadout, while a success securely cleans up only those retired jars.
 - **Disable** parks a jar in Blockstead's managed disabled area. It is a great
   way to troubleshoot or run a plain-Minecraft session without losing your
   usual setup.
@@ -58,9 +60,9 @@ Minecraft version information when available.
 - **Remove** permanently removes that jar after a confirmation. Use Disable if
   you think you might want it back soon.
 - **Upload a `.jar`** is for a file you already trust and downloaded yourself.
-  Jars contain executable code. Blockstead records the file and waits for the
-  server to stop before placing it, but cannot verify its origin or guarantee
-  that it works with your loadout.
+  Jars contain executable code. Blockstead checks that the upload is a jar
+  archive, stages it, and waits for the server to stop before placing it, but
+  cannot verify its origin or guarantee that it works with your loadout.
 
 The **Configure** area is for supported generated configuration files. Change
 one thing at a time, then start the server and check the early console messages

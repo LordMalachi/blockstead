@@ -6,7 +6,9 @@ from blockstead.app import create_app
 from blockstead.config import Settings
 
 
-def editable_client(tmp_path: Path) -> tuple[TestClient, dict[str, str], str, Path]:
+def editable_client(
+    tmp_path: Path, *, server_ip: str | None = None
+) -> tuple[TestClient, dict[str, str], str, Path]:
     root = tmp_path / "servers"
     server = root / "home"
     server.mkdir(parents=True)
@@ -19,6 +21,7 @@ def editable_client(tmp_path: Path) -> tuple[TestClient, dict[str, str], str, Pa
         b"white-list=true\n"
         b"enforce-whitelist=true\n"
         b"custom-key=preserved\n"
+        + (f"server-ip={server_ip}\n".encode() if server_ip is not None else b"")
     )
     settings = Settings(
         data_dir=tmp_path / "data",
@@ -114,5 +117,20 @@ def test_settings_api_rejects_stale_and_wrongly_typed_values(tmp_path: Path) -> 
         )
         assert stale.status_code == 409
         assert "Reload settings" in stale.json()["error"]["message"]
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_connection_repair_clears_loopback_with_a_recovery_snapshot(tmp_path: Path) -> None:
+    client, auth, profile_id, server = editable_client(tmp_path, server_ip="127.0.0.1")
+    try:
+        response = client.post(f"/api/v1/profiles/{profile_id}/connection/enable-lan", headers=auth)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert "Restart Minecraft" in body["detail"]
+        assert "server-ip=\n" in (server / "server.properties").read_text(encoding="utf-8")
+        snapshot = tmp_path / "data" / "settings-snapshots" / profile_id / body["snapshot_name"]
+        assert "server-ip=127.0.0.1" in snapshot.read_text(encoding="utf-8")
     finally:
         client.__exit__(None, None, None)

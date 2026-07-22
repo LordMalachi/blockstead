@@ -527,6 +527,20 @@ Before marking any milestone complete:
 
 ## Progress log
 
+- **2026-07-22 — Blockstead 1.1.0 released.** Hardened every update path
+  reviewed for this release. Native application updates now assemble and flush
+  a private sibling tree before an atomic swap; a health failure atomically
+  restores the old application and database, and root-owned transaction trees
+  are removed through no-follow cleanup only after verification. Extension
+  updates stage their complete verified replacement set and roll back every jar
+  if a live promotion fails; managed extension folders and uploads reject
+  symlink escapes. The server overview no longer treats a dashboard host,
+  configured port, or LAN address as public: it validates a fresh public-IP
+  lookup, refuses to invent a public port mapping, and puts retry,
+  router/firewall/CGNAT guidance, and a stopped-server-only local-bind repair
+  beside the error. The complete owner-facing record is in
+  [CHANGELOG.md](CHANGELOG.md).
+
 - **2026-07-21 — Activity and notifications complete.** Added a profile-aware
   Activity workspace for lifecycle, backup, settings, extension, player,
   update, and automation history with actor, time, outcome, filtering, and

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type OverviewMetricPoint, type ProfileOverview } from "../../api/client";
 import { Button } from "../../components/Button";
@@ -54,15 +54,24 @@ function HistoryCard({ label, value, note, points, field, percent = false }: {
 export function OverviewPage() {
   const scope = useServerScope();
   const [copied, setCopied] = useState(false);
+  const [connectionHelpOpen, setConnectionHelpOpen] = useState(false);
   const overview = useQuery({
     queryKey: ["overview", scope.profile.id],
     queryFn: () => api<ProfileOverview>(`/profiles/${scope.profile.id}/overview`),
     refetchInterval: 10_000,
   });
   const data = overview.data;
+  const refreshConnection = useMutation({
+    mutationFn: () => api<unknown>(`/profiles/${scope.profile.id}/connection/refresh`, { method: "POST" }),
+    onSuccess: () => void overview.refetch(),
+  });
+  const enableLan = useMutation({
+    mutationFn: () => api<{ detail: string }>(`/profiles/${scope.profile.id}/connection/enable-lan`, { method: "POST" }),
+    onSuccess: () => void overview.refetch(),
+  });
 
   async function copyAddress() {
-    if (!data) return;
+    if (!data?.join.address) return;
     await navigator.clipboard.writeText(data.join.address);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
@@ -83,9 +92,32 @@ export function OverviewPage() {
     </section>
 
     <section className="join-card card" aria-labelledby="join-heading">
-      <div><p className="eyebrow">Minecraft connection</p><h2 id="join-heading">Join this server</h2><p>Enter this address in Minecraft: Java Edition. The port is shown separately so it is easy to use in router or firewall settings.</p></div>
-      <div className="join-address"><code>{data.join.host}</code><span>Port <strong>{data.join.port}</strong></span><Button className="button--secondary button--small" onClick={() => void copyAddress()}>{copied ? "Copied" : "Copy address"}</Button></div>
-      <small>Full address: <code>{data.join.address}</code>. Blockstead does not open your firewall or router automatically.{data.join.candidate_hosts.length > 1 && ` Other detected host addresses: ${data.join.candidate_hosts.slice(1, 3).join(", ")}.`}</small>
+      <div><p className="eyebrow">Minecraft connection</p><h2 id="join-heading">Join this server</h2><p>Use this local-network address from a device on the same network. Blockstead never presents a guessed router or internet address as confirmed.</p></div>
+      {data.join.address
+        ? <div className="join-address"><code>{data.join.host}</code><span>Port <strong>{data.join.port}</strong></span><Button className="button--secondary button--small" onClick={() => void copyAddress()}>{copied ? "Copied" : "Copy address"}</Button></div>
+        : <div className="join-address join-address--unavailable"><strong>No local-network address detected</strong><span>Port <strong>{data.join.port}</strong></span></div>}
+      <small>{data.join.address ? <>Local address: <code>{data.join.address}</code>.{data.join.candidate_hosts.length > 1 && ` Other detected local addresses: ${data.join.candidate_hosts.slice(1, 3).join(", ")}.`}</> : "Connect the Blockstead computer to a local network, then try the connection check again."}</small>
+      <div className={`connection-status connection-status--${data.join.public.state}`} id="connection-help">
+        {data.join.public.state === "unavailable"
+          ? <div className="error" role="alert"><strong>Public address unavailable</strong><span>{data.join.public.detail}</span></div>
+          : data.join.public.state === "local_only"
+            ? <div className="warning"><strong>Internet access is blocked by this server’s bind address</strong><span>Blockstead detected a public IP, but this Minecraft server only listens on this computer.</span></div>
+            : <div className="warning"><strong>Public IP detected: <code>{data.join.public.detected_ip}</code></strong><span>{data.join.public.detail} No public Minecraft address is being shown until the router and firewall mapping is confirmed.</span></div>}
+        <Button className="button--secondary button--small" aria-expanded={connectionHelpOpen} onClick={() => setConnectionHelpOpen(open => !open)}>{connectionHelpOpen ? "Hide connection help" : "How to fix this"}</Button>
+        {connectionHelpOpen && <aside className="connection-help-popover" aria-label="Public connection troubleshooting">
+          <h3>Help friends join</h3>
+          <p>Check that this computer is online without a VPN or proxy, that Minecraft is allowed through the host firewall, and that the router forwards the public port to this server’s local address and port <code>{data.join.public.server_port}</code>.</p>
+          <p>Some internet providers use carrier-grade NAT or another router upstream, which prevents ordinary port forwarding. A router’s outside port can also differ from Minecraft’s local port, so Blockstead will not guess it.</p>
+          <div className="connection-help-popover__actions">
+            <Button className="button--secondary button--small" disabled={refreshConnection.isPending} onClick={() => refreshConnection.mutate()}>{refreshConnection.isPending ? "Checking…" : "Check public IP again"}</Button>
+            {data.join.local_only && <Button className="button--small" disabled={enableLan.isPending} onClick={() => enableLan.mutate()}>{enableLan.isPending ? "Enabling…" : "Enable local-network access"}</Button>}
+            <Link className="button button--quiet button--small" to="/help#connection-troubleshooting">Open full help guide</Link>
+          </div>
+          {refreshConnection.error && <p className="error" role="alert">{refreshConnection.error.message}</p>}
+          {enableLan.data && <p className="success" role="status">{enableLan.data.detail}</p>}
+          {enableLan.error && <p className="error" role="alert">{enableLan.error.message}</p>}
+        </aside>}
+      </div>
     </section>
 
     <section className="card" aria-labelledby="health-heading">

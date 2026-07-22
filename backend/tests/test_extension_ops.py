@@ -1,15 +1,28 @@
+import io
+import os
+import zipfile
 from pathlib import Path
 
 import pytest
 
+import blockstead.extension_ops as extension_ops
 from blockstead.extension_ops import (
     ExtensionOpsError,
+    create_staging_directory,
     disabled_directory,
     place_upload,
+    promote_staged_files,
     remove,
     set_all_enabled,
     set_enabled,
 )
+
+
+def jar_bytes() -> bytes:
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, "w") as archive:
+        archive.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+    return content.getvalue()
 
 
 @pytest.fixture
@@ -92,8 +105,9 @@ def test_set_all_enabled_handles_missing_directories(tmp_path: Path) -> None:
 
 
 def test_upload_stages_and_refuses_duplicates(mods: Path) -> None:
-    target = place_upload(mods, "new-mod.jar", b"uploaded")
-    assert target.read_bytes() == b"uploaded"
+    uploaded = jar_bytes()
+    target = place_upload(mods, "new-mod.jar", uploaded)
+    assert target.read_bytes() == uploaded
     assert not list(mods.glob(".*.part"))
     with pytest.raises(ExtensionOpsError, match="already installed"):
         place_upload(mods, "new-mod.jar", b"again")
@@ -101,3 +115,46 @@ def test_upload_stages_and_refuses_duplicates(mods: Path) -> None:
         place_upload(mods, "empty.jar", b"")
     with pytest.raises(ExtensionOpsError, match="jar"):
         place_upload(mods, "malware.exe", b"nope")
+    with pytest.raises(ExtensionOpsError, match="valid jar"):
+        place_upload(mods, "not-a-jar.jar", b"nope")
+
+
+def test_promotion_rolls_back_every_file_when_a_later_move_fails(
+    mods: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (mods / "old.jar").write_bytes(b"old")
+    staging = create_staging_directory(mods)
+    (staging / "new.jar").write_bytes(b"new")
+    (staging / "required-core.jar").write_bytes(b"core")
+    real_replace = os.replace
+
+    def fail_dependency(source: Path | str, target: Path | str) -> None:
+        if Path(source) == staging / "required-core.jar":
+            raise OSError("disk failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(extension_ops.os, "replace", fail_dependency)
+    with pytest.raises(ExtensionOpsError, match="previous loadout was restored"):
+        promote_staged_files(
+            mods,
+            staging,
+            ["new.jar", "required-core.jar"],
+            retire_names=["old.jar"],
+        )
+    assert (mods / "old.jar").read_bytes() == b"old"
+    assert not (mods / "new.jar").exists()
+    assert not (mods / "required-core.jar").exists()
+
+
+def test_mutations_refuse_symlinked_managed_directories(mods: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / "linked-mods"
+    linked.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ExtensionOpsError, match="symbolic link"):
+        place_upload(linked, "safe.jar", jar_bytes())
+
+    disabled = disabled_directory(mods)
+    disabled.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ExtensionOpsError, match="symbolic link"):
+        set_enabled(mods, "cool.jar", enabled=False)

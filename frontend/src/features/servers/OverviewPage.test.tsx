@@ -22,7 +22,21 @@ vi.mock("../extensions/PrerequisitesPanel", () => ({
 
 const overview: ProfileOverview = {
   state: { value: "RUNNING", reason: "Server reported ready", uptime_seconds: 3725 },
-  join: { host: "192.168.1.24", port: 25570, address: "192.168.1.24:25570", bind_address: null, candidate_hosts: ["192.168.1.24"], local_only: false },
+  join: {
+    host: "192.168.1.24",
+    port: 25570,
+    address: "192.168.1.24:25570",
+    bind_address: null,
+    candidate_hosts: ["192.168.1.24"],
+    local_only: false,
+    public: {
+      state: "port_unverified",
+      detected_ip: "8.8.8.8",
+      server_port: 25570,
+      address: null,
+      detail: "Blockstead detected this network's public IP. It cannot verify the router-facing Minecraft port from inside the network.",
+    },
+  },
   players: { online: 2, max: 20, sample: ["Alex", "Steve"], available: true },
   metrics: {
     current: { at: "2026-07-19T15:00:00Z", cpu_percent: 18, memory_percent: 42, disk_percent: 35, process_memory_bytes: 800_000_000, world_size_bytes: 2_000_000_000, memory_used_bytes: 8_000_000_000, memory_total_bytes: 16_000_000_000, disk_used_bytes: 35_000_000_000, disk_total_bytes: 100_000_000_000 },
@@ -48,6 +62,8 @@ test("shows owner health, join address, trends, warnings, and diagnostics", asyn
 
   expect(await screen.findByText("2 / 20")).toBeVisible();
   expect(screen.getByText("192.168.1.24")).toBeVisible();
+  expect(screen.getByText("Public IP detected:")).toBeVisible();
+  expect(screen.getByText("8.8.8.8")).toBeVisible();
   expect(screen.getByText("Port").parentElement).toHaveTextContent("25570");
   expect(screen.getByRole("img", { name: "Host CPU recent history" })).toBeVisible();
   expect(screen.getByRole("link", { name: "Resolve" })).toHaveAttribute("href", "/servers/profile-1/backups");
@@ -57,4 +73,29 @@ test("shows owner health, join address, trends, warnings, and diagnostics", asyn
   await userEvent.click(screen.getByRole("button", { name: "Copy address" }));
   await waitFor(() => expect(writeText).toHaveBeenCalledWith("192.168.1.24:25570"));
   expect(screen.getByRole("button", { name: "Copied" })).toBeVisible();
+});
+
+test("offers nearby recovery help when public IP discovery fails", async () => {
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+    ...overview,
+    join: {
+      ...overview.join,
+      public: {
+        state: "unavailable",
+        detected_ip: null,
+        server_port: 25570,
+        address: null,
+        detail: "Blockstead could not detect this network's public IP. No public Minecraft address is being shown.",
+      },
+    },
+  }), { status: 200, headers: { "Content-Type": "application/json" } }))));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(<MemoryRouter><QueryClientProvider client={client}><OverviewPage /></QueryClientProvider></MemoryRouter>);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Public address unavailable");
+  await userEvent.click(screen.getByRole("button", { name: "How to fix this" }));
+  expect(screen.getByRole("complementary", { name: "Public connection troubleshooting" })).toBeVisible();
+  expect(screen.getByRole("link", { name: "Open full help guide" })).toHaveAttribute("href", "/help#connection-troubleshooting");
+  expect(screen.getByRole("button", { name: "Check public IP again" })).toBeVisible();
 });

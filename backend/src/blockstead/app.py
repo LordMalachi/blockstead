@@ -78,8 +78,14 @@ from .distributions import (
 )
 from .extension_ops import (
     MAX_UPLOAD_BYTES,
+    SUPPORTED_CHECKSUMS,
     ExtensionOpsError,
+    checksum_matches,
+    create_staging_directory,
+    disabled_directory,
+    ensure_managed_directory,
     place_upload,
+    promote_staged_files,
     set_all_enabled,
     set_enabled,
 )
@@ -151,6 +157,7 @@ from .modrinth import (
 )
 from .modrinth import search as modrinth_search
 from .overview import (
+    PublicIpDiscovery,
     join_details,
     minecraft_status,
     read_properties,
@@ -274,6 +281,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         timeout=httpx.Timeout(30.0),
         follow_redirects=True,
     )
+    public_ip_discovery = PublicIpDiscovery(http_client)
 
     metrics_task: asyncio.Task[None] | None = None
     update_task: asyncio.Task[None] | None = None
@@ -308,9 +316,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         AuditEvent(
                             admin_id=admin_id,
                             category="update_install",
-                            result=(
-                                "success" if helper_result.state == "succeeded" else "failed"
-                            ),
+                            result=("success" if helper_result.state == "succeeded" else "failed"),
                             safe_detail=marker,
                             created_at=helper_result.at,
                         )
@@ -361,6 +367,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.update_handoff_active = False
     app.state.update_waiting_for_critical_operation = False
     app.state.websocket_auth_recheck_seconds = 5.0
+    app.state.public_ip_discovery = public_ip_discovery
     # Profiles with a restore in flight; starting or backing up one is refused.
     restoring_profiles: set[str] = set()
     # Long-running world mutations must finish before the service can hand an
@@ -898,9 +905,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         archive_available = bool(
             record.status == "completed"
             and record.file_name
-            and (
-                config.data_dir / "backups" / record.profile_id / record.file_name
-            ).is_file()
+            and (config.data_dir / "backups" / record.profile_id / record.file_name).is_file()
         )
         return {
             "id": record.id,
@@ -912,9 +917,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "size_bytes": record.size_bytes,
             "duration_ms": record.duration_ms,
             "sha256": record.sha256,
-            "included_paths": json.loads(record.included_paths)
-            if record.included_paths
-            else [],
+            "included_paths": json.loads(record.included_paths) if record.included_paths else [],
             "archive_available": archive_available,
             "result": record.result,
             "created_at": timestamp(record.created_at),
@@ -1184,20 +1187,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return [backup_payload(record) for record in records]
 
     @app.get("/api/v1/profiles/{profile_id}/backups/{backup_id}/download")
-    def download_backup(
-        profile_id: str, backup_id: str, request: Request, db: Db
-    ) -> FileResponse:
+    def download_backup(profile_id: str, backup_id: str, request: Request, db: Db) -> FileResponse:
         current(request, db)
         record = db.get(BackupRecord, backup_id)
         if record is None or record.profile_id != profile_id:
             raise HTTPException(404, "That backup was not found for this server.")
         if record.status != "completed" or not record.file_name:
             raise HTTPException(409, "Only a completed backup can be saved elsewhere.")
-        if (
-            "/" in record.file_name
-            or "\\" in record.file_name
-            or record.file_name.startswith(".")
-        ):
+        if "/" in record.file_name or "\\" in record.file_name or record.file_name.startswith("."):
             raise HTTPException(409, "This backup's archive name is not usable.")
         archive = config.data_dir / "backups" / profile_id / record.file_name
         if not archive.is_file():
@@ -1205,9 +1202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(archive, filename=record.file_name, media_type="application/gzip")
 
     @app.post("/api/v1/profiles/{profile_id}/backups", status_code=201)
-    async def create_backup(
-        profile_id: str, request: Request, db: Db
-    ) -> dict[str, object]:
+    async def create_backup(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         admin = mutation(request, db)
         async with update_lock:
             if update_install_in_progress():
@@ -1240,10 +1235,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         archive: BackupArchive | None = None
         failure: str | None = None
         snapshot = manager.snapshot()
-        running = (
-            app.state.active_profile_id == profile.id
-            and snapshot["state"] in {"RUNNING", "STARTING", "DEGRADED"}
-        )
+        running = app.state.active_profile_id == profile.id and snapshot["state"] in {
+            "RUNNING",
+            "STARTING",
+            "DEGRADED",
+        }
         saving_suspended = False
         try:
             try:
@@ -1360,13 +1356,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 409, "This backup was removed by the retention policy and cannot be restored."
             )
         if record.status != "completed" or not record.file_name or not record.manifest_name:
-            raise HTTPException(
-                409, "Only a completed backup with a manifest can be restored."
-            )
+            raise HTTPException(409, "Only a completed backup with a manifest can be restored.")
         try:
-            server_directory = canonical_child(
-                Path(profile.server_directory), config.server_root
-            )
+            server_directory = canonical_child(Path(profile.server_directory), config.server_root)
         except (ValueError, OSError) as exc:
             raise HTTPException(
                 409, "The profile folder is no longer inside the allowed server root."
@@ -1506,9 +1498,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/v1/profiles/{profile_id}/backup-policy")
-    def read_backup_policy(
-        profile_id: str, request: Request, db: Db
-    ) -> dict[str, object]:
+    def read_backup_policy(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
         profile = db.get(Profile, profile_id)
         if profile is None:
@@ -1769,9 +1759,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return result.model_dump()
 
     @app.get("/api/v1/profiles/{profile_id}/settings/raw")
-    def profile_settings_raw(
-        profile_id: str, request: Request, db: Db
-    ) -> dict[str, object]:
+    def profile_settings_raw(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
         return read_raw_settings(profile_directory(profile_id, db)).model_dump()
 
@@ -1862,6 +1850,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def require_published_checksums(planned: list[PlannedFile]) -> None:
         """Catalog installs must have a publisher digest, not merely HTTPS."""
+        if not planned:
+            raise HTTPException(409, "The catalog did not provide any extension files to install.")
         missing = [
             item.file_name for item in planned if not item.checksum_algorithm or not item.checksum
         ]
@@ -1871,34 +1861,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "Blockstead will not automatically install files without a published "
                 f"checksum: {', '.join(missing)}.",
             )
+        invalid = [
+            item.file_name
+            for item in planned
+            if item.checksum_algorithm not in SUPPORTED_CHECKSUMS
+            or not isinstance(item.checksum, str)
+            or not re.fullmatch(r"[0-9a-fA-F]+", item.checksum)
+        ]
+        if invalid:
+            raise HTTPException(
+                409,
+                "Blockstead will not automatically install files with an unsupported "
+                f"or invalid published checksum: {', '.join(invalid)}.",
+            )
 
     async def stage_extension_install(
         extension_dir: Path,
         planned: list[PlannedFile],
         *,
-        replace_names: frozenset[str] = frozenset(),
+        retire_names: frozenset[str] = frozenset(),
+        expected_retired_checksums: dict[str, tuple[str, str]] | None = None,
     ) -> tuple[list[dict[str, object]], list[str]]:
-        """Download a catalog plan outside the live loadout, then promote it.
-
-        A failed dependency download used to leave the preceding jars live. A
-        staging directory guarantees the loadout is untouched until every new
-        file has downloaded and passed its published checksum.
-        """
+        """Download a catalog plan outside the live loadout, then promote it safely."""
         require_published_checksums(planned)
         names = [item.file_name for item in planned]
         if len(names) != len(set(names)):
             raise HTTPException(409, "The catalog returned duplicate extension file names.")
-        extension_dir.mkdir(mode=0o755, exist_ok=True)
-        staging = extension_dir / f".blockstead-install-{secrets.token_hex(8)}"
-        staging.mkdir(mode=0o700)
+        staging: Path | None = None
         staged: list[tuple[PlannedFile, str]] = []
         skipped: list[str] = []
         try:
+            directory = ensure_managed_directory(extension_dir, create=True)
+            disabled = ensure_managed_directory(disabled_directory(directory))
+            staging = create_staging_directory(directory)
             for planned_file in planned:
-                target = extension_dir / planned_file.file_name
-                if target.exists() and planned_file.file_name not in replace_names:
-                    skipped.append(planned_file.file_name)
-                    continue
+                target = directory / planned_file.file_name
+                disabled_target = disabled / planned_file.file_name
+                if disabled_target.exists() or disabled_target.is_symlink():
+                    raise HTTPException(
+                        409,
+                        f"A disabled extension already uses the name {planned_file.file_name}. "
+                        "Enable or remove it before installing another file with that name.",
+                    )
+                if target.exists() or target.is_symlink():
+                    if planned_file.file_name not in retire_names:
+                        assert planned_file.checksum_algorithm is not None
+                        assert planned_file.checksum is not None
+                        if checksum_matches(
+                            target, planned_file.checksum_algorithm, planned_file.checksum
+                        ):
+                            skipped.append(planned_file.file_name)
+                            continue
+                        raise HTTPException(
+                            409,
+                            f"A file named {planned_file.file_name} already exists with a "
+                            "different checksum. Nothing was replaced.",
+                        )
                 try:
                     sha256 = await download_verified_file(
                         http_client,
@@ -1912,27 +1930,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     raise HTTPException(400, str(exc)) from exc
                 staged.append((planned_file, sha256))
 
-            # Recheck immediately before moving anything into the live folder.
-            # The server is stopped, but a second browser request can still race
-            # this one; never overwrite a separately installed extension.
-            for planned_file, _ in staged:
-                target = extension_dir / planned_file.file_name
-                if target.exists() and planned_file.file_name not in replace_names:
-                    raise HTTPException(
-                        409,
-                        f"A file named {planned_file.file_name} was installed while this "
-                        "catalog download was in progress.",
-                    )
-            for planned_file, _ in staged:
-                (staging / planned_file.file_name).replace(
-                    extension_dir / planned_file.file_name
+            if staged:
+                promote_staged_files(
+                    directory,
+                    staging,
+                    [item.file_name for item, _ in staged],
+                    retire_names=retire_names,
+                    expected_retired_checksums=expected_retired_checksums,
                 )
-        except OSError as exc:
-            raise HTTPException(
-                409, "Blockstead could not place the verified extension files."
-            ) from exc
+        except ExtensionOpsError as exc:
+            raise HTTPException(409, str(exc)) from exc
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
         return (
             [
                 {
@@ -2117,9 +2127,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     project_id,
                 )
             else:
-                list_catalog_versions = (
-                    hangar_versions if source == "hangar" else modrinth_versions
-                )
+                list_catalog_versions = hangar_versions if source == "hangar" else modrinth_versions
                 versions = await list_catalog_versions(
                     http_client, profile.distribution, profile.minecraft_version, project_id
                 )
@@ -2266,9 +2274,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         require_server_stopped()
         profile, extension_dir = extension_context(profile_id, db)
         view = read_extensions(profile_directory(profile_id, db), profile.distribution)
-        entry = next(
-            (item for item in view.entries if item.file_name == payload.file_name), None
-        )
+        entry = next((item for item in view.entries if item.file_name == payload.file_name), None)
         if entry is None or not entry.sha512:
             raise HTTPException(404, "That file is not in the live extensions folder.")
         try:
@@ -2295,38 +2301,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if (
             not update_plan
             or update_plan[0].project_id != planned.project_id
+            or update_plan[0].version_id != planned.version_id
             or update_plan[0].file_name != planned.file_name
+            or update_plan[0].checksum_algorithm != planned.checksum_algorithm
+            or update_plan[0].checksum != planned.checksum
         ):
             raise HTTPException(409, "Modrinth returned an unusable extension update plan.")
         installed, _ = await stage_extension_install(
             extension_dir,
             update_plan,
-            replace_names=frozenset({entry.file_name}),
+            retire_names=frozenset({entry.file_name}),
+            expected_retired_checksums={entry.file_name: ("sha512", entry.sha512)},
         )
         sha256 = next(
-            (
-                str(item["sha256"])
-                for item in installed
-                if item["file_name"] == planned.file_name
-            ),
+            (str(item["sha256"]) for item in installed if item["file_name"] == planned.file_name),
             None,
         )
         if sha256 is None:
             raise HTTPException(409, "The updated extension file was not installed.")
-        if planned.file_name != entry.file_name:
-            try:
-                remove_extension(extension_dir, entry.file_name)
-            except ExtensionOpsError as exc:
-                raise HTTPException(409, str(exc)) from exc
         db.add(
             AuditEvent(
                 admin_id=admin.id,
                 profile_id=profile_id,
                 category="extension_update",
                 result="success",
-                safe_detail=(
-                    f"Updated {entry.file_name} to {planned.file_name} (sha256 {sha256})"
-                ),
+                safe_detail=(f"Updated {entry.file_name} to {planned.file_name} (sha256 {sha256})"),
             )
         )
         db.commit()
@@ -2620,9 +2619,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/v1/profiles/{profile_id}/overview")
-    async def profile_overview(
-        profile_id: str, request: Request, db: Db
-    ) -> dict[str, object]:
+    async def profile_overview(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
         profile = db.get(Profile, profile_id)
         if profile is None:
@@ -2646,9 +2643,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if latest_at is not None and latest_at.tzinfo is None:
             latest_at = latest_at.replace(tzinfo=timezone.utc)  # noqa: UP017
         if latest_at is None or now_utc - latest_at >= timedelta(seconds=50):
-            sample = await asyncio.to_thread(
-                collect_metric_sample, profile, include_process=active
-            )
+            sample = await asyncio.to_thread(collect_metric_sample, profile, include_process=active)
             db.add(sample)
             db.commit()
 
@@ -2683,9 +2678,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if active and manager.started_at is not None:
             uptime = max(0.0, (now_utc - manager.started_at).total_seconds())
 
-        join = join_details(
-            properties, request.url.hostname, config.public_minecraft_port
-        )
+        public_ip = await app.state.public_ip_discovery.discover()
+        join = join_details(properties, public_ip)
         status = await minecraft_status(properties) if active and state == "RUNNING" else None
         configured_max = 20
         try:
@@ -2713,13 +2707,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 AutomationEvent.completed_at.is_(None),
             )
         ).all()
-        upcoming = next_executions(
-            schedule, pending_events, datetime.now().astimezone(), limit=1
-        )
+        upcoming = next_executions(schedule, pending_events, datetime.now().astimezone(), limit=1)
         next_operation = (
-            {"label": upcoming[0]["label"], "at": upcoming[0]["at"]}
-            if upcoming
-            else None
+            {"label": upcoming[0]["label"], "at": upcoming[0]["at"]} if upcoming else None
         )
 
         warnings: list[dict[str, str]] = []
@@ -2774,6 +2764,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "title": "Only this computer can join",
                     "detail": "The server is bound to a loopback address in server.properties.",
                     "to": f"/servers/{profile.id}/settings",
+                    "severity": "warning",
+                }
+            )
+        if join["public"]["state"] == "unavailable":
+            warnings.append(
+                {
+                    "code": "public-address-unavailable",
+                    "title": "Public Minecraft address could not be detected",
+                    "detail": "Blockstead is not showing a guessed public address.",
+                    "to": f"/servers/{profile.id}/overview#connection-help",
                     "severity": "warning",
                 }
             )
@@ -2895,6 +2895,83 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "mspt": False,
                 "distribution_label": info.label,
             },
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/connection/refresh")
+    async def refresh_profile_connection(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        """Retry the bounded public-IP lookup at the owner's request."""
+
+        mutation(request, db)
+        properties = read_properties(profile_directory(profile_id, db))
+        public_ip = await app.state.public_ip_discovery.discover(force=True)
+        return join_details(properties, public_ip)
+
+    @app.post("/api/v1/profiles/{profile_id}/connection/enable-lan")
+    def enable_profile_lan_connections(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        """Safely clear a loopback-only bind after an explicit owner request."""
+
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        snapshot = manager.snapshot()
+        if app.state.active_profile_id == profile.id and snapshot["state"] in {
+            "RUNNING",
+            "STARTING",
+            "STOPPING",
+            "DEGRADED",
+        }:
+            raise HTTPException(
+                409,
+                "Stop this Minecraft server before changing its network bind address.",
+            )
+        directory = profile_directory(profile_id, db)
+        bind = read_properties(directory).get("server-ip", "").strip()
+        if bind not in {"127.0.0.1", "::1", "localhost"}:
+            raise HTTPException(
+                409,
+                "This repair is only available when server.properties uses a loopback address.",
+            )
+        view = read_settings(directory)
+        if view.revision is None:
+            raise HTTPException(409, "No editable server.properties file was found.")
+        try:
+            result = apply_settings_update(
+                directory,
+                config.data_dir,
+                profile_id,
+                view.revision,
+                {"server-ip": ""},
+            )
+        except SettingsConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except SettingsValidationError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                409,
+                "Blockstead could not snapshot and safely replace server.properties.",
+            ) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile_id,
+                category="connection_repair",
+                result="success",
+                safe_detail=(
+                    "Cleared the loopback server bind for profile "
+                    f"{profile_id}; recovery snapshot {result.snapshot_name}"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "detail": "Local-network listening is enabled. Restart Minecraft before testing it.",
+            "snapshot_name": result.snapshot_name,
         }
 
     @app.get("/api/v1/system/metrics")
@@ -3064,9 +3141,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "title": "The Minecraft server crashed",
                     "detail": snapshot["reason"],
                     "severity": "danger",
-                    "created_at": (
-                        manager.state_changed_at.isoformat()
-                    ),
+                    "created_at": (manager.state_changed_at.isoformat()),
                     "recovery_to": recovery_path("server_crash", profile_id),
                 }
             )
@@ -3419,9 +3494,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": event.id, "profile_id": profile_id, **payload.model_dump()}
 
     @app.delete("/api/v1/profiles/{profile_id}/automation-events/{event_id}", status_code=204)
-    def cancel_automation_event(
-        profile_id: str, event_id: str, request: Request, db: Db
-    ) -> None:
+    def cancel_automation_event(profile_id: str, event_id: str, request: Request, db: Db) -> None:
         admin = mutation(request, db)
         event = db.get(AutomationEvent, event_id)
         if event is None or event.profile_id != profile_id or event.completed_at is not None:
@@ -3618,13 +3691,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if profile is not None:
                 try:
                     backup_record = await scheduler.backup_before_manual_stop(
-                        db, profile, datetime.now(timezone.utc)  # noqa: UP017
+                        db,
+                        profile,
+                        datetime.now(timezone.utc),  # noqa: UP017
                     )
                 except (BackupError, InvalidTransition, ValueError) as exc:
                     raise HTTPException(
                         409,
-                        "The pre-stop backup failed, so Blockstead left the server running: "
-                        f"{exc}",
+                        f"The pre-stop backup failed, so Blockstead left the server running: {exc}",
                     ) from exc
         try:
             graceful = await manager.stop()

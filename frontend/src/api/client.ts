@@ -91,7 +91,21 @@ export interface LocalAlert { id: string; kind?: string; title: string; detail: 
 export interface LocalNotifications { alerts: LocalAlert[]; unread_count: number }
 export interface ProfileOverview {
   state: { value: ProcessState["state"]; reason: string; uptime_seconds: number | null };
-  join: { host: string; port: number; address: string; bind_address: string | null; candidate_hosts: string[]; local_only: boolean };
+  join: {
+    host: string | null;
+    port: number;
+    address: string | null;
+    bind_address: string | null;
+    candidate_hosts: string[];
+    local_only: boolean;
+    public: {
+      state: "unavailable" | "local_only" | "port_unverified";
+      detected_ip: string | null;
+      server_port: number;
+      address: null;
+      detail: string;
+    };
+  };
   players: { online: number | null; max: number; sample: string[]; available: boolean };
   metrics: { current: OverviewMetricPoint & { memory_used_bytes: number; memory_total_bytes: number; disk_used_bytes: number; disk_total_bytes: number }; history: OverviewMetricPoint[] };
   last_backup: BackupRecord | null;

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "blockstead"
-version = "1.0.0"
+version = "1.1.0"
 description = "Local-first Minecraft Java server manager"
 requires-python = ">=3.12,<3.13"
 dependencies = [

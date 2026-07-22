@@ -6,15 +6,84 @@ import json
 import re
 import socket
 import struct
+import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 import psutil
 
 MAX_STATUS_BYTES = 1_000_000
 MAX_PROPERTIES_BYTES = 1_000_000
 _LEVEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+PUBLIC_IP_DISCOVERY_URL = "https://api64.ipify.org?format=json"
+PUBLIC_IP_CACHE_SECONDS = 300.0
+PUBLIC_IP_FAILURE_CACHE_SECONDS = 15.0
+
+
+class PublicIpDiscovery:
+    """Bounded, cached public-IP lookup with no configured endpoint fallback."""
+
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._client = client
+        self._now = now
+        self._cached: dict[str, object] | None = None
+        self._expires_at = 0.0
+        self._lock = asyncio.Lock()
+
+    async def discover(self, *, force: bool = False) -> dict[str, object]:
+        """Return only a validated public IP or an owner-safe failure detail."""
+
+        now = self._now()
+        if not force and self._cached is not None and now < self._expires_at:
+            return self._cached
+        async with self._lock:
+            now = self._now()
+            if not force and self._cached is not None and now < self._expires_at:
+                return self._cached
+            try:
+                response = await self._client.get(
+                    PUBLIC_IP_DISCOVERY_URL,
+                    headers={"Accept": "application/json"},
+                    timeout=httpx.Timeout(3.0),
+                )
+                response.raise_for_status()
+                body = response.json()
+                candidate = body.get("ip") if isinstance(body, dict) else None
+                if not isinstance(candidate, str):
+                    raise ValueError("The public-IP service returned no IP address.")
+                address = ipaddress.ip_address(candidate.strip())
+                if not address.is_global:
+                    raise ValueError("The public-IP service returned a non-public address.")
+                result: dict[str, object] = {
+                    "available": True,
+                    "ip": str(address),
+                    "detail": (
+                        "Blockstead detected this network's public IP. It cannot "
+                        "verify the router-facing Minecraft port from inside the network."
+                    ),
+                }
+                ttl = PUBLIC_IP_CACHE_SECONDS
+            except (httpx.HTTPError, ValueError, TypeError):
+                result = {
+                    "available": False,
+                    "ip": None,
+                    "detail": (
+                        "Blockstead could not detect this network's public IP. "
+                        "No public Minecraft address is being shown."
+                    ),
+                }
+                ttl = PUBLIC_IP_FAILURE_CACHE_SECONDS
+            self._cached = result
+            self._expires_at = self._now() + ttl
+            return result
 
 
 def read_properties(server_directory: Path) -> dict[str, str]:
@@ -98,37 +167,44 @@ def _lan_addresses() -> list[str]:
 
 def join_details(
     values: dict[str, str],
-    request_host: str | None,
-    public_port: int | None = None,
+    public_ip: dict[str, object],
 ) -> dict[str, object]:
-    """Describe where players can join without claiming router reachability."""
+    """Describe LAN access and public-IP discovery without inventing an endpoint."""
 
-    port = public_port or integer_property(values, "server-port", 25565, 1, 65535)
+    port = integer_property(values, "server-port", 25565, 1, 65535)
     bind = values.get("server-ip", "").strip()
     wildcard = bind in {"", "0.0.0.0", "::"}  # noqa: S104 -- detecting MC wildcard
     local_only = bind in {"127.0.0.1", "::1", "localhost"}
     candidates = _lan_addresses() if wildcard else []
-    host = bind
+    host: str | None = bind or None
     if wildcard:
-        request_host = (request_host or "").strip("[]")
-        try:
-            request_address = ipaddress.ip_address(request_host)
-        except ValueError:
-            request_address = None
-        if request_host and not (request_address and request_address.is_loopback):
-            host = request_host
-        elif candidates:
-            host = candidates[0]
-        else:
-            host = request_host or "localhost"
-    display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        host = candidates[0] if candidates else None
+    display_host = f"[{host}]" if host and ":" in host and not host.startswith("[") else host
+    public_available = public_ip.get("available") is True
+    detected_ip = public_ip.get("ip") if isinstance(public_ip.get("ip"), str) else None
+    if not public_available:
+        public_state = "unavailable"
+    elif local_only:
+        public_state = "local_only"
+    else:
+        # NAT, firewall, and Docker mappings cannot reliably be learned by the
+        # host itself. Never turn an IP plus local listening port into a claimed
+        # public Minecraft address without an external reachability check.
+        public_state = "port_unverified"
     return {
         "host": host,
         "port": port,
-        "address": f"{display_host}:{port}",
+        "address": f"{display_host}:{port}" if display_host else None,
         "bind_address": bind or None,
         "candidate_hosts": candidates,
         "local_only": local_only,
+        "public": {
+            "state": public_state,
+            "detected_ip": detected_ip,
+            "server_port": port,
+            "address": None,
+            "detail": str(public_ip["detail"]),
+        },
     }
 
 

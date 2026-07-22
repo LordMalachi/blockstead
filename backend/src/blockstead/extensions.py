@@ -25,9 +25,7 @@ from .distributions import DISTRIBUTIONS
 MAX_JARS = 200
 MAX_METADATA_BYTES = 1_000_000
 
-Kind = Literal[
-    "paper-plugin", "fabric-mod", "quilt-mod", "neoforge-mod", "forge-mod", "unknown"
-]
+Kind = Literal["paper-plugin", "fabric-mod", "quilt-mod", "neoforge-mod", "forge-mod", "unknown"]
 
 _NATIVE_LOADERS: dict[str, frozenset[str]] = {
     "paper": frozenset({"paper"}),
@@ -401,9 +399,13 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
 
 
 def _list_jars(folder: Path) -> list[Path]:
-    if not folder.is_dir():
+    if folder.is_symlink() or not folder.is_dir():
         return []
     return sorted(
-        (entry for entry in folder.iterdir() if entry.is_file() and entry.suffix == ".jar"),
+        (
+            entry
+            for entry in folder.iterdir()
+            if entry.is_file() and not entry.is_symlink() and entry.suffix == ".jar"
+        ),
         key=lambda entry: entry.name,
     )

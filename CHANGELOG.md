@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 1.1.0 - 2026-07-22
+
+- Harden app replacement for native self-updates: a fully built, flushed
+  sibling directory atomically replaces the live application; failed health
+  checks atomically restore the old application and database, and root-owned
+  transaction trees are cleaned up without following links only after success.
+- Make mod and plugin installs and updates transactional. Complete verified
+  file sets stage before promotion, replaced jars are retained for rollback
+  until every move succeeds, and failure restores the prior loadout. Managed
+  extension and upload paths now reject symlink escapes.
+- Replace guessed Minecraft join endpoints with a validated public-IP lookup
+  and an explicitly unverified port state. The overview never turns a dashboard
+  host, configured port, or LAN address into a claimed public route; it adds
+  in-place connection troubleshooting, retry, and a stopped-server-only local
+  bind repair backed by a settings recovery snapshot.
+
 - Add a profile-aware Activity workspace with lifecycle, backup, settings,
   extension, player, update, and automation history; filter by server,
   category, or outcome and jump directly to the relevant recovery page.

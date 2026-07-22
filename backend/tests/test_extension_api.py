@@ -1,4 +1,6 @@
 import hashlib
+import io
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -9,6 +11,13 @@ from fastapi.testclient import TestClient
 from blockstead.app import create_app
 from blockstead.config import Settings
 from blockstead.modrinth import PlannedFile, ProjectVersion, SearchPage
+
+
+def jar_bytes() -> bytes:
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, "w") as archive:
+        archive.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+    return content.getvalue()
 
 
 @pytest.fixture
@@ -40,9 +49,7 @@ def paper_profile(api: tuple[TestClient, Path], headers: dict[str, str]) -> str:
     folder.mkdir(parents=True)
     (folder / "server.properties").write_text("motd=hi\n", encoding="utf-8")
     (folder / "paper.yml").write_text("", encoding="utf-8")
-    (folder / "fake-server.json").write_text(
-        '{"minecraft_version":"1.21.1"}\n', encoding="utf-8"
-    )
+    (folder / "fake-server.json").write_text('{"minecraft_version":"1.21.1"}\n', encoding="utf-8")
     created = client.post(
         "/api/v1/profiles", headers=headers, json={"name": "Paper", "path": str(folder)}
     )
@@ -57,7 +64,7 @@ def test_upload_toggle_and_remove_flow(
     upload = client.post(
         f"/api/v1/profiles/{paper_profile}/extensions/upload",
         headers=headers,
-        files={"file": ("essentials.jar", b"jar bytes", "application/java-archive")},
+        files={"file": ("essentials.jar", jar_bytes(), "application/java-archive")},
     )
     assert upload.status_code == 201
     assert (root / "paper-server" / "plugins" / "essentials.jar").is_file()
@@ -206,9 +213,7 @@ def test_categories_and_versions_endpoints(
 
     monkeypatch.setattr("blockstead.app.modrinth_categories", fake_categories)
     monkeypatch.setattr("blockstead.app.modrinth_versions", fake_versions)
-    categories = client.get(
-        f"/api/v1/profiles/{paper_profile}/catalog/categories", headers=headers
-    )
+    categories = client.get(f"/api/v1/profiles/{paper_profile}/catalog/categories", headers=headers)
     assert categories.status_code == 200
     assert categories.json()["categories"] == ["economy", "utility"]
 
@@ -288,7 +293,10 @@ def test_update_check_and_apply(
         version_id: str | None = None,
     ) -> list[PlannedFile]:
         assert (distribution, minecraft_version, project_id, version_id) == (
-            "paper", "1.21.1", "proj", "ver-2"
+            "paper",
+            "1.21.1",
+            "proj",
+            "ver-2",
         )
         return [planned, dependency]
 
@@ -500,7 +508,7 @@ def test_install_downloads_planned_files(
             file_name="thing.jar",
             url="https://cdn.example/thing.jar",
             checksum_algorithm="sha512",
-            checksum="ignored",
+            checksum=hashlib.sha512(b"downloaded").hexdigest(),
             required_by=None,
         )
     ]
@@ -544,6 +552,7 @@ def test_install_downloads_planned_files(
         headers=headers,
         json={"project_id": "proj"},
     )
+    assert again.status_code == 201
     assert again.json()["skipped"] == ["thing.jar"]
 
 
@@ -556,13 +565,23 @@ def test_failed_dependency_download_does_not_change_the_live_loadout(
     client, root = api
     planned = [
         PlannedFile(
-            project_id="project", version_id="one", version_number="1", file_name="one.jar",
-            url="https://cdn.example/one.jar", checksum_algorithm="sha512", checksum="a" * 128,
+            project_id="project",
+            version_id="one",
+            version_number="1",
+            file_name="one.jar",
+            url="https://cdn.example/one.jar",
+            checksum_algorithm="sha512",
+            checksum="a" * 128,
             required_by=None,
         ),
         PlannedFile(
-            project_id="dependency", version_id="two", version_number="1", file_name="two.jar",
-            url="https://cdn.example/two.jar", checksum_algorithm="sha512", checksum="b" * 128,
+            project_id="dependency",
+            version_id="two",
+            version_number="1",
+            file_name="two.jar",
+            url="https://cdn.example/two.jar",
+            checksum_algorithm="sha512",
+            checksum="b" * 128,
             required_by="one.jar",
         ),
     ]

@@ -1,6 +1,7 @@
 """Typed, revision-aware editing for Minecraft ``server.properties`` files."""
 
 import hashlib
+import ipaddress
 import os
 import re
 from dataclasses import dataclass
@@ -141,6 +142,13 @@ KNOWN_SETTINGS: dict[str, SettingDefinition] = {
         "TCP port players use to join this server.",
         minimum=1,
         maximum=65535,
+    ),
+    "server-ip": SettingDefinition(
+        "string",
+        "Network bind address",
+        "Network",
+        "Leave blank to listen on the local network. A specific address can limit "
+        "where Minecraft listens.",
     ),
     "view-distance": SettingDefinition(
         "integer",
@@ -448,9 +456,7 @@ def _validate_raw_text(text: str) -> tuple[dict[str, str], list[str]]:
             continue
         typed = _typed_value(definition.type, value.strip())
         if typed is None:
-            expectation = (
-                "true or false" if definition.type == "boolean" else "a whole number"
-            )
+            expectation = "true or false" if definition.type == "boolean" else "a whole number"
             problems.append(f"Line {number}: {definition.label} must be {expectation}.")
             continue
         try:
@@ -461,9 +467,7 @@ def _validate_raw_text(text: str) -> tuple[dict[str, str], list[str]]:
         _typed_value("boolean", values.get("enforce-whitelist", "")) is True
         and _typed_value("boolean", values.get("white-list", "")) is False
     ):
-        problems.append(
-            "Immediate allowlist enforcement requires the allowlist to be enabled."
-        )
+        problems.append("Immediate allowlist enforcement requires the allowlist to be enabled.")
     return values, problems
 
 
@@ -486,17 +490,9 @@ def _raw_summary(
         if key in new_values
         and (after := _typed_value(definition.type, new_values[key])) is not None
         and after
-        != (
-            _typed_value(definition.type, original_values[key])
-            if key in original_values
-            else None
-        )
+        != (_typed_value(definition.type, original_values[key]) if key in original_values else None)
     ]
-    removed = [
-        key
-        for key in KNOWN_SETTINGS
-        if key in original_values and key not in new_values
-    ]
+    removed = [key for key in KNOWN_SETTINGS if key in original_values and key not in new_values]
 
     def other_lines(text: str) -> list[str]:
         kept = []
@@ -521,9 +517,7 @@ def _plan_raw_update(
             "server.properties changed after it was opened. Reload settings and review again."
         )
     problems: list[str] = []
-    restored = _restore_secrets(
-        text, _preserve_source_newlines(text, content), problems
-    )
+    restored = _restore_secrets(text, _preserve_source_newlines(text, content), problems)
     if restored and not restored.endswith(("\n", "\r")):
         restored += "\r\n" if "\r\n" in text else "\n"
     _, more_problems = _validate_raw_text(restored)
@@ -557,9 +551,7 @@ def apply_raw_settings(
     expected_revision: str,
     content: str,
 ) -> RawSettingsApplyResult:
-    path, raw, restored, preview = _plan_raw_update(
-        server_directory, expected_revision, content
-    )
+    path, raw, restored, preview = _plan_raw_update(server_directory, expected_revision, content)
     if preview.problems:
         raise SettingsValidationError(" ".join(preview.problems))
     if preview.no_changes:
@@ -630,6 +622,13 @@ def _validate_value(key: str, value: SettingValue) -> SettingValue:
             raise SettingsValidationError(
                 f"{definition.label} may use letters, numbers, dots, underscores, and dashes."
             )
+        if key == "server-ip" and value:
+            try:
+                ipaddress.ip_address(value)
+            except ValueError as exc:
+                raise SettingsValidationError(
+                    "Network bind address must be blank or a valid IPv4 or IPv6 address."
+                ) from exc
     return value
 
 
@@ -743,9 +742,7 @@ def _write_snapshot(snapshot_root: Path, profile_id: str, raw: bytes) -> str:
     return snapshot_name
 
 
-def _replace_atomically(
-    server_directory: Path, path: Path, raw: bytes, updated: bytes
-) -> None:
+def _replace_atomically(server_directory: Path, path: Path, raw: bytes, updated: bytes) -> None:
     staging = server_directory / f".server.properties.{uuid4().hex}.tmp"
     try:
         with staging.open("xb") as handle:

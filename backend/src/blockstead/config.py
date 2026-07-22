@@ -8,7 +8,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="BLOCKSTEAD_", env_file=".env", extra="ignore")
     bind_host: str = "127.0.0.1"
     port: int = 8765
-    public_minecraft_port: int | None = Field(default=None, ge=1, le=65535)
     data_dir: Path = Path("data")
     server_root: Path = Path("fixtures/servers")
     secure_cookies: bool = False

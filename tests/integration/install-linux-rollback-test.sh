@@ -478,6 +478,11 @@ for path in sorted(root.rglob("*")):
 expected_app = json.loads(Path(expected_app_path).read_text(encoding="utf-8"))
 assert actual_app == expected_app, (actual_app, expected_app)
 
+# The installer publishes with a sibling directory exchange. Once rollback has
+# put the old app back, that sibling now holds the failed release and must be
+# removed rather than accumulating executable trees under /opt.
+assert not list(Path("/opt").glob("blockstead.incoming.*"))
+
 expected_artifacts = json.loads(Path(expected_artifacts_path).read_text(encoding="utf-8"))
 actual_artifacts = {path: describe(Path(path)) for path in expected_artifacts}
 assert actual_artifacts == expected_artifacts, (actual_artifacts, expected_artifacts)
