@@ -15,7 +15,7 @@ import re
 import sys
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -89,6 +89,17 @@ class DiagnosticLogBuffer(logging.Handler):
         selected = [entry for entry in self.entries if entry.levelno >= minimum_level]
         return [entry.payload() for entry in selected[-limit:]]
 
+    def window(self, center: datetime, minutes: int = 15) -> list[dict[str, object]]:
+        """Return buffered records near one activity event for focused support."""
+        if center.tzinfo is None:
+            center = center.replace(tzinfo=timezone.utc)  # noqa: UP017
+        start, end = center - timedelta(minutes=minutes), center + timedelta(minutes=minutes)
+        return [
+            entry.payload()
+            for entry in self.entries
+            if start <= datetime.fromisoformat(entry.at) <= end
+        ]
+
 
 def attach_logging(data_dir: Path) -> DiagnosticLogBuffer:
     """Route application logs into a ring buffer and a rotating file under data_dir.
@@ -140,6 +151,7 @@ def build_report(
     server: dict[str, object],
     static_dir: Path | None,
     db: Session,
+    focus_event: AuditEvent | None = None,
 ) -> dict[str, object]:
     """Assemble the diagnostic report an owner downloads to ask for help."""
     now = datetime.now(timezone.utc)  # noqa: UP017
@@ -154,7 +166,7 @@ def build_report(
         select(BackupRecord).order_by(BackupRecord.created_at.desc()).limit(10)
     ).all()
     audit = db.scalars(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(20)).all()
-    return {
+    report: dict[str, object] = {
         "report_version": REPORT_VERSION,
         "generated_at": now.isoformat(),
         "application": {
@@ -242,3 +254,14 @@ def build_report(
         "recent_errors": buffer.tail(ERROR_TAIL_LIMIT, logging.WARNING),
         "recent_log": buffer.tail(LOG_TAIL_LIMIT, logging.INFO),
     }
+    if focus_event is not None:
+        report["focus_event"] = {
+            "id": focus_event.id,
+            "profile_id": focus_event.profile_id,
+            "category": focus_event.category,
+            "result": focus_event.result,
+            "detail": redact(focus_event.safe_detail),
+            "created_at": _timestamp(focus_event.created_at),
+        }
+        report["focus_log_window"] = buffer.window(focus_event.created_at)
+    return report

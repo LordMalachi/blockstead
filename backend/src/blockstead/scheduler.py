@@ -412,6 +412,7 @@ class Scheduler:
         db.add(
             AuditEvent(
                 admin_id=self._admin_id(db),
+                profile_id=profile.id,
                 category=f"automation_{action}",
                 result=status,
                 safe_detail=detail,

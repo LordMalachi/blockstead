@@ -29,6 +29,11 @@ single-owner, safety-first product direction before being promoted into
 | **Friendly incident timeline** | Helps an owner understand “what changed?” after a problem without reading logs. | A merged timeline of start/stop, schedules, backups, extension changes, settings edits, and meaningful warnings, with deep links to the original evidence. | Preserve the raw log; do not claim a causal explanation where only correlation is known. |
 | **Player-ready checklist** | Makes it easier to share a server with friends while retaining a home-hosted posture. | A concise readiness card: copyable join address, allowlist state, server version, online status, and optional map availability. | Do not add remote exposure, port forwarding, or account-sharing automation. |
 | **Extension change review** | Helps owners understand an install/update beyond its version number. | A change card with compatibility, required stop/restart, backup recommendation, project source, file size, checksum result, and rollback path. | Retain verification and stop-state safeguards; never auto-update an extension while players are online. |
+| **Maintenance and Upgrade Center** | Replaces “I think it is time to update” with a reviewable, reversible plan. | A preflight followed by a concrete sequence: player state, verified protection, required stop, server/loader/extension compatibility, validation, and restart choice. | Do not imply an available version is compatible; never roll back a world automatically. |
+| **Honest performance capture** | Lets a household diagnose “the server feels slow” without turning the home page into an NOC dashboard. | Capability-gated TPS/MSPT and a short, opt-in profiler capture that names its source, duration, and limits, then links the evidence from a warning. | Do not estimate TPS from CPU or invent precision for unsupported distributions. |
+| **Recovery drill and artifact care** | Builds confidence that backups can be used and prevents old recovery material from quietly filling the disk. | A non-destructive staged-read check, destination-health summary, and a reviewable cleanup plan for pre-restore worlds and settings snapshots. | Never clean the only known-good backup, a live world, or an uninspected recovery artifact. |
+| **Trusted helper view** | Lets a technically confident family member check whether the server is okay without handing them the keys. | A later, view-only role limited to status, player-safe information, and redacted diagnostic guidance. | Keep console, files, secrets, restores, and host actions owner-only; require a separate threat-model decision. |
+| **Selective owner notifications** | Makes a failed backup or crash visible when the owner is away from the dashboard. | An opt-in outbound endpoint with a redaction preview, event selection, delivery history, and a local-alert fallback. | No unsolicited network transmission; never send worlds, player IPs, tokens, or raw logs by default. |
 
 ## Competitor inspiration board
 
@@ -98,6 +103,43 @@ Sources: [Nodecraft Minecraft hosting](https://nodecraft.com/games/minecraft-ser
 [Nodecraft instance guide](https://nodecraft.com/support/knowledgebase/nodepanel/what-are-instances-and-how-to-use-them),
 [Nodecraft Pixelmon panel examples](https://nodecraft.com/landing/pixelmon).
 
+### 4. Crafty and AMP — mature operations patterns to adapt selectively
+
+Crafty groups server files, backups, metrics, scheduled tasks, and webhooks in
+one manager. Its backup guidance makes the important trade-off visible: a
+live-file copy can be inconsistent, so shutdown or a Minecraft-aware save
+workflow matters. AMP goes further with status-aware automation, a
+syntax-highlighted file editor, content updates, and event-driven notifications.
+Its 2026 backup work is especially instructive: it waits for Minecraft's save
+confirmation and surfaces the operational conditions around a backup rather
+than treating compression as the whole job.
+
+**Blockstead translation:** Milestone 7 should take the safe subset of file
+workflows—approved paths, upload/download, archive validation, edit recovery,
+and stopped-server gates. The more distinctive opportunity after that is a
+Maintenance and Upgrade Center that composes already-implemented safeguards
+into a plan an owner can understand. Event-driven or outbound automation is a
+later integration, never a reason to make the local default more complex.
+
+Sources: [Crafty feature documentation](https://docs.craftycontrol.com/),
+[Crafty Backup Manager](https://docs.craftycontrol.com/pages/user-guide/backup-manager/),
+[AMP feature overview](https://cubecoders.com/amp/install),
+[AMP 2.8 backup notes](https://discourse.cubecoders.com/t/amp-proteus-2-8-0-release-notes/40953).
+
+### 5. PufferPanel — compact workspace, not broad filesystem freedom
+
+PufferPanel's tabbed server page and archive/extract controls reinforce that
+focused server workspaces scale better than a single, endless administration
+screen. That validates Blockstead's existing routed workspace, while also
+highlighting the temptation to overextend a file manager.
+
+**Blockstead translation:** keep the workspace model and add a recovery-first
+file surface, not an unrestricted host browser. Archive extraction must retain
+the existing traversal checks, size limits, state gates, and clear ownership of
+every touched path.
+
+Source: [PufferPanel 2.3 release notes](https://docs.pufferpanel.com/en/2.x/release-notes/2.3.0.html).
+
 ### Patterns to deliberately leave behind
 
 - Billing, plan-selection, sales banners, and global-location selectors.
@@ -117,3 +159,8 @@ Sources: [Nodecraft Minecraft hosting](https://nodecraft.com/games/minecraft-ser
   scheduling, extension/version management, player controls, and an
   “instance” or saved-setup concept.  The value for Blockstead is not feature
   parity—it is making the safe local equivalent obvious and understandable.
+- The post-1.0 comparison on 2026-07-22 adds a clear priority order: complete
+  restricted files and player/mobile ergonomics first; then make changes,
+  upgrades, recovery, and performance evidence more trustworthy; only then
+  revisit saved setups, helper access, and outbound integrations. This order is
+  reflected in [the active roadmap](../update.md).

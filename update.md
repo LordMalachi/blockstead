@@ -1,6 +1,6 @@
 # Blockstead upgrade plan and progress
 
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 
 This document explains the next Blockstead UI and product upgrades and tracks
 their implementation. The full product specification lives in
@@ -40,9 +40,13 @@ remain available without dominating normal server care.
 | 3. Guided settings editor | Complete | Safe typed editing with search, validation, diff preview, automatic snapshots, and a validated raw editor |
 | 4. Owner-focused overview | Complete | Live player capacity, join address, sampled health trends, protection and schedule status, warnings, and recent activity |
 | 5. Automation upgrade | Complete | Weekly schedules, one-time maintenance, readable action sequences, previews, and execution history |
-| 6. Activity and notifications | Next | Human-readable audit history and important operational alerts |
-| 7. Safe file workspace | Planned | Restricted editing, uploads, downloads, archives, and recovery protection |
+| 6. Activity and notifications | Complete | Human-readable audit history, local operational alerts, and event-focused support reports |
+| 7. Safe file workspace | Next | Restricted editing, uploads, downloads, archives, and recovery protection |
 | 8. Player and mobile improvements | Planned | Online-player insights, quicker actions, and installable mobile-friendly access |
+| 9. Maintenance and Upgrade Center | Planned | A backed-up, compatibility-aware way to review and apply server, loader, and extension changes |
+| 10. World Care and performance insight | Planned | Honest performance evidence, safe world/storage care, and recovery cleanup |
+| 11. Calm daily operations | Planned | A task-first daily summary and incident story that connect the evidence already collected |
+| 12. Saved setups and trusted connections | Deferred | Explicit profile switching plus narrowly scoped sharing and notifications, after the local workflows are proven |
 
 ## Release status
 
@@ -53,10 +57,11 @@ and scheduling workspaces, extensions and modpacks, account recovery,
 diagnostics, in-app help, and Linux Mint installation and upkeep. See
 [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
-The current work sequence remains unchanged: Milestone 6 (Activity and
-notifications) is next, followed by the safe file workspace and player/mobile
-improvements. The two remaining shared-map refinements are tracked separately
-below.
+Milestone 6 is now complete. The next work sequence is the safe file workspace,
+player and mobile improvements, then a Maintenance and Upgrade Center. The
+later milestones below are deliberately ordered so that Blockstead improves the
+confidence of everyday care before it adds optional sharing or integrations.
+The two remaining shared-map refinements are tracked separately below.
 
 ## Current baseline
 
@@ -85,7 +90,8 @@ Blockstead already provides:
 
 The main limitations to address are:
 
-- the full Activity workspace and configurable notifications are not built yet;
+- outbound notification integrations remain deferred until a later integration
+  milestone; local alerts and preferences are complete;
 - server cards still show allowlist size rather than polling every server;
 - TPS, MSPT, and update availability remain hidden until a reliable capability
   supplies them.
@@ -293,17 +299,19 @@ questions.
 
 ## Milestone 6: activity and notifications
 
-**Status: Next**
+**Status: Complete**
 
 ### Work checklist
 
-- [ ] Add an activity feed for lifecycle, backup, settings, extension, player,
+- [x] Add an activity feed for lifecycle, backup, settings, extension, player,
       update, and automation events.
-- [ ] Record the actor, selected profile, time, category, and outcome.
-- [ ] Link failed events to relevant logs or recovery actions.
-- [ ] Add notification preferences for crashes, failed backups, low disk space,
+- [x] Record the actor, selected profile, time, category, and outcome.
+- [x] Link failed events to relevant logs or recovery actions, including a
+      downloadable report centered on the event and its nearby logs.
+- [x] Add notification preferences for crashes, failed backups, low disk space,
       and completed updates.
-- [ ] Add optional outbound webhooks only after local notifications are solid.
+- [ ] Add optional outbound webhooks in a future integrations milestone; local
+      notifications intentionally do not transmit data.
 
 ## Milestone 7: safe file workspace
 
@@ -331,6 +339,138 @@ questions.
 - [ ] Make Blockstead installable as a Progressive Web App.
 - [ ] Provide mobile-sized lifecycle controls and navigation.
 - [ ] Consider local notifications only after secure LAN access is configured.
+
+## Milestone 9: Maintenance and Upgrade Center
+
+**Status: Planned**
+
+### Why
+
+Blockstead can create profiles and safely change extensions, but it does not
+yet give an owner one trustworthy answer to “is this change safe to make
+tonight?” A preflight and an explicit upgrade plan are the highest-value gaps
+identified in the post-1.0 review. They turn the existing backup, activity,
+extension, and schedule capabilities into one reversible maintenance workflow.
+
+### Work checklist
+
+- [ ] Add a maintenance preflight that reports connected players, server state,
+      last verified backup, free disk, pending restart, and known compatibility
+      limits before a risky change.
+- [ ] Offer a readable plan: announce/count down when configured, save,
+      create and verify a pre-change backup, stop when required, apply the
+      selected change, validate the launch plan, and state the restart choice.
+- [ ] Add supported server and loader upgrade discovery for each distribution;
+      clearly distinguish an available release from one Blockstead can safely
+      install.
+- [ ] Show a version, Java-requirement, file, dependency, and restart-impact
+      review for extension updates; retain a per-change rollback path.
+- [ ] Make server/loader upgrades opt-in and stopped-server-only; preserve the
+      prior launch target and never automatically roll a world back.
+- [ ] Record every preflight finding, owner decision, step result, and recovery
+      action in Activity and in the downloadable support report.
+- [ ] Let an owner create a maintenance schedule from a reviewed plan without
+      silently reusing a stale plan.
+
+### Acceptance criteria
+
+- An unavailable or unverified compatibility source cannot be presented as a
+  safe upgrade.
+- Any destructive or version-changing step has a verified protection point and
+  a clear stop/restart expectation before confirmation.
+- A failed change leaves the prior server files and recovery instructions
+  discoverable; Blockstead does not claim that rollback repaired a world unless
+  it has verified that fact.
+
+## Milestone 10: World Care and performance insight
+
+**Status: Planned**
+
+### Why
+
+The overview is intentionally modest because it currently lacks a reliable
+TPS/MSPT capability. The next step is not to imitate a hosting graph wall; it
+is to help an owner collect defensible evidence and act safely when a world is
+slow, large, or consuming its recovery space.
+
+### Work checklist
+
+- [ ] Add capability-gated TPS/MSPT collection for supported Paper-family
+      profiles, with source, sampling period, and unavailable state visible.
+- [ ] Provide an opt-in, time-bounded diagnostic capture for supported
+      profilers; link its result from the relevant warning and keep raw data
+      local until the owner exports it.
+- [ ] Build a World Care view for world size growth, available disk, backup age,
+      backup-destination health, and pre-restore/recovery-snapshot storage.
+- [ ] Offer only reviewed cleanup plans: explain reclaimable paths, protection
+      requirements, exact files, and recovery effect before an owner removes
+      expired artifacts.
+- [ ] Add backup-destination resilience checks and a recovery drill that
+      verifies a selected archive can be read and staged without replacing the
+      live world.
+- [ ] Add a low-resource squaremap profile and reachability/health check after
+      the shared-map prerequisites are complete.
+
+### Acceptance criteria
+
+- Performance values name their source and are omitted when unsupported.
+- No world, active backup, or only known-good recovery artifact can be removed
+  through a cleanup recommendation.
+- A recovery drill proves archive readability and staging only; it does not
+  alter a server without the existing explicit restore confirmation.
+
+## Milestone 11: Calm daily operations
+
+**Status: Planned**
+
+### Why
+
+Most ownership is routine. The next overview refinement should make the next
+safe action obvious and make “what changed?” understandable without asking an
+owner to correlate logs, schedules, backups, and extension history manually.
+
+### Work checklist
+
+- [ ] Add a compact “Today on this server” summary: playable state, join
+      address, player capacity, last verified backup, next operation, and the
+      one most relevant action or warning.
+- [ ] Add a friendly incident timeline that merges lifecycle, backup,
+      settings, extension, schedule, and meaningful diagnostic events while
+      preserving links to raw evidence.
+- [ ] Add contextual task help at risky or unfamiliar controls, including the
+      Files and Activity workspaces.
+- [ ] Preserve evidence language: separate recorded facts, observed timing,
+      and Blockstead's possible explanations.
+
+### Acceptance criteria
+
+- The daily summary stays concise and never replaces the detailed workspaces.
+- An incident view can lead the owner from a symptom to the relevant event,
+  log context, and safe next action without asserting unproven causation.
+
+## Milestone 12: Saved setups and trusted connections
+
+**Status: Deferred — revisit after Milestones 7–11 are proven in normal use.**
+
+### Candidate work
+
+- [ ] Explore named saved setups for a vanilla game night or modded experiment,
+      with an explicit parked/restored files list, verified backup, downtime
+      plan, and restart confirmation.
+- [ ] Explore a narrowly scoped, view-only household or trusted-helper role;
+      do not expose console, files, secrets, restore, or host controls by
+      default.
+- [ ] Add opt-in outbound notifications (starting with a documented webhook or
+      Discord-compatible endpoint) only after local alerts are useful, with
+      event selection, redaction preview, delivery history, and no world,
+      player-IP, or secret transmission.
+
+### Decision gates
+
+- Saved setups need an approved data model and restore semantics; they are not
+  a shortcut for arbitrary game-server swapping.
+- Any additional account or integration needs a threat-model update, explicit
+  LAN/TLS guidance, and an owner-visible permission/data boundary.
 
 ## Deferred scope
 
@@ -386,6 +526,16 @@ Before marking any milestone complete:
 - [ ] The progress summary and progress log below are updated.
 
 ## Progress log
+
+- **2026-07-21 — Activity and notifications complete.** Added a profile-aware
+  Activity workspace for lifecycle, backup, settings, extension, player,
+  update, and automation history with actor, time, outcome, filtering, and
+  direct recovery links. Crashes, failed backups, low disk space, and completed
+  updates can surface as configurable local alerts. Every persisted event can
+  download a redacted diagnostic report focused on that event and the nearby
+  application-log window, ready for the owner to review and send to support.
+  Reports and alerts remain on the Blockstead computer unless the owner shares
+  them; outbound webhooks remain deferred.
 
 - **2026-07-20 — Blockstead 1.0.0 released.** Prepared the first stable
   release after the complete visual foundation, server workspace, Backup

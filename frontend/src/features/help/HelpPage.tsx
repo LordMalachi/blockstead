@@ -24,6 +24,7 @@ const topics: HelpTopic[] = [
   { title: "Set a weekly routine", category: "Automation", summary: "Schedule starts and maintenance, back up before stopping, add one-time work, and preview every step before it runs.", keywords: "schedule automation time day recurring maintenance shutdown power wake rtc event", page: "schedule", action: "Open scheduling" },
   { title: "Find and manage mods, plugins, and maps", category: "Extensions", summary: "Browse releases filtered for this server while friends play, then stop safely to install, upload, update, disable, remove, or configure your loadout.", keywords: "mod plugin extension modrinth curseforge hangar paper fabric jar version update squaremap", page: "mods", action: "Open Extension Workshop" },
   { title: "Change server settings", category: "Configuration", summary: "Use typed fields, validation, and an exact change preview. Blockstead saves a private recovery snapshot before writing the file.", keywords: "settings server properties motd difficulty player limit port configuration snapshot", page: "settings", action: "Open settings" },
+  { title: "Understand activity, alerts, and support reports", category: "Support", summary: "Filter changes across every server, follow recovery links, choose which local alerts matter, and download a redacted report centered on one event.", keywords: "activity history notification alert accepted success failed outcome recovery report support logs mark seen", page: null, action: "Open Activity", href: "/activity" },
   { title: "Diagnose a problem", category: "Support", summary: "Check computer health, Java discovery, and recent errors, then save a diagnostic report that you can review before sharing.", keywords: "diagnose error failed crash cpu memory ram disk storage java report support doctor logs", page: null, action: "Open System" },
   { title: "Reset the administrator password", category: "Recovery", summary: "Use a local terminal command on the Blockstead computer, with separate instructions for native Linux and Docker Compose installs.", keywords: "password forgot reset sign in login locked out administrator docker", page: null, action: "Open reset instructions", href: "#password-recovery" },
 ];
@@ -90,6 +91,9 @@ export function HelpPage() {
         <details><summary>What is the difference between a backup and Save a copy?</summary><p>Back up now creates Blockstead’s private, verified restore point. Save a copy exports an already completed archive to your browser or a folder you choose, which is handy for another drive or a little extra peace of mind.</p></details>
         <details><summary>Will backup cleanup remove the only good copy?</summary><p>No. Retention rules can remove older primary archives, but Blockstead always keeps the newest completed one. Optional mirrored copies on another drive are not pruned by those primary rules.</p></details>
         <details><summary>What do the question-mark buttons do?</summary><p>Hover over one, focus it with the keyboard, or tap it for a short explanation of the nearby choice. Tooltips only explain; they never apply a change.</p></details>
+        <details><summary>What does “accepted” mean in Activity?</summary><p>Accepted means Blockstead received and safely handed off the request. Success means the tracked operation finished. For commands handled inside Minecraft, check the console or later activity when you need to confirm the game completed it.</p></details>
+        <details><summary>What is in an event support report?</summary><p>It combines the selected event with redacted system context and application logs from roughly fifteen minutes around it. It may still contain server and player names, so review it before sharing. Blockstead never uploads it automatically.</p></details>
+        <details><summary>Why can an alert remain after I mark it seen?</summary><p>Mark seen clears unread event alerts. An ongoing condition such as low disk space can remain visible until the condition is fixed, because it still needs attention.</p></details>
         <details><summary>Where does Blockstead keep recovery copies?</summary><p>Backup archives and settings snapshots stay in Blockstead’s private data. Preserved worlds and mod-configuration backups stay inside the selected server folder. Restoring settings or configuration backups currently requires access to the host computer.</p></details>
       </section>
 
@@ -98,11 +102,12 @@ export function HelpPage() {
         <h2>Recovery shortcuts</h2>
         <ol>
           <li><strong>Start with Overview.</strong><span>Its Needs attention list links to the relevant workspace; Server readiness names anything still blocking Start.</span></li>
-          <li><strong>Open System.</strong><span>Check disk space, Java, and recent recorded errors.</span></li>
+          <li><strong>Open Activity.</strong><span>Find the failed event, follow its recovery link, and download the focused support report if you need to send context.</span></li>
+          <li><strong>Open System.</strong><span>Check disk space, Java, and recent recorded errors; its broader report covers the installation rather than one event.</span></li>
           <li><strong>For a native Linux install, run the local doctor.</strong><code>blockstead doctor</code></li>
-          <li><strong>Save and review a diagnostic report.</strong><span>It can include server and player names. Nothing is uploaded; share it only when you choose.</span></li>
+          <li><strong>Review before sharing.</strong><span>Reports can include server and player names. Nothing is uploaded; share one only when you choose.</span></li>
         </ol>
-        <Link className="button button--secondary" to="/system">Open diagnostics</Link>
+        <div className="row-actions"><Link className="button button--secondary" to="/activity">Open Activity</Link><Link className="button button--quiet" to="/system">Open diagnostics</Link></div>
         <details className="help-password" id="password-recovery" open={passwordOpen} onToggle={event => setPasswordOpen(event.currentTarget.open)}><summary>Forgot the administrator password?</summary><p>For a native Linux install, run:</p><code>sudo blockstead reset-password</code><p>Using Docker Compose? Run this from the Blockstead folder:</p><code>docker compose exec blockstead blockstead reset-password</code><small>Both commands require control of the host computer and sign out existing dashboard sessions.</small></details>
       </section>
     </div>

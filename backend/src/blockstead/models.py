@@ -52,10 +52,28 @@ class AuditEvent(Base):
     __tablename__ = "audit_events"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     admin_id: Mapped[str] = mapped_column(ForeignKey("administrators.id"))
+    profile_id: Mapped[str | None] = mapped_column(
+        ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     category: Mapped[str] = mapped_column(String(40))
     result: Mapped[str] = mapped_column(String(24))
     safe_detail: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class NotificationPreference(Base):
+    """Per-owner local alert choices and the activity inbox read marker."""
+
+    __tablename__ = "notification_preferences"
+    admin_id: Mapped[str] = mapped_column(
+        ForeignKey("administrators.id", ondelete="CASCADE"), primary_key=True
+    )
+    server_crashes: Mapped[bool] = mapped_column(Boolean, default=True)
+    failed_backups: Mapped[bool] = mapped_column(Boolean, default=True)
+    low_disk_space: Mapped[bool] = mapped_column(Boolean, default=True)
+    completed_updates: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Schedule(Base):

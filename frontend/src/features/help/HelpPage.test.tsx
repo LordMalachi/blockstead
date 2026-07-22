@@ -54,6 +54,10 @@ test("searches common synonyms and clears an empty result", () => {
   fireEvent.click(resetLink);
   expect(document.querySelector("#password-recovery")).toHaveAttribute("open");
 
+  fireEvent.change(search, { target: { value: "notification report" } });
+  expect(screen.getByRole("heading", { name: "Understand activity, alerts, and support reports" })).toBeVisible();
+  expect(screen.getByRole("link", { name: /Open Activity/ })).toHaveAttribute("href", "/activity");
+
   fireEvent.change(search, { target: { value: "something impossible" } });
   fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
   expect(search).toHaveValue("");

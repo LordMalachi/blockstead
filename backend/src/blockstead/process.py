@@ -58,6 +58,7 @@ class ProcessManager:
         self.exit_code: int | None = None
         self.reason = "Not started"
         self.started_at: datetime | None = None
+        self.state_changed_at = datetime.now(timezone.utc)  # noqa: UP017
         self._process: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task[None] | None = None
         self._force_requested = False
@@ -85,6 +86,7 @@ class ProcessManager:
         if target not in TRANSITIONS[self.state]:
             raise InvalidTransition(f"Invalid process transition {self.state} -> {target}")
         self.state, self.reason = target, reason
+        self.state_changed_at = datetime.now(timezone.utc)  # noqa: UP017
 
     async def start(
         self,

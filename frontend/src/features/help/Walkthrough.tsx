@@ -30,6 +30,11 @@ const steps: WalkthroughStep[] = [
     target: "system",
   },
   {
+    title: "Follow what changed",
+    body: "Activity keeps a filterable history across every server, surfaces the local alerts you choose, and links failed events to recovery. An event report gathers redacted system context and nearby logs without uploading anything.",
+    target: "activity",
+  },
+  {
     title: "Help stays close",
     body: "Return to Help for task shortcuts, quick answers, recovery commands, and this walkthrough. Contextual question marks explain technical choices without opening another page.",
     target: "help",

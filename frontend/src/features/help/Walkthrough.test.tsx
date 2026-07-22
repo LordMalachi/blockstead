@@ -8,7 +8,7 @@ function StartTour() {
 }
 
 test("runs and closes the replayable walkthrough", () => {
-  render(<WalkthroughProvider><div className="app-shell"><StartTour /><a data-walkthrough="servers" href="/servers">Servers</a></div></WalkthroughProvider>);
+  render(<WalkthroughProvider><div className="app-shell"><StartTour /><a data-walkthrough="servers" href="/servers">Servers</a><a data-walkthrough="system" href="/system">System</a><a data-walkthrough="activity" href="/activity">Activity</a></div></WalkthroughProvider>);
 
   const launcher = screen.getByRole("button", { name: "Start tour" });
   launcher.focus();
@@ -23,6 +23,12 @@ test("runs and closes the replayable walkthrough", () => {
   expect(screen.getByRole("heading", { name: "Servers is your home base" })).toBeVisible();
   const target = document.querySelector('[data-walkthrough="servers"]');
   expect(target).toHaveClass("walkthrough-target");
+
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  expect(screen.getByRole("heading", { name: "Watch the computer too" })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  expect(screen.getByRole("heading", { name: "Follow what changed" })).toBeVisible();
+  expect(document.querySelector('[data-walkthrough="activity"]')).toHaveClass("walkthrough-target");
 
   fireEvent.keyDown(document, { key: "Escape" });
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

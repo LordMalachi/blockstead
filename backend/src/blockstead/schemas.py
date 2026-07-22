@@ -173,6 +173,13 @@ class AutomationRunRequest(BaseModel):
     confirm_power: bool = False
 
 
+class NotificationPreferencesRequest(BaseModel):
+    server_crashes: bool = True
+    failed_backups: bool = True
+    low_disk_space: bool = True
+    completed_updates: bool = True
+
+
 class SettingChangeRequest(BaseModel):
     model_config = ConfigDict(strict=True)
 

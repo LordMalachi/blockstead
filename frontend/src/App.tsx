@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { api, getCsrf, setOnAuthExpired } from "./api/client";
 import { AuthPage } from "./features/auth/AuthPage";
+import { ActivityPage } from "./features/activity/ActivityPage";
 import { ConsolePage } from "./features/console/ConsolePage";
 import { HelpPage } from "./features/help/HelpPage";
 import { WalkthroughProvider } from "./features/help/Walkthrough";
@@ -39,6 +40,7 @@ export default function App() {
         <Route path="settings" element={<SettingsPage />} />
       </Route>
       <Route path="system" element={<SystemPage />} />
+      <Route path="activity" element={<ActivityPage />} />
       <Route path="help" element={<HelpPage />} />
       <Route path="*" element={<Navigate to="/servers" replace />} />
     </Route>

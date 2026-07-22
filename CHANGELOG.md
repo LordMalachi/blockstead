@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Add a profile-aware Activity workspace with lifecycle, backup, settings,
+  extension, player, update, and automation history; filter by server,
+  category, or outcome and jump directly to the relevant recovery page.
+- Add configurable local alerts for server crashes, failed backups, low disk
+  space, and completed updates. Alerts stay on the Blockstead computer and can
+  be marked seen; no outbound integration is enabled.
+- Link each persisted activity event to a redacted downloadable support report
+  centered on that event, including the nearby in-memory application-log
+  window alongside the existing system context.
+- Extend in-app Help, recovery shortcuts, the guided tour, and contextual
+  tooltips for Activity outcomes, focused support reports, and local-alert
+  acknowledgement behavior.
+
 - Make catalog extension changes transactional: every file in a dependency
   plan now downloads and checksum-verifies in staging before Blockstead changes
   the live mod or plugin folder. Catalog files without a published checksum

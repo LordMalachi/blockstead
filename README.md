@@ -43,6 +43,9 @@ Blockstead manages the process around them.
 - shows host CPU, memory, disk use, and server uptime
 - keeps a private application log and recent-error view, and saves a redacted
   one-file diagnostic report to attach when asking for help
+- provides a filterable Activity timeline across every server, configurable
+  local alerts for important failures and changes, and event-focused support
+  reports that include the nearby application-log window
 - includes a searchable Help workspace, keyboard-friendly contextual tooltips,
   recovery shortcuts, and an optional guided tour that can be replayed anytime
 - saves weekday-aware start and maintenance schedules, plus one-time events;

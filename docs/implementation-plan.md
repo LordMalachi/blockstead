@@ -48,16 +48,18 @@
    restart control, and a Playwright spec that regenerates the documentation
    screenshots in `docs/screenshots`.
 
-## Next milestones
+## Post-1.0 sequence
 
-- Safe backup and staged restore, including manifest/checksum verification and
-  hostile archive fixtures.
-- Real vanilla recognition and an opt-in exec-style Java launch adapter.
-- Guided editing of typed settings with an automatic backup of the file.
-- Player-file writes while the server is stopped, once the write plan is as
-  explicit as the import plan.
-- Diagnostics, scheduling, and only then distribution-specific
-  extension/update workflows.
+Backups and staged restore, real Java launch plans, guided settings, diagnostics,
+scheduling, extensions, automation, and the profile-aware Activity workspace are
+complete. The next milestone is a safe file workspace restricted to approved
+server paths, followed by player and mobile improvements and a Maintenance and
+Upgrade Center. That center will compose the existing backup, compatibility,
+extension, scheduling, and activity boundaries into a reviewed, reversible
+change plan. World-care/performance insight and calm daily-operation refinements
+follow; saved setups, helper access, and outbound notifications remain deferred
+until those local workflows have been proven in normal use. The detailed
+post-1.0 roadmap and decision gates live in [update.md](../update.md).
 
-No marketplace, multi-host, public remote access, or real server launch belongs
-in these early milestones.
+Multi-host management and public remote access remain outside the current
+product boundary.

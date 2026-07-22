@@ -35,6 +35,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Scope
 
 from . import __version__, updates
+from .activity import (
+    list_activity,
+    preferences_for,
+    preferences_payload,
+    recovery_path,
+)
 from .backups import (
     BackupArchive,
     BackupError,
@@ -176,6 +182,7 @@ from .schemas import (
     InstallRequest,
     ModConfigUpdateRequest,
     ModpackInstallRequest,
+    NotificationPreferencesRequest,
     PlayerActionRequest,
     ProfileCreate,
     ProvisionRequest,
@@ -286,6 +293,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 record.status = "failed"
                 record.result = "Blockstead stopped before this backup completed."
                 record.completed_at = datetime.now(timezone.utc)  # noqa: UP017
+            helper_result = updates.read_helper_status(config.update_status_file)
+            admin_id = db.scalar(select(Administrator.id).order_by(Administrator.created_at))
+            if helper_result is not None and helper_result.final and admin_id is not None:
+                marker = f"Update {helper_result.commit}: {helper_result.detail}"
+                recorded = db.scalar(
+                    select(AuditEvent.id).where(
+                        AuditEvent.category == "update_install",
+                        AuditEvent.safe_detail == marker,
+                    )
+                )
+                if recorded is None:
+                    db.add(
+                        AuditEvent(
+                            admin_id=admin_id,
+                            category="update_install",
+                            result=(
+                                "success" if helper_result.state == "succeeded" else "failed"
+                            ),
+                            safe_detail=marker,
+                            created_at=helper_result.at,
+                        )
+                    )
             db.commit()
         metrics_task = asyncio.create_task(metrics_loop())
         # A first-ever start has nothing to announce, so the build that is
@@ -376,10 +405,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.execute(delete(MetricSample).where(MetricSample.created_at < cutoff))
             db.commit()
 
+    last_observed_state = manager.snapshot()["state"]
+
     async def metrics_loop() -> None:
+        nonlocal last_observed_state
         while True:
             try:
                 await asyncio.to_thread(sample_active_profile)
+                state = manager.snapshot()["state"]
+                if state == "CRASHED" and last_observed_state != "CRASHED":
+                    with factory() as db:
+                        admin_id = db.scalar(
+                            select(Administrator.id).order_by(Administrator.created_at)
+                        )
+                        if admin_id is not None:
+                            db.add(
+                                AuditEvent(
+                                    admin_id=admin_id,
+                                    profile_id=app.state.active_profile_id,
+                                    category="server_crash",
+                                    result="failed",
+                                    safe_detail=str(manager.snapshot()["reason"]),
+                                )
+                            )
+                            db.commit()
+                last_observed_state = state
             except Exception:
                 log.exception("Could not record an overview metric sample")
             await asyncio.sleep(60)
@@ -1086,9 +1136,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             is_fixture=result.is_fixture,
         )
         db.add(profile)
+        db.flush()
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile.id,
                 category="profile_import",
                 result="success",
                 safe_detail=f"Imported an uploaded {result.distribution} server folder",
@@ -1278,6 +1330,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile.id,
                 category="manual_backup",
                 result="failed" if failure else "success",
                 safe_detail=(
@@ -1405,6 +1458,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.add(
                 AuditEvent(
                     admin_id=admin.id,
+                    profile_id=profile.id,
                     category="backup_restore",
                     result="failed",
                     safe_detail=f"Restore failed for {profile.name}: {exc}",
@@ -1418,6 +1472,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile.id,
                 category="backup_restore",
                 result="success",
                 safe_detail=f"Restored a verified backup for {profile.name}",
@@ -1491,6 +1546,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile.id,
                 category="backup_policy",
                 result="success",
                 safe_detail=f"Updated backup retention for {profile.name}",
@@ -1517,9 +1573,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             is_fixture=result.is_fixture,
         )
         db.add(profile)
+        db.flush()
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile.id,
                 category="profile_import",
                 result="success",
                 safe_detail=f"Recorded read-only import for {result.distribution} profile",
@@ -1580,9 +1638,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             is_fixture=False,
         )
         db.add(profile)
+        db.flush()
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile.id,
                 category="profile_provision",
                 result="success",
                 safe_detail=(
@@ -1629,6 +1689,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile_id,
                 category="eula_accept",
                 result="success",
                 safe_detail=f"Recorded EULA acceptance for profile {profile_id}",
@@ -1695,6 +1756,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile_id,
                 category="settings_update",
                 result="success",
                 safe_detail=(
@@ -1753,6 +1815,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile_id,
                 category="settings_raw_update",
                 result="success",
                 safe_detail=(
@@ -2108,6 +2171,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile_id,
                 category="extension_install",
                 result="success",
                 safe_detail=(
@@ -2138,6 +2202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile_id,
                 category="extension_toggle",
                 result="success",
                 safe_detail=f"Marked {payload.file_name} as {state}",
@@ -2256,6 +2321,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile_id,
                 category="extension_update",
                 result="success",
                 safe_detail=(
@@ -2286,6 +2352,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile_id,
                 category="extension_toggle",
                 result="success",
                 safe_detail=f"Marked all extensions as {state} ({len(moved)} file(s) moved)",
@@ -2317,6 +2384,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile_id,
                 category="extension_remove",
                 result="success",
                 safe_detail=f"Removed {file_name}",
@@ -2342,6 +2410,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile_id,
                 category="extension_upload",
                 result="success",
                 safe_detail=f"Uploaded {target.name} "
@@ -2399,6 +2468,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile_id,
                 category="mod_config_update",
                 result="success",
                 safe_detail=f"Updated loader configuration {payload.path}",
@@ -2436,9 +2506,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             is_fixture=False,
         )
         db.add(profile)
+        db.flush()
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile.id,
                 category="modpack_install",
                 result="success",
                 safe_detail=f"Imported modpack into {result_directory}",
@@ -2770,7 +2842,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         activity: list[dict[str, str]] = []
         events = db.scalars(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(50))
         for event in events:
-            if profile.id not in event.safe_detail and profile.name not in event.safe_detail:
+            if event.profile_id != profile.id and (
+                event.profile_id is not None
+                or (profile.id not in event.safe_detail and profile.name not in event.safe_detail)
+            ):
                 continue
             created = event.created_at
             if created.tzinfo is None:
@@ -2856,6 +2931,189 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             static_dir=resolve_static_dir(config.static_dir),
             db=db,
         )
+
+    @app.get("/api/v1/activity")
+    def activity_feed(
+        request: Request,
+        db: Db,
+        profile_id: str | None = None,
+        category: str | None = None,
+        result: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        current(request, db)
+        if limit < 1 or limit > 100 or offset < 0:
+            raise HTTPException(422, "Activity pagination is outside the supported range.")
+        if profile_id is not None and db.get(Profile, profile_id) is None:
+            raise HTTPException(404, "That server profile was not found.")
+        return list_activity(
+            db,
+            profile_id=profile_id,
+            group=category,
+            result=result,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/v1/activity/{event_id}/report")
+    def activity_report(event_id: str, request: Request, db: Db) -> Response:
+        current(request, db)
+        event = db.get(AuditEvent, event_id)
+        if event is None:
+            raise HTTPException(404, "That activity event was not found.")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")  # noqa: UP017
+        report = build_report(
+            config=config,
+            buffer=diagnostics,
+            server={**manager.snapshot(), "profile_id": app.state.active_profile_id},
+            static_dir=resolve_static_dir(config.static_dir),
+            db=db,
+            focus_event=event,
+        )
+        return Response(
+            content=json.dumps(report, indent=2),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="blockstead-event-{event.id[:8]}-{stamp}.json"'
+                )
+            },
+        )
+
+    @app.get("/api/v1/notification-preferences")
+    def notification_preferences(request: Request, db: Db) -> dict[str, object]:
+        admin, _ = current(request, db)
+        row = preferences_for(db, admin.id, persist=False)
+        return preferences_payload(row)
+
+    @app.put("/api/v1/notification-preferences")
+    def update_notification_preferences(
+        payload: NotificationPreferencesRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        row = preferences_for(db, admin.id)
+        for name, value in payload.model_dump().items():
+            setattr(row, name, value)
+        row.updated_at = datetime.now(timezone.utc)  # noqa: UP017
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="settings_change",
+                result="success",
+                safe_detail="Updated local notification preferences",
+            )
+        )
+        db.commit()
+        return preferences_payload(row)
+
+    @app.get("/api/v1/notifications")
+    def local_notifications(request: Request, db: Db) -> dict[str, object]:
+        admin, _ = current(request, db)
+        prefs = preferences_for(db, admin.id, persist=False)
+        alerts: list[dict[str, object]] = []
+        seen = prefs.last_seen_at
+
+        def after_seen(value: datetime) -> bool:
+            candidate = value
+            marker = seen
+            if candidate.tzinfo is None:
+                candidate = candidate.replace(tzinfo=timezone.utc)  # noqa: UP017
+            if marker is not None and marker.tzinfo is None:
+                marker = marker.replace(tzinfo=timezone.utc)  # noqa: UP017
+            return marker is None or candidate > marker
+
+        failed_backups = db.scalars(
+            select(BackupRecord)
+            .where(BackupRecord.status == "failed")
+            .order_by(BackupRecord.created_at.desc())
+            .limit(10)
+        ).all()
+        if prefs.failed_backups:
+            for record in failed_backups:
+                occurred_at = record.completed_at or record.created_at
+                if after_seen(occurred_at):
+                    profile = db.get(Profile, record.profile_id)
+                    alerts.append(
+                        {
+                            "id": f"failed-backup-{record.id}",
+                            "kind": "failed_backup",
+                            "title": "A world backup failed",
+                            "detail": record.result,
+                            "severity": "danger",
+                            "created_at": occurred_at.isoformat(),
+                            "recovery_to": (
+                                f"/servers/{record.profile_id}/backups"
+                                if profile is not None
+                                else "/servers"
+                            ),
+                        }
+                    )
+
+        snapshot = manager.snapshot()
+        if (
+            prefs.server_crashes
+            and snapshot["state"] == "CRASHED"
+            and after_seen(manager.state_changed_at)
+        ):
+            profile_id = app.state.active_profile_id
+            alerts.append(
+                {
+                    "id": "current-server-crash",
+                    "kind": "server_crash",
+                    "title": "The Minecraft server crashed",
+                    "detail": snapshot["reason"],
+                    "severity": "danger",
+                    "created_at": (
+                        manager.state_changed_at.isoformat()
+                    ),
+                    "recovery_to": recovery_path("server_crash", profile_id),
+                }
+            )
+
+        disk = psutil.disk_usage(str(config.data_dir))
+        if prefs.low_disk_space and disk.percent >= 90:
+            alerts.append(
+                {
+                    "id": "low-disk-space",
+                    "kind": "low_disk_space",
+                    "title": "Disk space is running low",
+                    "detail": f"The Blockstead data disk is {disk.percent:.0f}% full.",
+                    "severity": "danger" if disk.percent >= 95 else "warning",
+                    "created_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
+                    "recovery_to": "/system",
+                }
+            )
+
+        update = update_status().get("last_result")
+        if (
+            prefs.completed_updates
+            and isinstance(update, dict)
+            and update.get("state") == "succeeded"
+        ):
+            update_at = datetime.fromisoformat(str(update["at"]).replace("Z", "+00:00"))
+            if after_seen(update_at):
+                alerts.append(
+                    {
+                        "id": f"completed-update-{update.get('commit') or update['at']}",
+                        "kind": "completed_update",
+                        "title": "Blockstead finished updating",
+                        "detail": str(update.get("detail") or "The update completed successfully."),
+                        "severity": "success",
+                        "created_at": update_at.isoformat(),
+                        "recovery_to": "/system",
+                    }
+                )
+        alerts.sort(key=lambda item: str(item["created_at"]), reverse=True)
+        return {"alerts": alerts, "unread_count": len(alerts)}
+
+    @app.post("/api/v1/notifications/acknowledge", status_code=204)
+    def acknowledge_notifications(request: Request, db: Db) -> None:
+        admin = mutation(request, db)
+        row = preferences_for(db, admin.id)
+        row.last_seen_at = datetime.now(timezone.utc)  # noqa: UP017
+        row.updated_at = row.last_seen_at
+        db.commit()
 
     @app.get("/api/v1/system/diagnostics")
     def system_diagnostics(request: Request, db: Db) -> dict[str, object]:
@@ -3096,6 +3354,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=payload.profile_id,
                 category="schedule_update",
                 result="success",
                 safe_detail=f"Updated schedule for profile {profile_id}",
@@ -3150,6 +3409,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile_id,
                 category="automation_event",
                 result="success",
                 safe_detail=f"Scheduled one-time maintenance for {profile.name}",
@@ -3170,6 +3430,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile_id,
                 category="automation_event",
                 result="success",
                 safe_detail=f"Cancelled one-time maintenance for profile {profile_id}",
@@ -3228,6 +3489,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile.id,
                 category="server_start",
                 result="accepted",
                 safe_detail=f"Started {profile.distribution} profile {profile.name}",
@@ -3246,6 +3508,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=app.state.active_profile_id,
                 category="console_command",
                 result="accepted",
                 safe_detail="Sent one Minecraft console command; content omitted",
@@ -3280,6 +3543,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=payload.profile_id,
                 category="guided_command",
                 result="accepted",
                 safe_detail=f"Sent guided command {payload.command_id}; values omitted",
@@ -3314,6 +3578,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=profile.id,
                 category="server_restart",
                 result="accepted",
                 safe_detail=f"Restarted profile {profile.name}",
@@ -3334,6 +3599,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.add(
             AuditEvent(
                 admin_id=admin.id,
+                profile_id=app.state.active_profile_id,
                 category="player_action",
                 result="accepted",
                 safe_detail=f"Requested {payload.action} for {payload.player}",
@@ -3344,7 +3610,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/v1/server/stop", status_code=202)
     async def process_stop(request: Request, db: Db) -> dict[str, object]:
-        mutation(request, db)
+        admin = mutation(request, db)
         backup_record: BackupRecord | None = None
         active_profile_id = app.state.active_profile_id
         if active_profile_id:
@@ -3369,6 +3635,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.active_profile_id = None
         else:
             log.warning("The managed server did not stop before the timeout")
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=active_profile_id,
+                category="server_stop",
+                result="success" if graceful else "failed",
+                safe_detail=(
+                    "Stopped the managed Minecraft server"
+                    if graceful
+                    else "The managed Minecraft server did not stop before the timeout"
+                ),
+            )
+        )
+        db.commit()
         return {
             **manager.snapshot(),
             "graceful": graceful,
@@ -3378,13 +3658,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/v1/server/force-stop", status_code=202)
     async def process_force_stop(request: Request, db: Db) -> dict[str, object]:
-        mutation(request, db)
+        admin = mutation(request, db)
+        active_profile_id = app.state.active_profile_id
         try:
             await manager.force_stop()
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
         log.warning("Force-stopped the managed server")
         app.state.active_profile_id = None
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=active_profile_id,
+                category="server_stop",
+                result="forced",
+                safe_detail="Force-stopped the managed Minecraft server",
+            )
+        )
+        db.commit()
         return {**manager.snapshot(), "profile_id": None}
 
     @app.websocket("/api/v1/server/logs/ws")

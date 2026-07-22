@@ -84,6 +84,11 @@ export interface UpdateStatus {
 export interface OverviewMetricPoint { at: string; cpu_percent: number; memory_percent: number; disk_percent: number; process_memory_bytes: number | null; world_size_bytes: number | null }
 export interface OverviewWarning { code: string; title: string; detail: string; to: string; severity: "warning" | "danger" }
 export interface OverviewActivity { id: string; category: string; result: string; detail: string; created_at: string; to: string }
+export interface ActivityEvent { id: string; category: string; group: string; title: string; result: string; severity: "success" | "danger"; detail: string; actor: string; profile: { id: string; name: string } | null; created_at: string; recovery_to: string; report_url: string }
+export interface ActivityFeed { events: ActivityEvent[]; total: number; limit: number; offset: number }
+export interface NotificationPreferences { server_crashes: boolean; failed_backups: boolean; low_disk_space: boolean; completed_updates: boolean; last_seen_at: string | null }
+export interface LocalAlert { id: string; kind?: string; title: string; detail: string; severity: "success" | "warning" | "danger"; created_at: string; recovery_to: string }
+export interface LocalNotifications { alerts: LocalAlert[]; unread_count: number }
 export interface ProfileOverview {
   state: { value: ProcessState["state"]; reason: string; uptime_seconds: number | null };
   join: { host: string; port: number; address: string; bind_address: string | null; candidate_hosts: string[]; local_only: boolean };

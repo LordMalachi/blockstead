@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useMatch } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api, clearCsrf, type ProcessState, type Profile } from "../../api/client";
+import { api, clearCsrf, type LocalNotifications, type ProcessState, type Profile } from "../../api/client";
 import { BrandMark } from "../../components/BrandMark";
 import { Button } from "../../components/Button";
 import { NavIcon } from "../../components/NavIcon";
@@ -12,6 +12,7 @@ import { UpdateNotice } from "./UpdateNotice";
 const workspaceNav = [
   { to: "/servers", label: "Servers", icon: "server", end: true },
   { to: "/system", label: "System", icon: "pulse", end: false },
+  { to: "/activity", label: "Activity", icon: "history", end: false },
   { to: "/help", label: "Help", icon: "help", end: false },
 ];
 const serverNav = [
@@ -44,6 +45,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
   useEffect(() => { if (profileId) setRecentId(profileId); }, [profileId]);
   const state = useQuery({ queryKey: ["state"], queryFn: () => api<ProcessState>("/server/state"), refetchInterval: 1000 });
   const profiles = useQuery({ queryKey: ["profiles"], queryFn: () => api<Profile[]>("/profiles") });
+  const notifications = useQuery({ queryKey: ["notifications"], queryFn: () => api<LocalNotifications>("/notifications"), refetchInterval: 30_000 });
   const profile = profiles.data?.find(entry => entry.id === (profileId || recentId));
   const snapshot = state.data ?? { state: "UNKNOWN" as const, pid: null, exit_code: null, reason: "Checking server state" };
   const scope = profileId && profile ? scopeFor(profile, snapshot, profiles.data ?? []) : null;
@@ -60,8 +62,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
       <aside className="sidebar">
         <nav aria-label="Main navigation">
           <p className="nav-heading">Workspace</p>
-          {workspaceNav.map(item => <NavLink key={item.to} to={item.to} end={item.end} data-walkthrough={item.label.toLowerCase()} className={({ isActive }) => isActive ? "active" : ""}><NavIcon name={item.icon} /><span>{item.label}</span></NavLink>)}
-          <Soon label="Activity" icon="history" note="Later" />
+          {workspaceNav.map(item => <NavLink key={item.to} to={item.to} end={item.end} data-walkthrough={item.label.toLowerCase()} className={({ isActive }) => isActive ? "active" : ""}><NavIcon name={item.icon} /><span>{item.label}</span>{item.to === "/activity" && !!notifications.data?.unread_count && <small className="nav-count" aria-label={`${notifications.data.unread_count} notifications`}>{notifications.data.unread_count}</small>}</NavLink>)}
           {profile && <>
             <p className="nav-heading nav-heading--server" title={profile.name}>{profile.name}</p>
             {serverNav.map(item => <NavLink key={item.path} to={`/servers/${profile.id}/${item.path}`} className={({ isActive }) => isActive ? "active" : ""}><NavIcon name={item.icon} /><span>{item.label}</span></NavLink>)}
