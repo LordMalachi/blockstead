@@ -15,6 +15,12 @@ interface HelpTopic {
   href?: string;
 }
 
+interface RecoverySuggestion {
+  title: string;
+  description: string;
+  href: string;
+}
+
 const topics: HelpTopic[] = [
   { title: "Get a server online", category: "Getting started", summary: "Create a supported server, copy in an existing folder, or start from a modpack; then review readiness, accept the EULA, and start safely.", keywords: "setup create import copy folder modpack mrpack eula java launcher readiness first server offline won't start", page: "overview", action: "Open server setup" },
   { title: "Help friends join", category: "Connecting", summary: "Find the local address, understand why a public address may be unavailable, and work through router, firewall, and provider checks.", keywords: "connect connection join address ip lan network port invite internet router firewall cgnat vpn public", page: "overview", action: "Open join details" },
@@ -26,8 +32,25 @@ const topics: HelpTopic[] = [
   { title: "Change server settings", category: "Configuration", summary: "Use typed fields, validation, and an exact change preview. Blockstead saves a private recovery snapshot before writing the file.", keywords: "settings server properties motd difficulty player limit port configuration snapshot", page: "settings", action: "Open settings" },
   { title: "Understand activity, alerts, and support reports", category: "Support", summary: "Filter changes across every server, follow recovery links, choose which local alerts matter, and download a redacted report centered on one event.", keywords: "activity history notification alert accepted success failed outcome recovery report support logs mark seen", page: null, action: "Open Activity", href: "/activity" },
   { title: "Diagnose a problem", category: "Support", summary: "Check computer health, Java discovery, and recent errors, then save a diagnostic report that you can review before sharing.", keywords: "diagnose error failed crash cpu memory ram disk storage java report support doctor logs", page: null, action: "Open System" },
+  { title: "Update Blockstead", category: "Software", summary: "Check whether a newer tested build is available, see whether this installation can update itself, and understand the player-safe update behavior.", keywords: "update upgrade newer version release install automatic manual current latest software blockstead", page: null, action: "Open updates", href: "/system#updates" },
   { title: "Reset the administrator password", category: "Recovery", summary: "Use a local terminal command on the Blockstead computer, with separate instructions for native Linux and Docker Compose installs.", keywords: "password forgot reset sign in login locked out administrator docker", page: null, action: "Open reset instructions", href: "#password-recovery" },
 ];
+
+function recoverySuggestions(terms: string[]): RecoverySuggestion[] {
+  const hasAny = (...words: string[]) => words.some(word => terms.includes(word));
+  if (hasAny("crash", "crashed", "error", "failed", "failure", "won't", "wont", "start", "stopped")) return [
+    { title: "Open Activity", description: "Find the failed event and its recovery link.", href: "/activity" },
+    { title: "Open diagnostics", description: "Check Java, disk space, and recorded errors before sharing a report.", href: "/system" },
+  ];
+  if (hasAny("lag", "slow", "performance", "memory", "ram", "cpu", "disk", "storage")) return [
+    { title: "Check system health", description: "Review the computer's CPU, memory, disk space, and recent errors.", href: "/system" },
+    { title: "Open Activity", description: "See whether a backup, restart, or another recent change lines up with the problem.", href: "/activity" },
+  ];
+  return [
+    { title: "Open Activity", description: "Find recent changes and any recovery link Blockstead recorded.", href: "/activity" },
+    { title: "Open diagnostics", description: "Check the host and save a reviewable support report if needed.", href: "/system" },
+  ];
+}
 
 export function HelpPage() {
   const [query, setQuery] = useState("");
@@ -43,6 +66,7 @@ export function HelpPage() {
     const searchable = `${topic.title} ${topic.category} ${topic.summary} ${topic.keywords}`.toLowerCase();
     return terms.every(term => searchable.includes(term));
   });
+  const suggestions = recoverySuggestions(terms);
   const topicLink = (topic: HelpTopic) => topic.href ?? (topic.page && profile ? `/servers/${profile.id}/${topic.page}` : topic.page ? "/servers" : "/system");
 
   return <>
@@ -72,10 +96,14 @@ export function HelpPage() {
         <Link to={topicLink(topic)} onClick={topic.href === "#password-recovery" ? () => setPasswordOpen(true) : undefined}>{topic.page && !profile ? "Choose a server" : topic.action}<span aria-hidden="true"> →</span></Link>
       </article>)}</div> : <div className="help-no-results">
         <h3>No task shortcut matched “{query.trim()}”</h3>
-        <p>Try a simpler word such as “players,” “join,” “backup,” or “crash.”</p>
+        <p>Try a simpler word such as “players,” “join,” “backup,” or “crash.” If something is wrong, these are safe places to start.</p>
+        <div className="help-recovery-suggestions" aria-label="Recovery suggestions">
+          {suggestions.map(suggestion => <Link key={suggestion.href} className="help-recovery-suggestion" to={suggestion.href}>
+            <strong>{suggestion.title}</strong><span>{suggestion.description}</span>
+          </Link>)}
+        </div>
         <div className="help-no-results__actions">
           <Button className="button--secondary" onClick={() => setQuery("")}>Clear search</Button>
-          <Link className="button button--quiet" to="/system">Open diagnostics</Link>
         </div>
       </div>}
     </section>

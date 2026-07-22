@@ -60,8 +60,24 @@ test("searches common synonyms and clears an empty result", () => {
   expect(activityGuide!.querySelector("a")).toHaveTextContent("Open Activity");
   expect(activityGuide!.querySelector("a")).toHaveAttribute("href", "/activity");
 
+  fireEvent.change(search, { target: { value: "update" } });
+  const updateGuide = screen.getByRole("heading", { name: "Update Blockstead" }).closest("article");
+  expect(updateGuide).not.toBeNull();
+  expect(updateGuide!.querySelector("a")).toHaveAttribute("href", "/system#updates");
+
   fireEvent.change(search, { target: { value: "something impossible" } });
+  expect(screen.getByRole("link", { name: /Open Activity/ })).toHaveAttribute("href", "/activity");
+  expect(screen.getByRole("link", { name: /Open diagnostics/ })).toHaveAttribute("href", "/system");
   fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
   expect(search).toHaveValue("");
   expect(screen.getByRole("heading", { name: "Help friends join" })).toBeVisible();
+});
+
+test("offers focused recovery paths when a crash search has no task match", () => {
+  renderHelp();
+
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search help" }), { target: { value: "crashed suddenly" } });
+
+  expect(screen.getByRole("link", { name: /Open Activity/ })).toHaveTextContent("Find the failed event");
+  expect(screen.getByRole("link", { name: /Open diagnostics/ })).toHaveTextContent("Check Java, disk space");
 });
