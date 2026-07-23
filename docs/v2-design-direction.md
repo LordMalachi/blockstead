@@ -3,6 +3,10 @@
 **Status:** Design guide for the version-2 direction. This document is not an
 implementation commitment and makes no application-code changes.
 
+For the role-based stories, screen contracts, action-state language, guide
+schema, and prototype gates behind this direction, see the companion
+[v2 experience atlas](v2-experience-atlas.md).
+
 ## North star
 
 > Blockstead is a calm control room for a Minecraft world: it helps the person
@@ -288,4 +292,3 @@ read-only file views plus guided actions; do not invent a live-session view.
 - [Accessible replayable walkthrough](../frontend/src/features/help/Walkthrough.tsx)
 - [Curated command and safety metadata](../backend/src/blockstead/command_catalog.py)
 - [Current roadmap](../update.md)
-
