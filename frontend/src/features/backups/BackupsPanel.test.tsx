@@ -21,7 +21,7 @@ const completed: BackupRecord = {
   completed_at: "2026-07-17T14:30:01.5Z",
 };
 
-const defaultPolicy: BackupPolicy = { keep_count: 10, keep_days: null, max_total_mb: null, redundancy_enabled: false, destinations: [] };
+const defaultPolicy: BackupPolicy = { keep_count: 10, keep_days: null, max_total_mb: null, redundancy_enabled: false, destinations: [], storage_path: "/var/lib/blockstead/backups/profile-1" };
 
 const verifiedPreview: RestorePreview = {
   backup_id: "backup-1",
@@ -198,4 +198,22 @@ test("returns focus to the selected restore point after cancelling review", asyn
   fireEvent.click(screen.getByRole("button", { name: "Cancel restore" }));
 
   await waitFor(() => expect(trigger).toHaveFocus());
+});
+
+test("opens a window per configured backup storage folder", async () => {
+  renderPanel({ policy: { ...defaultPolicy, redundancy_enabled: true, destinations: ["/media/backup-drive/minecraft"] } });
+  const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Open backup folders" }));
+
+  expect(openSpy).toHaveBeenCalledTimes(2);
+  expect(openSpy).toHaveBeenCalledWith("file:///var/lib/blockstead/backups/profile-1", "_blank", "noopener");
+  expect(openSpy).toHaveBeenCalledWith("file:///media/backup-drive/minecraft", "_blank", "noopener");
+});
+
+test("hides the open-folder button when no storage paths are known", async () => {
+  renderPanel({ policy: { ...defaultPolicy, storage_path: null } });
+  await screen.findByText("Protected world.");
+
+  expect(screen.queryByRole("button", { name: /Open backup folder/ })).toBeNull();
 });

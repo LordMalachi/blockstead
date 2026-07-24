@@ -371,11 +371,18 @@ def test_backup_policy_roundtrip_applies_retention(owned_client: TestClient) -> 
         "max_total_mb": None,
         "redundancy_enabled": False,
         "destinations": [],
+        "storage_path": None,
     }
 
     first = owned_client.post(f"/api/v1/profiles/{profile_id}/backups", headers=auth).json()
     second = owned_client.post(f"/api/v1/profiles/{profile_id}/backups", headers=auth).json()
     assert first["status"] == second["status"] == "completed"
+
+    after_backup = owned_client.get(
+        f"/api/v1/profiles/{profile_id}/backup-policy", headers=auth
+    ).json()
+    assert after_backup["storage_path"] is not None
+    assert after_backup["storage_path"].endswith(f"backups/{profile_id}")
 
     updated = owned_client.put(
         f"/api/v1/profiles/{profile_id}/backup-policy",

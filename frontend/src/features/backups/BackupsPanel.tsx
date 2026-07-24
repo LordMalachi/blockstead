@@ -46,6 +46,16 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
+function storageFolderPaths(policy?: BackupPolicy): string[] {
+  if (!policy) return [];
+  const paths = policy.storage_path ? [policy.storage_path, ...policy.destinations] : [...policy.destinations];
+  return Array.from(new Set(paths));
+}
+
+function openStorageFolders(paths: string[]) {
+  for (const path of paths) window.open(`file://${encodeURI(path)}`, "_blank", "noopener");
+}
+
 interface PolicyDraft {
   keep_count: string;
   keep_days: string;
@@ -152,6 +162,7 @@ export function BackupsPanel({
     onSuccess: () => {
       setExportNotice("Backup completed and verified in Blockstead. Use Save a copy when you want a portable archive elsewhere.");
       void cache.invalidateQueries({ queryKey: ["backups", profileId] });
+      void cache.invalidateQueries({ queryKey: ["backup-policy", profileId] });
     },
     onError: () => void cache.invalidateQueries({ queryKey: ["backups", profileId] }),
   });
@@ -200,6 +211,7 @@ export function BackupsPanel({
   const inProgress = records.find(entry => entry.status === "in_progress");
   const storedBytes = availableRecords.reduce((total, entry) => total + (entry.size_bytes ?? 0), 0);
   const historyReady = backups.data != null;
+  const folderPaths = storageFolderPaths(policy.data);
   const draft = policyDraft ?? (policy.data ? draftFrom(policy.data) : null);
   const editRule = (rule: "keep_count" | "keep_days" | "max_total_mb") => (value: string) => {
     if (draft) setPolicyDraft({ ...draft, [rule]: value });
@@ -230,6 +242,12 @@ export function BackupsPanel({
           <Button ref={guideTrigger} className="button--light button--small" aria-expanded={guideOpen} aria-controls="backup-guide" onClick={() => guideOpen ? closeGuide() : setGuideOpen(true)}>
             {guideOpen ? "Hide backup guide" : "Open backup guide"}
           </Button>
+          {folderPaths.length > 0 && <div className="heading-with-help">
+            <Button className="button--light button--small" onClick={() => openStorageFolders(folderPaths)}>
+              {folderPaths.length > 1 ? "Open backup folders" : "Open backup folder"}
+            </Button>
+            <Tooltip label="What does this open?">Opens each backup storage folder in a new browser tab (Blockstead's private archive folder, plus any approved mirror destinations). This only works when you use this dashboard from the same computer that runs Blockstead, and only if your browser is allowed to read those folders on disk.</Tooltip>
+          </div>}
           <span className={`workspace-state${lastSuccess ? " workspace-state--ready" : " workspace-state--locked"}`}>
             <i aria-hidden="true" />{!historyReady ? backups.error ? "Protection unknown" : "Checking protection" : lastSuccess ? "World protected" : "First backup needed"}
           </span>

@@ -45,6 +45,7 @@ from .backups import (
     BackupArchive,
     BackupError,
     RestoreError,
+    backup_directory,
     create_backup_archive,
     mirror_backup_archive,
     perform_restore,
@@ -1535,12 +1536,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return [value for value in values if isinstance(value, str)]
 
     def policy_payload(profile: Profile) -> dict[str, object]:
+        storage_dir = backup_directory(config.data_dir, profile.id)
         return {
             "keep_count": profile.backup_keep_count,
             "keep_days": profile.backup_keep_days,
             "max_total_mb": profile.backup_max_total_mb,
             "redundancy_enabled": profile.backup_redundancy_enabled,
             "destinations": configured_backup_destinations(profile),
+            "storage_path": str(storage_dir.resolve()) if storage_dir.is_dir() else None,
         }
 
     @app.get("/api/v1/profiles/{profile_id}/backup-policy")
