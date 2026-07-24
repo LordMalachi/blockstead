@@ -178,6 +178,7 @@ class NotificationPreferencesRequest(BaseModel):
     failed_backups: bool = True
     low_disk_space: bool = True
     completed_updates: bool = True
+    show_player_avatars: bool = False
 
 
 class SettingChangeRequest(BaseModel):
@@ -204,6 +205,17 @@ class SettingsUpdateRequest(BaseModel):
         return self
 
 
+class FileEditRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=1024)
+    revision: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    content: str = Field(max_length=1_000_000)
+
+
+class FileRenameRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=1024)
+    new_name: str = Field(min_length=1, max_length=255)
+
+
 PLAYER_ACTIONS: dict[str, str] = {
     "whitelist_add": "whitelist add",
     "whitelist_remove": "whitelist remove",
@@ -211,11 +223,12 @@ PLAYER_ACTIONS: dict[str, str] = {
     "deop": "deop",
     "ban": "ban",
     "pardon": "pardon",
+    "kick": "kick",
 }
 
 
 class PlayerActionRequest(BaseModel):
-    action: str = Field(pattern=r"^(whitelist_add|whitelist_remove|op|deop|ban|pardon)$")
+    action: str = Field(pattern=r"^(whitelist_add|whitelist_remove|op|deop|ban|pardon|kick)$")
     player: str = Field(pattern=r"^[A-Za-z0-9_]{3,16}$")
 
     @property

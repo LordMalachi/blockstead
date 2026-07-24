@@ -32,6 +32,12 @@ CATEGORY_GROUPS: dict[str, str] = {
     "player_action": "player",
     "console_command": "player",
     "guided_command": "player",
+    "file_download": "files",
+    "file_upload": "files",
+    "file_edit": "files",
+    "file_rename": "files",
+    "file_delete": "files",
+    "file_archive_extract": "files",
     "schedule_update": "automation",
     "automation_event": "automation",
     "automation_start": "automation",
@@ -63,6 +69,12 @@ CATEGORY_TITLES: dict[str, str] = {
     "player_action": "Player access changed",
     "console_command": "Console command sent",
     "guided_command": "Guided command sent",
+    "file_download": "File downloaded",
+    "file_upload": "File uploaded",
+    "file_edit": "File edited",
+    "file_rename": "File renamed",
+    "file_delete": "File deleted",
+    "file_archive_extract": "Archive extracted",
     "schedule_update": "Schedule updated",
     "automation_event": "One-time maintenance changed",
     "automation_start": "Automated start",
@@ -87,6 +99,7 @@ def recovery_path(category: str, profile_id: str | None) -> str:
         "settings": "settings",
         "automation": "schedule",
         "lifecycle": "console",
+        "files": "files",
     }.get(CATEGORY_GROUPS.get(category, ""), "overview")
     return f"/servers/{profile_id}/{section}"
 
@@ -157,6 +170,7 @@ def preferences_for(
             failed_backups=True,
             low_disk_space=True,
             completed_updates=True,
+            show_player_avatars=False,
         )
         if persist:
             db.add(row)
@@ -170,5 +184,6 @@ def preferences_payload(row: NotificationPreference) -> dict[str, Any]:
         "failed_backups": row.failed_backups,
         "low_disk_space": row.low_disk_space,
         "completed_updates": row.completed_updates,
+        "show_player_avatars": row.show_player_avatars,
         "last_seen_at": utc_timestamp(row.last_seen_at) if row.last_seen_at else None,
     }

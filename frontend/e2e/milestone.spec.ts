@@ -2,10 +2,77 @@ import { expect, test } from "@playwright/test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { crc32 } from "node:zlib";
+
+/** Build a minimal, uncompressed (stored) zip archive without a library dependency. */
+function buildStoredZip(entries: { name: string; data: Buffer }[]): Buffer {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+  for (const { name, data } of entries) {
+    const nameBuf = Buffer.from(name, "utf-8");
+    const crc = crc32(data) >>> 0;
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt16LE(0, 10);
+    local.writeUInt16LE(0x21, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    local.writeUInt16LE(0, 28);
+    localParts.push(local, nameBuf, data);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt16LE(0, 12);
+    central.writeUInt16LE(0x21, 14);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(nameBuf.length, 28);
+    central.writeUInt16LE(0, 30);
+    central.writeUInt16LE(0, 32);
+    central.writeUInt16LE(0, 34);
+    central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, nameBuf);
+
+    offset += local.length + nameBuf.length + data.length;
+  }
+  const centralStart = offset;
+  const centralBuffer = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralBuffer.length, 12);
+  end.writeUInt32LE(centralStart, 16);
+  end.writeUInt16LE(0, 20);
+  return Buffer.concat([...localParts, centralBuffer, end]);
+}
 
 test("first admin imports and controls the owned fixture", async ({ page }) => {
   test.setTimeout(60_000);
+  // The fixture is imported in place (not copied), so a previously interrupted
+  // run's archive-extract output could otherwise linger and change this run's
+  // World-category listing.
+  const extractedDatapacks = resolve(
+    process.cwd(), "../fixtures/servers/vanilla-fixture/world/datapacks",
+  );
+  rmSync(extractedDatapacks, { recursive: true, force: true });
   await page.goto("/");
+  await expect(page.locator('link[rel="manifest"]')).toHaveAttribute("href", "/manifest.webmanifest");
   await expect(page.getByRole("heading", { name: "Welcome to Blockstead" })).toBeVisible();
   await page.getByLabel("Username").fill("owner");
   await page.getByLabel("Password").fill("correct horse battery staple");
@@ -44,6 +111,22 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
   await page.getByRole("link", { name: "Console" }).click();
   await expect(page.getByRole("log")).toContainText("Added Browser_Tester to the whitelist");
 
+  // Session tracking is parsed from the server's own log, so it is only
+  // observable once a recognized join/leave line has actually appeared there.
+  // Leaving Console and coming back remounts it, so the raw command section
+  // collapses again and needs reopening.
+  await page.getByText("Advanced raw command").click();
+  await page.getByLabel("Minecraft console command").fill("simulate-join Steve_Fixture");
+  await page.getByRole("button", { name: "Send command" }).click();
+  await expect(page.getByRole("log")).toContainText("Steve_Fixture joined the game");
+
+  await page.getByRole("link", { name: "Players" }).click();
+  const steveRow = page.locator(".roster-row", { hasText: "Steve_Fixture" });
+  await expect(steveRow.getByText("Likely online")).toBeVisible({ timeout: 10_000 });
+  await steveRow.getByRole("button", { name: "Kick" }).click();
+  await steveRow.getByRole("button", { name: "Confirm kick" }).click();
+  await expect(steveRow.getByText(/Last seen/)).toBeVisible({ timeout: 10_000 });
+
   await page.getByRole("link", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { name: "Guided settings" })).toBeVisible();
   await expect(page.getByLabel("Player limit")).toHaveValue("20");
@@ -54,6 +137,38 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
   await page.getByRole("button", { name: "Back up now" }).click();
   await expect(page.getByRole("status")).toContainText(/completed.*verified/i, { timeout: 10_000 });
   await expect(page.getByText("Protected world.")).toBeVisible();
+
+  await page.getByRole("link", { name: "Files" }).click();
+  await expect(page.getByRole("heading", { name: "Files" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /server\.properties/ })).toBeVisible();
+  await page.getByLabel("Choose files").setInputFiles({
+    name: "note.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("hello from the browser test\n"),
+  });
+  await expect(page.getByText("Uploaded 1 file.")).toBeVisible();
+  const noteRow = page.locator(".file-row", { hasText: "note.txt" });
+  await expect(noteRow).toBeVisible();
+
+  await noteRow.getByRole("button", { name: /note\.txt/ }).click();
+  await page.getByLabel("Content of note.txt").fill("hello from the browser test, edited\n");
+  await page.getByRole("button", { name: "Check changes" }).click();
+  const saveFile = page.getByRole("button", { name: "Save file" });
+  await expect(saveFile).toBeEnabled();
+  await saveFile.click();
+  await expect(page.getByText(/Recovery snapshot/)).toBeVisible();
+  await page.getByRole("button", { name: "Close" }).click();
+
+  await noteRow.getByRole("button", { name: "Rename" }).click();
+  await page.getByLabel("New name for note.txt").fill("renamed-note.txt");
+  await noteRow.getByRole("button", { name: "Save" }).click();
+  await expect(page.locator(".file-row", { hasText: "renamed-note.txt" })).toBeVisible();
+
+  const renamedRow = page.locator(".file-row", { hasText: "renamed-note.txt" });
+  await renamedRow.getByRole("button", { name: "Delete" }).click();
+  await renamedRow.getByRole("button", { name: "Confirm delete" }).click();
+  await expect(page.getByText(/Recovery snapshot/)).toBeVisible();
+  await expect(page.locator(".file-row", { hasText: "renamed-note.txt" })).toHaveCount(0);
 
   await page.getByRole("link", { name: "System" }).click();
   await expect(page.getByRole("heading", { name: "System health" })).toBeVisible();
@@ -78,6 +193,25 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
   await expect(page.getByText("Running", { exact: true })).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Stop safely" }).click();
   await expect(page.getByText("Stopped", { exact: true })).toBeVisible({ timeout: 5_000 });
+
+  // World archive extraction requires a stopped server; validated separately from the
+  // config-category upload/edit/rename/delete flow exercised above.
+  await page.getByRole("link", { name: "Files" }).click();
+  await page.getByRole("button", { name: "World", exact: true }).click();
+  const zip = buildStoredZip([
+    { name: "datapacks/hello.txt", data: Buffer.from("e2e archive test\n") },
+  ]);
+  await page.getByRole("button", { name: "world", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Extract a .zip archive here" })).toBeVisible();
+  await page.getByLabel("Choose a .zip file").setInputFiles({
+    name: "pack.zip",
+    mimeType: "application/zip",
+    buffer: zip,
+  });
+  await expect(page.getByText(/^Extracted 1 item\./)).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(".file-row", { hasText: "datapacks" })).toBeVisible();
+  // The fixture is imported in place; leave it as this test found it.
+  rmSync(extractedDatapacks, { recursive: true, force: true });
 
   // A bookmarked deep link, a refresh, and history all land on the expected view.
   await page.goto(`${workspace}/schedule`);

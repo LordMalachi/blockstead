@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useMatch } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, clearCsrf, type LocalNotifications, type ProcessState, type Profile } from "../../api/client";
@@ -21,21 +21,16 @@ const serverNav = [
   { path: "players", label: "Players", icon: "users" },
   { path: "mods", label: "Mods and plugins", icon: "blocks" },
   { path: "backups", label: "Backups", icon: "package" },
+  { path: "files", label: "Files", icon: "folder" },
   { path: "schedule", label: "Schedule", icon: "clock" },
   { path: "settings", label: "Settings", icon: "sliders" },
 ];
-const serverSoon = [
-  { label: "Files", icon: "folder", note: "Later" },
-];
-
-function Soon({ label, icon, note }: { label: string; icon: string; note: string }) {
-  return <span className="nav-disabled" aria-disabled="true"><NavIcon name={icon} /><span>{label}</span><small>{note}</small></span>;
-}
 
 export function AppShell({ onLogout }: { onLogout: () => void }) {
   const { pathname } = useLocation();
   const match = useMatch("/servers/:profileId/*");
   const profileId = match?.params.profileId ?? "";
+  const navRef = useRef<HTMLElement>(null);
   // Each page is its own route now, so it should open at the top rather than inherit
   // the scroll position of the page the owner came from.
   useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" }); }, [pathname]);
@@ -47,6 +42,16 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
   const profiles = useQuery({ queryKey: ["profiles"], queryFn: () => api<Profile[]>("/profiles") });
   const notifications = useQuery({ queryKey: ["notifications"], queryFn: () => api<LocalNotifications>("/notifications"), refetchInterval: 30_000 });
   const profile = profiles.data?.find(entry => entry.id === (profileId || recentId));
+  // On narrow screens the sidebar becomes a horizontally scrolling row; without
+  // this, landing on a page whose nav item sits off-screen gives no clue where
+  // you are or that there is more to scroll to. The server nav only exists once
+  // `profile` resolves, which can happen after `pathname` already settled, so
+  // this must also re-run once that nav actually appears.
+  useEffect(() => {
+    navRef.current?.querySelector<HTMLElement>("a.active")?.scrollIntoView({
+      behavior: "instant" as ScrollBehavior, inline: "center", block: "nearest",
+    });
+  }, [pathname, profile]);
   const snapshot = state.data ?? { state: "UNKNOWN" as const, pid: null, exit_code: null, reason: "Checking server state" };
   const scope = profileId && profile ? scopeFor(profile, snapshot, profiles.data ?? []) : null;
 
@@ -60,14 +65,14 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
     </header>
     <div className="layout">
       <aside className="sidebar">
-        <nav aria-label="Main navigation">
+        <nav aria-label="Main navigation" ref={navRef}>
           <p className="nav-heading">Workspace</p>
           {workspaceNav.map(item => <NavLink key={item.to} to={item.to} end={item.end} data-walkthrough={item.label.toLowerCase()} className={({ isActive }) => isActive ? "active" : ""}><NavIcon name={item.icon} /><span>{item.label}</span>{item.to === "/activity" && !!notifications.data?.unread_count && <small className="nav-count" aria-label={`${notifications.data.unread_count} notifications`}>{notifications.data.unread_count}</small>}</NavLink>)}
           {profile && <>
             <p className="nav-heading nav-heading--server" title={profile.name}>{profile.name}</p>
             {serverNav.map(item => <NavLink key={item.path} to={`/servers/${profile.id}/${item.path}`} className={({ isActive }) => isActive ? "active" : ""}><NavIcon name={item.icon} /><span>{item.label}</span></NavLink>)}
-            {serverSoon.map(item => <Soon key={item.label} {...item} />)}
           </>}
+          <span className="sidebar-scroll-hint" aria-hidden="true" />
         </nav>
         <div className="privacy-card" data-walkthrough="privacy"><span className="privacy-card__icon" aria-hidden="true">◆</span><div><strong>Local by design</strong><small>Your server data stays on this machine.</small></div></div>
       </aside>

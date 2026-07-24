@@ -63,6 +63,13 @@ test("captures documentation screenshots @docs", async ({ page }) => {
   await page.screenshot({ path: out("11-backups") });
   await page.setViewportSize({ width: 1360, height: 850 });
 
+  await page.getByRole("link", { name: "Files" }).click();
+  await expect(page.getByRole("heading", { name: "Files" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /server\.properties/ })).toBeVisible();
+  await page.setViewportSize({ width: 1360, height: 1080 });
+  await page.screenshot({ path: out("16-files") });
+  await page.setViewportSize({ width: 1360, height: 850 });
+
   await page.getByRole("link", { name: "Overview" }).click();
   await page.getByRole("button", { name: "Stop safely" }).click();
   await expect(page.getByText("Stopped", { exact: true })).toBeVisible({ timeout: 5_000 });

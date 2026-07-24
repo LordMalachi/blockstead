@@ -130,7 +130,7 @@ def _configured_level_name(server_directory: Path) -> str | None:
     return None
 
 
-def _world_roots(server_directory: Path) -> list[Path]:
+def world_roots(server_directory: Path) -> list[Path]:
     """World folders to protect: level-name based (Paper adds suffixed
     dimension folders) plus the vanilla ``world*`` convention."""
 
@@ -160,7 +160,7 @@ def create_backup_archive(
     application_version: str,
     trigger: str,
 ) -> BackupArchive:
-    roots = _world_roots(server_directory)
+    roots = world_roots(server_directory)
     if not roots:
         raise BackupError("No world directory was found for this server.")
 

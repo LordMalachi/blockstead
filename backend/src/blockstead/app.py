@@ -93,6 +93,8 @@ from .extension_ops import (
     remove as remove_extension,
 )
 from .extensions import read_extensions
+from .file_paths import CATEGORIES as FILE_CATEGORIES
+from .file_paths import FileCategory, FilePathError
 from .hangar import (
     PROJECT_PATH_PATTERN as HANGAR_PROJECT_PATTERN,
 )
@@ -163,7 +165,13 @@ from .overview import (
     read_properties,
     world_size,
 )
-from .process import InvalidTransition, ProcessManager
+from .player_sessions import (
+    JOIN_PATTERN,
+    LEAVE_PATTERN,
+    record_log_line,
+    summarize_sessions,
+)
+from .process import InvalidTransition, LogEvent, ProcessManager
 from .provisioning import (
     DIRECTORY_PATTERN,
     USER_AGENT,
@@ -183,6 +191,8 @@ from .schemas import (
     Credentials,
     CurseForgeKeyRequest,
     EulaRequest,
+    FileEditRequest,
+    FileRenameRequest,
     ImportRequest,
     ImportUploadFinish,
     ImportUploadStart,
@@ -212,7 +222,23 @@ from .security import (
     require_mutation_security,
     verify_password,
 )
-from .server_files import read_players, read_settings
+from .server_files import (
+    STOPPED_REQUIRED_CATEGORIES,
+    FileConflictError,
+    apply_file_edit,
+    build_roster,
+    delete_file,
+    extract_archive_into,
+    list_category,
+    preview_file_edit,
+    read_file_content,
+    read_players,
+    read_settings,
+    rename_file,
+    resolve_download_path,
+    resolve_upload_target,
+    roster_names,
+)
 from .server_settings import (
     SettingsConflictError,
     SettingsValidationError,
@@ -285,12 +311,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     metrics_task: asyncio.Task[None] | None = None
     update_task: asyncio.Task[None] | None = None
+    player_session_task: asyncio.Task[None] | None = None
     update_wakeup = asyncio.Event()
     update_lock = asyncio.Lock()
 
+    def record_player_session_line(profile_id: str, line: str) -> None:
+        with factory() as db:
+            record_log_line(db, profile_id, line, datetime.now(timezone.utc))  # noqa: UP017
+            db.commit()
+
+    async def track_player_sessions(event: LogEvent) -> None:
+        # A player join/leave is a small fraction of server log lines; check the
+        # cheap regex before paying for a thread hop and a database write.
+        if event.profile_id is None:
+            return
+        if not (JOIN_PATTERN.search(event.line) or LEAVE_PATTERN.search(event.line)):
+            return
+        await asyncio.to_thread(record_player_session_line, event.profile_id, event.line)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        nonlocal metrics_task, update_task
+        nonlocal metrics_task, update_task, player_session_task
         engine = factory.kw["bind"]
         Base.metadata.create_all(engine)
         with factory() as db:
@@ -323,6 +364,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
             db.commit()
         metrics_task = asyncio.create_task(metrics_loop())
+        player_session_task = asyncio.create_task(manager.subscribe(track_player_sessions))
         # A first-ever start has nothing to announce, so the build that is
         # already running is recorded quietly. Anything different arriving later
         # is a real update and is announced once the owner sees it.
@@ -344,7 +386,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             config.port,
         )
         yield
-        for task in (metrics_task, update_task):
+        for task in (metrics_task, update_task, player_session_task):
             if task is None:
                 continue
             task.cancel()
@@ -354,6 +396,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 pass
         metrics_task = None
         update_task = None
+        player_session_task = None
         await scheduler.close()
         await manager.close()
         await http_client.aclose()
@@ -370,6 +413,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.public_ip_discovery = public_ip_discovery
     # Profiles with a restore in flight; starting or backing up one is refused.
     restoring_profiles: set[str] = set()
+    # Profiles with an archive extraction in flight; a second concurrent
+    # extraction for the same profile is refused rather than interleaved.
+    extracting_profiles: set[str] = set()
     # Long-running world mutations must finish before the service can hand an
     # update to the root helper. Tokens make concurrent backups independently
     # visible without holding the update lock for their full duration.
@@ -1820,6 +1866,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         current(request, db)
         return read_players(profile_directory(profile_id, db)).model_dump()
 
+    @app.get("/api/v1/profiles/{profile_id}/players/roster")
+    async def profile_players_roster(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        current(request, db)
+        directory = profile_directory(profile_id, db)
+        players = read_players(directory)
+        status = None
+        snapshot = manager.snapshot()
+        if app.state.active_profile_id == profile_id and snapshot["state"] == "RUNNING":
+            status = await minecraft_status(read_properties(directory))
+        names = roster_names(players, status)
+        sessions = summarize_sessions(
+            db, profile_id, names, datetime.now(timezone.utc)  # noqa: UP017
+        )
+        return build_roster(players, status, sessions).model_dump()
+
     @app.get("/api/v1/profiles/{profile_id}/extensions")
     def profile_extensions(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
@@ -2475,6 +2538,357 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         db.commit()
         return {**document.model_dump(), "restart_required": True}
+
+    def file_category(value: str) -> FileCategory:
+        if value not in FILE_CATEGORIES:
+            raise HTTPException(404, "That file category is not recognized.")
+        return cast(FileCategory, value)
+
+    def file_context(profile_id: str, db: Session) -> tuple[Profile, Path]:
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        return profile, profile_directory(profile_id, db)
+
+    def require_stopped_for(category: FileCategory) -> None:
+        if category in STOPPED_REQUIRED_CATEGORIES:
+            require_server_stopped()
+
+    @app.get("/api/v1/profiles/{profile_id}/files/{category}")
+    def list_profile_files(
+        profile_id: str, category: str, request: Request, db: Db, path: str = ""
+    ) -> dict[str, object]:
+        current(request, db)
+        kind = file_category(category)
+        profile, directory = file_context(profile_id, db)
+        try:
+            listing = list_category(
+                directory,
+                profile.distribution,
+                kind,
+                path,
+                data_dir=config.data_dir,
+                profile_id=profile.id,
+            )
+        except FilePathError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return listing.model_dump()
+
+    @app.get("/api/v1/profiles/{profile_id}/files/{category}/content")
+    def profile_file_content(
+        profile_id: str, category: str, path: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        current(request, db)
+        kind = file_category(category)
+        profile, directory = file_context(profile_id, db)
+        try:
+            content = read_file_content(
+                directory,
+                profile.distribution,
+                kind,
+                path,
+                data_dir=config.data_dir,
+                profile_id=profile.id,
+            )
+        except FilePathError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return content.model_dump()
+
+    @app.get("/api/v1/profiles/{profile_id}/files/{category}/download")
+    def download_profile_file(
+        profile_id: str, category: str, path: str, request: Request, db: Db
+    ) -> FileResponse:
+        admin, _ = current(request, db)
+        kind = file_category(category)
+        profile, directory = file_context(profile_id, db)
+        try:
+            target = resolve_download_path(
+                directory,
+                profile.distribution,
+                kind,
+                path,
+                data_dir=config.data_dir,
+                profile_id=profile.id,
+            )
+        except FilePathError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile_id,
+                category="file_download",
+                result="success",
+                safe_detail=f"Downloaded {kind}/{path}",
+            )
+        )
+        db.commit()
+        return FileResponse(target, filename=target.name)
+
+    @app.post("/api/v1/profiles/{profile_id}/files/{category}/content/preview")
+    def preview_profile_file_edit(
+        profile_id: str, category: str, payload: FileEditRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        mutation(request, db)
+        kind = file_category(category)
+        profile, directory = file_context(profile_id, db)
+        try:
+            preview = preview_file_edit(
+                directory,
+                profile.distribution,
+                kind,
+                payload.path,
+                payload.revision,
+                payload.content,
+                data_dir=config.data_dir,
+                profile_id=profile.id,
+            )
+        except FileConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except FilePathError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return preview.model_dump()
+
+    @app.put("/api/v1/profiles/{profile_id}/files/{category}/content")
+    def apply_profile_file_edit(
+        profile_id: str, category: str, payload: FileEditRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        kind = file_category(category)
+        profile, directory = file_context(profile_id, db)
+        require_stopped_for(kind)
+        try:
+            result = apply_file_edit(
+                directory,
+                profile.distribution,
+                kind,
+                payload.path,
+                payload.revision,
+                payload.content,
+                config.data_dir,
+                profile.id,
+                data_dir=config.data_dir,
+            )
+        except FileConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except FilePathError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile_id,
+                category="file_edit",
+                result="success",
+                safe_detail=(
+                    f"Edited {kind}/{payload.path}; recovery snapshot {result.snapshot_name}"
+                ),
+            )
+        )
+        db.commit()
+        return result.model_dump()
+
+    @app.post("/api/v1/profiles/{profile_id}/files/{category}/rename")
+    def rename_profile_file(
+        profile_id: str, category: str, payload: FileRenameRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        kind = file_category(category)
+        profile, directory = file_context(profile_id, db)
+        require_stopped_for(kind)
+        try:
+            result = rename_file(
+                directory,
+                profile.distribution,
+                kind,
+                payload.path,
+                payload.new_name,
+                data_dir=config.data_dir,
+                profile_id=profile.id,
+            )
+        except FilePathError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile_id,
+                category="file_rename",
+                result="success",
+                safe_detail=f"Renamed {kind}/{payload.path} to {result.path}",
+            )
+        )
+        db.commit()
+        return result.model_dump()
+
+    @app.delete("/api/v1/profiles/{profile_id}/files/{category}")
+    def delete_profile_file(
+        profile_id: str, category: str, path: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        kind = file_category(category)
+        profile, directory = file_context(profile_id, db)
+        require_stopped_for(kind)
+        try:
+            result = delete_file(
+                directory,
+                profile.distribution,
+                kind,
+                path,
+                config.data_dir,
+                profile.id,
+                datetime.now(timezone.utc),  # noqa: UP017
+                data_dir=config.data_dir,
+            )
+        except FilePathError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile_id,
+                category="file_delete",
+                result="success",
+                safe_detail=(
+                    f"Deleted {kind}/{path}; "
+                    + (
+                        f"recovery snapshot {result.snapshot_name}"
+                        if result.snapshot_name
+                        else f"preserved as {result.preserved_name}"
+                    )
+                ),
+            )
+        )
+        db.commit()
+        return result.model_dump()
+
+    @app.post("/api/v1/profiles/{profile_id}/files/{category}/upload")
+    async def upload_profile_files(
+        profile_id: str,
+        category: str,
+        files: list[UploadFile],
+        request: Request,
+        db: Db,
+        path: str = Form(""),
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        kind = file_category(category)
+        profile, directory = file_context(profile_id, db)
+        require_stopped_for(kind)
+        if len(files) > 100:
+            raise HTTPException(400, "Send the upload in smaller batches of files.")
+        free_margin = 1 << 30
+        budget = psutil.disk_usage(str(directory)).free - free_margin
+        written = 0
+        uploaded: list[str] = []
+        for file in files:
+            try:
+                target = resolve_upload_target(
+                    directory,
+                    profile.distribution,
+                    kind,
+                    path,
+                    file.filename or "",
+                    data_dir=config.data_dir,
+                    profile_id=profile.id,
+                )
+            except FilePathError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            staging = target.with_name(f".{target.name}.{secrets.token_hex(8)}.part")
+            try:
+                with staging.open("wb") as output:
+                    while chunk := await file.read(1 << 20):
+                        written += len(chunk)
+                        if written > budget:
+                            raise HTTPException(
+                                409,
+                                "The computer does not have enough free disk space "
+                                "for this upload. Free some space and try again.",
+                            )
+                        output.write(chunk)
+                staging.replace(target)
+            except OSError as exc:
+                raise HTTPException(409, "The uploaded file could not be written.") from exc
+            finally:
+                staging.unlink(missing_ok=True)
+            uploaded.append(file.filename or target.name)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile_id,
+                category="file_upload",
+                result="success",
+                safe_detail=f"Uploaded {len(uploaded)} file(s) to {kind}/{path}",
+            )
+        )
+        db.commit()
+        return {"uploaded": uploaded, "received_bytes": written}
+
+    @app.post("/api/v1/profiles/{profile_id}/files/{category}/archive/extract")
+    async def extract_profile_archive(
+        profile_id: str,
+        category: str,
+        file: UploadFile,
+        request: Request,
+        db: Db,
+        path: str = Form(""),
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        kind = file_category(category)
+        profile, directory = file_context(profile_id, db)
+        require_stopped_for(kind)
+        if profile.id in extracting_profiles:
+            raise HTTPException(
+                409, "An archive extraction is already in progress for this server."
+            )
+        tmp_dir = config.data_dir / "file-uploads-tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        archive_path = tmp_dir / f"{profile.id}-{secrets.token_hex(8)}.zip"
+        free_margin = 1 << 30
+        budget = psutil.disk_usage(str(directory)).free - free_margin
+        written = 0
+        extracting_profiles.add(profile.id)
+        try:
+            with archive_path.open("wb") as output:
+                while chunk := await file.read(1 << 20):
+                    written += len(chunk)
+                    if written > budget:
+                        raise HTTPException(
+                            409,
+                            "The computer does not have enough free disk space "
+                            "for this archive. Free some space and try again.",
+                        )
+                    output.write(chunk)
+            try:
+                result = await asyncio.to_thread(
+                    extract_archive_into,
+                    directory,
+                    profile.distribution,
+                    kind,
+                    path,
+                    archive_path,
+                    datetime.now(timezone.utc),  # noqa: UP017
+                    data_dir=config.data_dir,
+                    profile_id=profile.id,
+                )
+            except FilePathError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(409, "The uploaded archive could not be written.") from exc
+        finally:
+            archive_path.unlink(missing_ok=True)
+            extracting_profiles.discard(profile.id)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile_id,
+                category="file_archive_extract",
+                result="success",
+                safe_detail=(
+                    f"Extracted archive into {kind}/{path}: "
+                    f"{len(result.promoted)} item(s) added"
+                    + (f", {len(result.preserved)} preserved" if result.preserved else "")
+                ),
+            )
+        )
+        db.commit()
+        return result.model_dump()
 
     @app.get("/api/v1/modpacks/search")
     async def modpack_search(query: str, request: Request, db: Db) -> dict[str, object]:

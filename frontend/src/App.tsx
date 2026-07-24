@@ -8,7 +8,7 @@ import { HelpPage } from "./features/help/HelpPage";
 import { WalkthroughProvider } from "./features/help/Walkthrough";
 import { OverviewPage } from "./features/servers/OverviewPage";
 import { ServerLayout } from "./features/servers/ServerLayout";
-import { BackupsPage, ModsPage, PlayersPage, SchedulePage, SettingsPage } from "./features/servers/ServerPages";
+import { BackupsPage, FilesPage, ModsPage, PlayersPage, SchedulePage, SettingsPage } from "./features/servers/ServerPages";
 import { ServersPage } from "./features/servers/ServersPage";
 import { AppShell } from "./features/shell/AppShell";
 import { SystemPage } from "./features/system/SystemPage";
@@ -38,6 +38,7 @@ export default function App() {
         <Route path="backups" element={<BackupsPage />} />
         <Route path="schedule" element={<SchedulePage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="files" element={<FilesPage />} />
       </Route>
       <Route path="system" element={<SystemPage />} />
       <Route path="activity" element={<ActivityPage />} />

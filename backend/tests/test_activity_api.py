@@ -53,6 +53,7 @@ def test_local_notification_preferences_can_be_changed_and_acknowledged(
         "failed_backups": True,
         "low_disk_space": True,
         "completed_updates": True,
+        "show_player_avatars": False,
         "last_seen_at": None,
     }
 
@@ -64,11 +65,13 @@ def test_local_notification_preferences_can_be_changed_and_acknowledged(
             "failed_backups": True,
             "low_disk_space": False,
             "completed_updates": True,
+            "show_player_avatars": True,
         },
     )
     assert changed.status_code == 200
     assert changed.json()["server_crashes"] is False
     assert changed.json()["low_disk_space"] is False
+    assert changed.json()["show_player_avatars"] is True
 
     assert client.post("/api/v1/notifications/acknowledge", headers=auth).status_code == 204
     assert client.get("/api/v1/notification-preferences").json()["last_seen_at"] is not None

@@ -65,11 +65,24 @@ def main() -> None:
             info(f"Made {name} no longer a server operator")
         elif words[:1] == ["ban"] and name:
             banned.add(name)
-            online.discard(name)
+            if name in online:
+                online.discard(name)
+                info(f"{name} left the game")
             info(f"Banned {name}: Banned by an operator")
         elif words[:1] == ["pardon"] and name:
             banned.discard(name)
             info(f"Unbanned {name}")
+        elif words[:1] == ["kick"] and name:
+            if name in online:
+                online.discard(name)
+                info(f"{name} left the game")
+            info(f"Kicked {name}: Kicked by an operator")
+        elif words[:1] == ["simulate-join"] and name:
+            online.add(name)
+            info(f"{name} joined the game")
+        elif words[:1] == ["simulate-leave"] and name:
+            online.discard(name)
+            info(f"{name} left the game")
         elif words[:1] == ["say"]:
             info(f"[Server] {command[4:]}")
 

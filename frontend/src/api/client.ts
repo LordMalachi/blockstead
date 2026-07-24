@@ -20,7 +20,9 @@ export interface RawSettingsApplyResult { snapshot_name: string; previous_revisi
 export interface PlayerEntry { name: string; uuid: string | null; level: number | null; reason: string | null }
 export interface PlayerFile { present: boolean; readable: boolean; players: PlayerEntry[] }
 export interface PlayersView { allowlist: PlayerFile; operators: PlayerFile; bans: PlayerFile }
-export type PlayerAction = "whitelist_add" | "whitelist_remove" | "op" | "deop" | "ban" | "pardon"
+export type PlayerAction = "whitelist_add" | "whitelist_remove" | "op" | "deop" | "ban" | "pardon" | "kick"
+export interface RosterEntry { name: string; uuid: string | null; online: boolean | null; allowlisted: boolean; operator: boolean; banned: boolean; ban_reason: string | null; tracked_online: boolean; last_seen: string | null; session_seconds: number | null }
+export interface RosterView { entries: RosterEntry[]; status_available: boolean; online_count: number | null; max_players: number | null }
 export interface CommandOption { value: string; label: string; icon?: string }
 export interface CommandArgument {
   key: string;
@@ -86,7 +88,7 @@ export interface OverviewWarning { code: string; title: string; detail: string; 
 export interface OverviewActivity { id: string; category: string; result: string; detail: string; created_at: string; to: string }
 export interface ActivityEvent { id: string; category: string; group: string; title: string; result: string; severity: "success" | "danger"; detail: string; actor: string; profile: { id: string; name: string } | null; created_at: string; recovery_to: string; report_url: string }
 export interface ActivityFeed { events: ActivityEvent[]; total: number; limit: number; offset: number }
-export interface NotificationPreferences { server_crashes: boolean; failed_backups: boolean; low_disk_space: boolean; completed_updates: boolean; last_seen_at: string | null }
+export interface NotificationPreferences { server_crashes: boolean; failed_backups: boolean; low_disk_space: boolean; completed_updates: boolean; show_player_avatars: boolean; last_seen_at: string | null }
 export interface LocalAlert { id: string; kind?: string; title: string; detail: string; severity: "success" | "warning" | "danger"; created_at: string; recovery_to: string }
 export interface LocalNotifications { alerts: LocalAlert[]; unread_count: number }
 export interface ProfileOverview {
@@ -140,6 +142,16 @@ export interface ProvisionResult { id: string; name: string; distribution: strin
 export interface ModConfigEntry { path: string; size_bytes: number }
 export interface ModConfigsView { distribution: string; directory: string; files: ModConfigEntry[] }
 export interface ModConfigDocument { path: string; content: string; revision: string; size_bytes: number; restart_required?: boolean }
+export type FileCategory = "config" | "logs" | "extensions" | "world" | "backups"
+export interface FileNode { name: string; path: string; is_dir: boolean; size_bytes: number | null; modified_at: string | null; viewable: boolean; editable: boolean }
+export interface FileListing { category: string; path: string; entries: FileNode[]; writable: boolean; stopped_required: boolean }
+export interface FileContent { path: string; content: string; revision: string; editable: boolean }
+export interface FileEditPreview { revision: string; valid: boolean; problems: string[]; no_changes: boolean }
+export interface FileEditResult { path: string; snapshot_name: string; previous_revision: string; revision: string }
+export interface FileRenameResult { path: string }
+export interface FileDeleteResult { snapshot_name: string | null; preserved_name: string | null }
+export interface FileUploadResult { uploaded: string[]; received_bytes: number }
+export interface ArchiveExtractResult { promoted: string[]; preserved: string[] }
 
 let csrfToken = sessionStorage.getItem("blockstead_csrf") ?? "";
 export const setCsrf = (value: string) => { csrfToken = value; sessionStorage.setItem("blockstead_csrf", value); };

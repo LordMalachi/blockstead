@@ -29,6 +29,8 @@ Blockstead manages the process around them.
 | System health | Every server on this computer |
 | ![Weekly automation plan](docs/screenshots/09-automation.png) | ![Searchable Help workspace](docs/screenshots/12-help.png) |
 | Weekly automation plan | Searchable Help workspace |
+| ![Safe file workspace with recovery snapshots](docs/screenshots/16-files.png) | |
+| Safe file workspace with recovery snapshots | |
 
 ## What it does today
 

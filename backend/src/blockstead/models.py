@@ -72,6 +72,10 @@ class NotificationPreference(Base):
     failed_backups: Mapped[bool] = mapped_column(Boolean, default=True)
     low_disk_space: Mapped[bool] = mapped_column(Boolean, default=True)
     completed_updates: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Off by default: turning this on has the browser fetch skin images from a
+    # third-party service (keyed by player UUID), which Blockstead otherwise
+    # never contacts on the owner's behalf.
+    show_player_avatars: Mapped[bool] = mapped_column(Boolean, default=False)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -144,6 +148,25 @@ class BackupRecord(Base):
     result: Mapped[str] = mapped_column(Text, default="Backup is in progress.")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PlayerSession(Base):
+    """A best-effort join/leave interval parsed from the managed server's log.
+
+    Only recognized log phrasing (currently vanilla's own English messages)
+    produces a row; an unrecognized format simply means no session history
+    exists for that profile, never a guessed one.
+    """
+
+    __tablename__ = "player_sessions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), index=True
+    )
+    player_name: Mapped[str] = mapped_column(String(16), index=True)
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class MetricSample(Base):

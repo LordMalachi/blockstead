@@ -41,6 +41,7 @@ export function ActivityPage() {
           failed_backups: data.has("failed_backups"),
           low_disk_space: data.has("low_disk_space"),
           completed_updates: data.has("completed_updates"),
+          show_player_avatars: data.has("show_player_avatars"),
         }),
       });
       await Promise.all([
@@ -82,6 +83,7 @@ export function ActivityPage() {
           <label className="vanilla-switch"><span><strong>Failed backups</strong><small>Keep failed world protection visible.</small></span><input name="failed_backups" type="checkbox" defaultChecked={preferences.data.failed_backups} /></label>
           <label className="vanilla-switch"><span><strong>Low disk space</strong><small>Warn when the data disk reaches 90%.</small></span><input name="low_disk_space" type="checkbox" defaultChecked={preferences.data.low_disk_space} /></label>
           <label className="vanilla-switch"><span><strong>Completed updates</strong><small>Confirm a Blockstead update finished.</small></span><input name="completed_updates" type="checkbox" defaultChecked={preferences.data.completed_updates} /></label>
+          <label className="vanilla-switch"><span><strong>Player avatars</strong><small>Show skin images on the Players page. The browser fetches them from crafatar.com by player ID — the only outbound request Blockstead makes on your behalf.</small></span><input name="show_player_avatars" type="checkbox" defaultChecked={preferences.data.show_player_avatars} /></label>
           <Button type="submit" disabled={preferenceState === "saving"}>{preferenceState === "saving" ? "Saving…" : "Save preferences"}</Button>
           {preferenceState === "saved" && <p className="success">Preferences saved.</p>}
           {preferenceState === "error" && <p className="error">Preferences could not be saved. Try again.</p>}

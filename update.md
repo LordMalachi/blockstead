@@ -41,8 +41,8 @@ remain available without dominating normal server care.
 | 4. Owner-focused overview | Complete | Live player capacity, join address, sampled health trends, protection and schedule status, warnings, and recent activity |
 | 5. Automation upgrade | Complete | Weekly schedules, one-time maintenance, readable action sequences, previews, and execution history |
 | 6. Activity and notifications | Complete | Human-readable audit history, local operational alerts, and event-focused support reports |
-| 7. Safe file workspace | Next | Restricted editing, uploads, downloads, archives, and recovery protection |
-| 8. Player and mobile improvements | Planned | Online-player insights, quicker actions, and installable mobile-friendly access |
+| 7. Safe file workspace | Complete | Category-scoped browsing, editing, uploads, downloads, and archive extraction with recovery snapshots |
+| 8. Player and mobile improvements | Complete | Merged player roster with best-effort session history, search, filters, opt-in avatars, quicker actions, PWA installability, and clearer mobile navigation |
 | 9. Maintenance and Upgrade Center | Planned | A backed-up, compatibility-aware way to review and apply server, loader, and extension changes |
 | 10. World Care and performance insight | Planned | Honest performance evidence, safe world/storage care, and recovery cleanup |
 | 11. Calm daily operations | Planned | A task-first daily summary and incident story that connect the evidence already collected |
@@ -57,11 +57,11 @@ and scheduling workspaces, extensions and modpacks, account recovery,
 diagnostics, in-app help, and Linux Mint installation and upkeep. See
 [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
-Milestone 6 is now complete. The next work sequence is the safe file workspace,
-player and mobile improvements, then a Maintenance and Upgrade Center. The
-later milestones below are deliberately ordered so that Blockstead improves the
-confidence of everyday care before it adds optional sharing or integrations.
-The two remaining shared-map refinements are tracked separately below.
+Milestone 8 is now complete. The next work sequence is a Maintenance and
+Upgrade Center. The later milestones below are deliberately ordered so that
+Blockstead improves the confidence of everyday care before it adds optional
+sharing or integrations. The two
+remaining shared-map refinements are tracked separately below.
 
 ## Current baseline
 
@@ -86,7 +86,15 @@ Blockstead already provides:
 - a server-card landing page and a routed, bookmarkable workspace per server.
 - an owner-focused overview with the join IP and port, live player capacity,
   uptime, backup and schedule status, health history, actionable warnings, and
-  recent activity.
+  recent activity;
+- a safe, category-scoped file workspace covering config, logs, extensions,
+  world, and backup archive paths, with recovery snapshots before every risky
+  write, stopped-server enforcement for world and extension changes, and
+  validated, size-limited zip archive extraction;
+- a merged player roster combining the allowlist, operator, and ban lists with
+  live status when reachable and best-effort join/leave session history,
+  search, filters, an opt-in avatar preference, and a quicker kick action; an
+  installable Progressive Web App shell; and clearer mobile navigation.
 
 The main limitations to address are:
 
@@ -315,30 +323,67 @@ questions.
 
 ## Milestone 7: safe file workspace
 
-**Status: Planned**
+**Status: Complete**
 
 ### Work checklist
 
-- [ ] Begin with approved configuration, log, extension, world, and backup paths.
-- [ ] Support download, upload, rename, and safe text editing.
-- [ ] Show save status and file-operation progress.
-- [ ] Validate extracted archive paths and enforce size limits.
-- [ ] Require stopped-server state where file consistency demands it.
-- [ ] Create a recovery snapshot before risky writes.
-- [ ] Keep arbitrary host filesystem access outside the product boundary.
+- [x] Begin with approved configuration, log, extension, world, and backup paths.
+- [x] Support download, upload, rename, and safe text editing.
+- [x] Show save status and file-operation progress.
+- [x] Validate extracted archive paths and enforce size limits.
+- [x] Require stopped-server state where file consistency demands it.
+- [x] Create a recovery snapshot before risky writes.
+- [x] Keep arbitrary host filesystem access outside the product boundary.
+
+### Acceptance criteria
+
+- Every file-workspace path resolves through one shared safety check; no
+  request can traverse outside its category's approved folder or follow a
+  symlink out of it.
+- The config category cannot reach into the world, logs, or extension
+  folders that have their own dedicated categories and protections.
+- A file edit, upload, rename, delete, or archive extraction always leaves a
+  way back: a copied-out snapshot for single files, or the previous folder
+  preserved beside the new one for whole-subtree changes.
+- World and extension mutations refuse to run against a server that is not
+  stopped; config text edits do not require it, matching the guided
+  settings editor.
+- Archive extraction rejects path traversal ("zip slip"), oversized
+  archives, and archives with too many members before anything is written
+  to disk.
 
 ## Milestone 8: player and mobile improvements
 
-**Status: Planned**
+**Status: Complete**
 
 ### Work checklist
 
-- [ ] Add an online roster, capacity, last seen, and session duration when known.
-- [ ] Add search, filters, avatars, and quicker guided player actions.
-- [ ] Keep confirmation for bans and other destructive actions.
-- [ ] Make Blockstead installable as a Progressive Web App.
-- [ ] Provide mobile-sized lifecycle controls and navigation.
-- [ ] Consider local notifications only after secure LAN access is configured.
+- [x] Add an online roster, capacity, last seen, and session duration when known.
+- [x] Add search, filters, avatars, and quicker guided player actions.
+- [x] Keep confirmation for bans and other destructive actions.
+- [x] Make Blockstead installable as a Progressive Web App.
+- [x] Provide mobile-sized lifecycle controls and navigation.
+- [ ] Consider local notifications only after secure LAN access is configured;
+      deliberately deferred with the rest of outbound/LAN-facing integrations.
+
+### Acceptance criteria
+
+- The roster never presents a guess as a fact: live online status is shown
+  only when the local Minecraft status protocol actually answered, and
+  session history is shown only for join/leave lines Blockstead recognized in
+  the server's own log — an unreachable status or unrecognized log format
+  reads as "unknown," not as offline or absent.
+- Avatars stay off until the owner explicitly turns them on; only then does
+  the browser fetch skin images from a third-party service, and only for
+  players with a known ID.
+- Kick and ban keep the same two-step confirmation as every other destructive
+  action already in the product.
+- The service worker installs the dashboard as an app without caching
+  anything: server state, console logs, and backups always come from the
+  network.
+- A server-scoped nav item that lands off-screen on a narrow viewport is
+  never invisible: the active item scrolls into view and a fade signals more
+  items are reachable in either direction.
 
 ## Milestone 9: Maintenance and Upgrade Center
 
@@ -526,6 +571,68 @@ Before marking any milestone complete:
 - [ ] The progress summary and progress log below are updated.
 
 ## Progress log
+
+- **2026-07-23 — Player and mobile improvements complete.** Closed
+  Milestone 8. The Players page is now a merged roster: allowlist, operator,
+  and ban lists combine with the live Minecraft status sample when it
+  answers and with best-effort join/leave session history parsed from the
+  server's own log, with search, status/allowlist/operator/ban filters, and
+  an opt-in avatar preference (off by default; only turning it on has the
+  browser fetch skin images from crafatar.com by player ID — the only
+  outbound request Blockstead makes on the owner's behalf). A new
+  `player_sessions` table and a log subscriber alongside the existing
+  metrics loop record join/leave pairs per profile; an unrecognized log
+  format or a Blockstead restart mid-session simply leaves that player's
+  status as unknown rather than guessed, and a 30-day prune keeps the table
+  bounded. Roster rows add one-click kick (for players Blockstead can tell
+  are online) and ban with the same two-step confirmation as the rest of the
+  product; unban stays single-step since it is not destructive. Blockstead
+  is now installable as a Progressive Web App: a manifest, generated app
+  icons, and a service worker that deliberately never caches anything, since
+  server state, console logs, and backups must always be current. The
+  mobile sidebar nav — a horizontally scrolling row below 800px — now
+  scrolls its active item into view on navigation and shows a fade at the
+  scrollable edge; before this fix a server's own tools (Files, Settings,
+  and others past the fold) were reachable only by guessing to scroll
+  right with no visual hint. Verification: strict backend lint and type
+  checks, 419 backend tests including join/leave parsing, session
+  summarization, and roster/kick API cases against the real fixture
+  process, frontend lint, 101 frontend tests, the production build, the
+  real-backend Playwright flow extended with simulated join/kick tracking
+  and a manifest-link check, and `git diff --check`. Follow-up: the roster's
+  "likely online" signal is intentionally conservative — it can lag behind
+  a real disconnect until Blockstead observes a recognized leave line, and
+  a modded or non-English server produces no session history at all.
+
+- **2026-07-22 — Safe file workspace complete.** Added a category-scoped
+  Files workspace covering config, logs, extensions, world, and backup
+  archive paths for every server, closing Milestone 7. A new shared path
+  module (`file_paths.py`) resolves every request through one traversal-
+  and symlink-safe check; config explicitly excludes the world, logs, and
+  extension folders that have their own dedicated categories and
+  protections, so a config-scoped request cannot reach a world file and
+  bypass its stopped-server requirement. Backups stay download-only —
+  their lifecycle remains owned by the Backup Center. Text edits reuse the
+  guided settings editor's revision-checked, snapshot-then-atomic-replace
+  pattern; renames refuse to overwrite an existing name instead of needing
+  a snapshot; single-file deletes copy the original out first, while
+  directory deletes and archive extraction preserve the replaced folder or
+  colliding entries beside the new ones, the same preserve-rename pattern
+  the Backup Center uses for a world swap. Archive extraction validates
+  every zip member's path, member count, and total size before writing
+  anything to a private staging folder, then promotes it; world and
+  extension mutations require a stopped server, matching the mod
+  configuration editor, while config text edits do not, matching the
+  settings editor. The dashboard gains category tabs, a breadcrumb, an
+  inline text editor, drag-free upload and archive-extract forms with
+  progress, and per-row rename/delete with a two-step confirm, replacing
+  the disabled "Later" stub in navigation. Verification: strict backend
+  lint and type checks, 402 backend tests including path-traversal,
+  symlink-escape, zip-slip, oversized-archive, and config/world-boundary
+  cases, frontend lint, 93 frontend tests, the production build, both
+  real-backend Playwright flows (including an in-browser zip archive built
+  without a library dependency), a refreshed screenshot suite with visual
+  review, and `git diff --check`.
 
 - **2026-07-22 — Blockstead 1.1.0 released.** Hardened every update path
   reviewed for this release. Native application updates now assemble and flush
