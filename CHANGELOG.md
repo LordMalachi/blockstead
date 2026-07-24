@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add a deterministic Server Troubleshooting wizard to Help. Owners choose a
+  known problem, preview and run read-only profile checks, see confirmed causes
+  separately from possible or unavailable checks, and explicitly approve only
+  registered repairs. The first version covers player access, LAN/public
+  connections, start/crash readiness, and timeout/lag evidence; repairs are
+  profile-scoped, revalidated at execution, audited, and never delete world
+  data.
+
 ## 1.1.0 - 2026-07-22
 
 - Harden app replacement for native self-updates: a fully built, flushed

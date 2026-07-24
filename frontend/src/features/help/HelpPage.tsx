@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type ProcessState, type Profile } from "../../api/client";
 import { Button } from "../../components/Button";
+import { TroubleshootingWizard } from "./TroubleshootingWizard";
 import { useWalkthrough } from "./WalkthroughContext";
 
 interface HelpTopic {
@@ -22,6 +23,7 @@ interface RecoverySuggestion {
 }
 
 const topics: HelpTopic[] = [
+  { title: "Troubleshoot a server problem", category: "Support", summary: "Choose a common problem, run targeted read-only checks, review factual findings, and approve a bounded repair when Blockstead can safely offer one.", keywords: "troubleshoot wizard player cannot join whitelist allowlist timeout lag crash connection lan public fix repair diagnose", page: null, action: "Open Server Troubleshooting", href: "#server-troubleshooter" },
   { title: "Get a server online", category: "Getting started", summary: "Create a supported server, copy in an existing folder, or start from a modpack; then review readiness, accept the EULA, and start safely.", keywords: "setup create import copy folder modpack mrpack eula java launcher readiness first server offline won't start", page: "overview", action: "Open server setup" },
   { title: "Help friends join", category: "Connecting", summary: "Find the local address, understand why a public address may be unavailable, and work through router, firewall, and provider checks.", keywords: "connect connection join address ip lan network port invite internet router firewall cgnat vpn public", page: "overview", action: "Open join details" },
   { title: "Start, stop, and use the console", category: "Everyday care", summary: "Follow live logs, use guided commands, restart cleanly, and understand why a server may refuse to start.", keywords: "start stop restart console log command crash failed running process", page: "console", action: "Open the console" },
@@ -86,6 +88,8 @@ export function HelpPage() {
         <input aria-label="Search help" type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Join, backups, whitelist, Java, crash…" />
       </label>
     </section>
+
+    <TroubleshootingWizard profiles={profiles.data ?? []} suggestedProfileId={profile?.id} />
 
     <section className="help-topics" aria-labelledby="help-topics-heading">
       <div className="section-heading"><div><p className="eyebrow">Task shortcuts</p><h2 id="help-topics-heading">Start with what you want to do</h2></div><span aria-live="polite">{visible.length} result{visible.length === 1 ? "" : "s"}</span></div>

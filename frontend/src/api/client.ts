@@ -58,6 +58,47 @@ export interface DiagnosticsReport {
   recent_errors: DiagnosticLogEntry[];
   recent_log: DiagnosticLogEntry[];
 }
+export type TroubleshootingProblemId = "player_cannot_join" | "local_connection" | "public_connection" | "server_wont_start" | "timeouts_or_lag";
+export interface TroubleshootingSource { id: string; title: string; url: string; publisher: string; checked_at: string }
+export interface TroubleshootingProblem {
+  id: TroubleshootingProblemId;
+  title: string;
+  summary: string;
+  requires_player_name: boolean;
+  checks: string[];
+  possible_solutions: string[];
+  source_ids: string[];
+}
+export interface TroubleshootingCatalog { version: string; problems: TroubleshootingProblem[]; sources: TroubleshootingSource[] }
+export interface TroubleshootingCheck {
+  id: string;
+  label: string;
+  status: "passed" | "flagged" | "unknown" | "info";
+  certainty: "confirmed" | "possible" | "none";
+  detail: string;
+  source_ids: string[];
+}
+export interface TroubleshootingAction {
+  id: "allowlist_add" | "pardon_player" | "enable_lan";
+  label: string;
+  description: string;
+  impact: string;
+  confirmation: string;
+  available: boolean;
+  blockers: string[];
+  destructive: false;
+}
+export interface TroubleshootingAssessment {
+  catalog_version: string;
+  problem: TroubleshootingProblem;
+  outcome: "problem_found" | "possible_cause" | "no_problem_found" | "incomplete";
+  headline: string;
+  detail: string;
+  checks: TroubleshootingCheck[];
+  actions: TroubleshootingAction[];
+  next_steps: string[];
+  sources: TroubleshootingSource[];
+}
 export interface UpdateBuild { version: string; commit: string | null; short_commit: string | null; committed_at: string | null; label: string; source: string }
 export interface UpdateLatest { commit: string; short_commit: string; committed_at: string; summary: string }
 export interface UpdateAnnouncement { version: string; label: string; commit: string; short_commit: string; previous_commit: string; summary: string | null }

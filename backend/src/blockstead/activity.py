@@ -32,6 +32,7 @@ CATEGORY_GROUPS: dict[str, str] = {
     "player_action": "player",
     "console_command": "player",
     "guided_command": "player",
+    "troubleshooting_repair": "system",
     "file_download": "files",
     "file_upload": "files",
     "file_edit": "files",
@@ -69,6 +70,7 @@ CATEGORY_TITLES: dict[str, str] = {
     "player_action": "Player access changed",
     "console_command": "Console command sent",
     "guided_command": "Guided command sent",
+    "troubleshooting_repair": "Troubleshooting repair requested",
     "file_download": "File downloaded",
     "file_upload": "File uploaded",
     "file_edit": "File edited",
@@ -90,6 +92,8 @@ def utc_timestamp(value: datetime) -> str:
 
 
 def recovery_path(category: str, profile_id: str | None) -> str:
+    if category == "troubleshooting_repair":
+        return "/help#server-troubleshooter"
     if not profile_id:
         return "/system" if CATEGORY_GROUPS.get(category) in {"settings", "update"} else "/servers"
     section = {

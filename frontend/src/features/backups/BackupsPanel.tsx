@@ -64,6 +64,8 @@ interface PolicyDraft {
   destinations: string[];
 }
 
+type BackupPolicyUpdate = Omit<BackupPolicy, "storage_path">;
+
 interface WritableFileHandle {
   createWritable(): Promise<{ write(data: Blob): Promise<void>; close(): Promise<void> }>;
 }
@@ -181,7 +183,7 @@ export function BackupsPanel({
     },
   });
   const savePolicy = useMutation({
-    mutationFn: (next: BackupPolicy) => api<BackupPolicy & { expired_now: number }>(`/profiles/${profileId}/backup-policy`, { method: "PUT", body: JSON.stringify(next) }),
+    mutationFn: (next: BackupPolicyUpdate) => api<BackupPolicy & { expired_now: number }>(`/profiles/${profileId}/backup-policy`, { method: "PUT", body: JSON.stringify(next) }),
     onSuccess: () => {
       setPolicyDraft(null);
       void cache.invalidateQueries({ queryKey: ["backup-policy", profileId] });
@@ -221,7 +223,7 @@ export function BackupsPanel({
   const liveWorld = running || effectiveState === "STARTING" || effectiveState === "DEGRADED";
   const createLocked = create.isPending || restore.isPending || Boolean(inProgress) || changingState;
 
-  const policyPayload = (): BackupPolicy | null => draft ? {
+  const policyPayload = (): BackupPolicyUpdate | null => draft ? {
     keep_count: parseRule(draft.keep_count),
     keep_days: parseRule(draft.keep_days),
     max_total_mb: parseRule(draft.max_total_mb),

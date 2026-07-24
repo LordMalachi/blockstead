@@ -454,6 +454,7 @@ screenshots with `npm --prefix frontend run screenshots`. Read
 | [docs/threat-model.md](docs/threat-model.md) | Security boundaries and assumptions |
 | [docs/docker.md](docs/docker.md) | Docker Compose setup, storage, networking, and upgrades |
 | [docs/mods-plugins-backups.md](docs/mods-plugins-backups.md) | Friendly guide to extensions, backups, restores, and extra copies |
+| [docs/server-troubleshooting.md](docs/server-troubleshooting.md) | Deterministic troubleshooting playbooks, evidence rules, repairs, and safety boundaries |
 | [docs/linux-mint-release-checklist.md](docs/linux-mint-release-checklist.md) | Manual acceptance testing before a release |
 | [CHANGELOG.md](CHANGELOG.md) | Notable changes per release |
 

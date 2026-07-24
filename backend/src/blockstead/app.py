@@ -250,6 +250,17 @@ from .server_settings import (
     read_raw_settings,
 )
 from .shared_map import read_shared_map
+from .troubleshooting import (
+    TroubleshootingContext,
+    TroubleshootingRepairRequest,
+    TroubleshootingRequest,
+)
+from .troubleshooting import (
+    assess as assess_troubleshooting,
+)
+from .troubleshooting import (
+    catalog as troubleshooting_catalog,
+)
 
 log = logging.getLogger("blockstead.api")
 
@@ -3312,6 +3323,175 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "mspt": False,
                 "distribution_label": info.label,
             },
+        }
+
+    @app.get("/api/v1/troubleshooting/problems")
+    def troubleshooting_problems(request: Request, db: Db) -> dict[str, object]:
+        """Return the versioned, non-executable troubleshooting catalog."""
+
+        current(request, db)
+        return troubleshooting_catalog().model_dump()
+
+    @app.post("/api/v1/profiles/{profile_id}/troubleshooting/assess")
+    async def troubleshoot_profile(
+        profile_id: str,
+        payload: TroubleshootingRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        """Run bounded read-only checks for one selected troubleshooting playbook."""
+
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        properties = read_properties(directory)
+        active = app.state.active_profile_id == profile.id
+        snapshot = manager.snapshot()
+        state = str(snapshot["state"]) if active else "STOPPED"
+        if state.startswith("ProcessState."):
+            state = state.removeprefix("ProcessState.")
+        status = (
+            await minecraft_status(properties)
+            if active and state in {"RUNNING", "DEGRADED"}
+            else None
+        )
+        public_ip = (
+            await app.state.public_ip_discovery.discover()
+            if payload.problem_id == "public_connection"
+            else {
+                "available": False,
+                "ip": None,
+                "detail": "Public-IP discovery was not needed for this playbook.",
+            }
+        )
+        join = join_details(properties, public_ip)
+
+        required: int | None = None
+        compatible_java: bool | None = True
+        eula: bool | None = None
+        launch_problem: str | None = None
+        if not profile.is_fixture and payload.problem_id == "server_wont_start":
+            required = required_java_major(profile.minecraft_version)
+            runtimes = discover_java_runtimes()
+            compatible_java = (
+                find_java(required, runtimes) is not None if required is not None else None
+            )
+            eula = eula_accepted(directory)
+            if profile.distribution == "unknown":
+                launch_problem = "The distribution of this server folder was not recognized."
+            else:
+                try:
+                    launch_arguments(profile.distribution, directory)
+                except LaunchPlanError as exc:
+                    launch_problem = str(exc)
+
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage(str(config.data_dir))
+        errors = [
+            str(entry["message"])
+            for entry in reversed(diagnostics.tail(6, logging.WARNING))
+        ]
+        assessment = assess_troubleshooting(
+            payload,
+            TroubleshootingContext(
+                profile_id=profile.id,
+                profile_name=profile.name,
+                distribution=profile.distribution,
+                minecraft_version=profile.minecraft_version,
+                state=state,
+                selected_server_active=active,
+                state_reason=str(snapshot["reason"]) if active else "This server is stopped.",
+                properties=properties,
+                players=read_players(directory),
+                local_status_responded=(status is not None)
+                if active and state in {"RUNNING", "DEGRADED"}
+                else None,
+                join=cast(dict[str, object], join),
+                eula_accepted=eula,
+                required_java_major=required,
+                compatible_java_found=compatible_java,
+                launch_problem=launch_problem,
+                disk_percent=float(disk.percent),
+                memory_percent=float(memory.percent),
+                cpu_percent=float(psutil.cpu_percent(interval=None)),
+                recent_errors=errors,
+            ),
+        )
+        return assessment.model_dump()
+
+    @app.post("/api/v1/profiles/{profile_id}/troubleshooting/repair")
+    async def repair_troubleshooting_problem(
+        profile_id: str,
+        payload: TroubleshootingRepairRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        """Execute one registered repair after rechecking its applicability."""
+
+        if payload.action_id == "enable_lan":
+            return enable_profile_lan_connections(profile_id, request, db)
+
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        snapshot = manager.snapshot()
+        state = str(snapshot["state"])
+        if state.startswith("ProcessState."):
+            state = state.removeprefix("ProcessState.")
+        if app.state.active_profile_id != profile.id or state != "RUNNING":
+            raise HTTPException(
+                409,
+                "This repair is only available while the selected server is running.",
+            )
+        assert payload.player_name is not None
+        directory = profile_directory(profile_id, db)
+        players = read_players(directory)
+        normalized = payload.player_name.casefold()
+        if payload.action_id == "allowlist_add":
+            whitelist_enabled = (
+                read_properties(directory).get("white-list", "false").strip().casefold()
+                == "true"
+            )
+            if not whitelist_enabled:
+                raise HTTPException(409, "The allowlist is no longer enabled for this server.")
+            if not players.allowlist.readable:
+                raise HTTPException(409, "The server allowlist could not be read safely.")
+            if normalized in {entry.name.casefold() for entry in players.allowlist.players}:
+                raise HTTPException(409, "That player is already on the allowlist.")
+            player_request = PlayerActionRequest(
+                action="whitelist_add", player=payload.player_name
+            )
+            detail = f"Requested allowlist access for {payload.player_name}"
+        else:
+            if not players.bans.readable:
+                raise HTTPException(409, "The banned-player list could not be read safely.")
+            if normalized not in {entry.name.casefold() for entry in players.bans.players}:
+                raise HTTPException(409, "That player is no longer banned.")
+            player_request = PlayerActionRequest(action="pardon", player=payload.player_name)
+            detail = f"Requested pardon for {payload.player_name}"
+        try:
+            await manager.command(player_request.console_command)
+        except (InvalidTransition, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="troubleshooting_repair",
+                result="accepted",
+                safe_detail=f"{detail} on {profile.name} through Server Troubleshooting",
+            )
+        )
+        db.commit()
+        return {
+            "status": "accepted",
+            "detail": (
+                f"Minecraft accepted the repair command for {payload.player_name}. "
+                "Blockstead will check the evidence again."
+            ),
         }
 
     @app.post("/api/v1/profiles/{profile_id}/connection/refresh")

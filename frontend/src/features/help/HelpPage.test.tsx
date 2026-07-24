@@ -8,6 +8,7 @@ function renderHelp(activeProfile = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["profiles"], [{ id: "profile-1", name: "Family", server_directory: "/srv/minecraft/family", distribution: "paper", minecraft_version: "1.21.1", loader_version: null, is_fixture: false }]);
   client.setQueryData(["state"], { state: activeProfile ? "RUNNING" : "STOPPED", pid: activeProfile ? 1 : null, exit_code: null, reason: activeProfile ? "Ready" : "Stopped", profile_id: activeProfile ? "profile-1" : null });
+  client.setQueryData(["troubleshooting-catalog"], { version: "test", problems: [], sources: [] });
   return render(<MemoryRouter><QueryClientProvider client={client}><WalkthroughProvider><HelpPage /></WalkthroughProvider></QueryClientProvider></MemoryRouter>);
 }
 
