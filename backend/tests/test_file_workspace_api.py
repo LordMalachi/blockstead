@@ -30,9 +30,9 @@ def api(tmp_path: Path) -> Iterator[tuple[TestClient, Path, dict[str, str], str]
         (folder / "world").mkdir(parents=True)
         (folder / "world" / "level.dat").write_bytes(b"world-data")
         (folder / "logs").mkdir()
-        (folder / "logs" / "latest.log").write_text("hello\n", encoding="utf-8")
+        (folder / "logs" / "latest.log").write_text("hello\n", encoding="utf-8", newline="\n")
         (folder / "mods").mkdir()
-        (folder / "server.properties").write_text("motd=Hi\n", encoding="utf-8")
+        (folder / "server.properties").write_text("motd=Hi\n", encoding="utf-8", newline="\n")
         (folder / "fabric-server-launch.jar").write_bytes(b"launcher")
         created = client.post(
             "/api/v1/profiles",
@@ -92,7 +92,7 @@ def test_extensions_category_requires_a_loader(
     client, folder, headers, _profile_id = api
     vanilla = folder.parent / "vanilla-server"
     vanilla.mkdir()
-    (vanilla / "server.properties").write_text("motd=Hi\n", encoding="utf-8")
+    (vanilla / "server.properties").write_text("motd=Hi\n", encoding="utf-8", newline="\n")
     (vanilla / "server.jar").write_bytes(b"jar")
     created = client.post(
         "/api/v1/profiles", headers=headers, json={"name": "Vanilla", "path": str(vanilla)}
@@ -105,6 +105,12 @@ def test_extensions_category_requires_a_loader(
 def test_reads_and_edits_config_file_with_snapshot(
     api: tuple[TestClient, Path, dict[str, str], str],
 ) -> None:
+    """The workspace hands back exactly the bytes on disk, line endings included.
+
+    Rewriting an owner's line endings behind their back would be a destructive
+    surprise, so the fixture pins them rather than the API normalizing them.
+    """
+
     client, folder, headers, profile_id = api
     content = client.get(
         f"/api/v1/profiles/{profile_id}/files/config/content",
@@ -149,7 +155,7 @@ def test_edit_refuses_stale_revision(api: tuple[TestClient, Path, dict[str, str]
         f"/api/v1/profiles/{profile_id}/files/config/content",
         params={"path": "server.properties"},
     ).json()
-    (folder / "server.properties").write_text("motd=Changed\n", encoding="utf-8")
+    (folder / "server.properties").write_text("motd=Changed\n", encoding="utf-8", newline="\n")
     response = client.put(
         f"/api/v1/profiles/{profile_id}/files/config/content",
         headers=headers,

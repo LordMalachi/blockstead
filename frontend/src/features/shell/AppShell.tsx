@@ -21,6 +21,7 @@ const serverNav = [
   { path: "players", label: "Players", icon: "users" },
   { path: "mods", label: "Mods and plugins", icon: "blocks" },
   { path: "backups", label: "Backups", icon: "package" },
+  { path: "maintenance", label: "Maintenance", icon: "shield" },
   { path: "files", label: "Files", icon: "folder" },
   { path: "schedule", label: "Schedule", icon: "clock" },
   { path: "settings", label: "Settings", icon: "sliders" },

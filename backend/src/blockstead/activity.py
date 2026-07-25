@@ -33,6 +33,8 @@ CATEGORY_GROUPS: dict[str, str] = {
     "console_command": "player",
     "guided_command": "player",
     "troubleshooting_repair": "system",
+    "maintenance_preflight": "maintenance",
+    "maintenance_schedule": "maintenance",
     "file_download": "files",
     "file_upload": "files",
     "file_edit": "files",
@@ -71,6 +73,8 @@ CATEGORY_TITLES: dict[str, str] = {
     "console_command": "Console command sent",
     "guided_command": "Guided command sent",
     "troubleshooting_repair": "Troubleshooting repair requested",
+    "maintenance_preflight": "Maintenance change reviewed",
+    "maintenance_schedule": "Maintenance window scheduled",
     "file_download": "File downloaded",
     "file_upload": "File uploaded",
     "file_edit": "File edited",
@@ -104,6 +108,7 @@ def recovery_path(category: str, profile_id: str | None) -> str:
         "automation": "schedule",
         "lifecycle": "console",
         "files": "files",
+        "maintenance": "maintenance",
     }.get(CATEGORY_GROUPS.get(category, ""), "overview")
     return f"/servers/{profile_id}/{section}"
 

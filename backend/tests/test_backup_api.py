@@ -382,7 +382,9 @@ def test_backup_policy_roundtrip_applies_retention(owned_client: TestClient) -> 
         f"/api/v1/profiles/{profile_id}/backup-policy", headers=auth
     ).json()
     assert after_backup["storage_path"] is not None
-    assert after_backup["storage_path"].endswith(f"backups/{profile_id}")
+    # storage_path is a real filesystem path for the owner to open, so it uses
+    # the platform's own separator; compare its parts rather than its spelling.
+    assert Path(after_backup["storage_path"]).parts[-2:] == ("backups", profile_id)
 
     updated = owned_client.put(
         f"/api/v1/profiles/{profile_id}/backup-policy",

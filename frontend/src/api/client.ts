@@ -58,6 +58,89 @@ export interface DiagnosticsReport {
   recent_errors: DiagnosticLogEntry[];
   recent_log: DiagnosticLogEntry[];
 }
+export type MaintenanceChangeId = "extension_update" | "extension_install" | "settings_change" | "world_files" | "server_upgrade";
+export interface MaintenanceChange {
+  id: MaintenanceChangeId;
+  title: string;
+  summary: string;
+  workspace: string;
+  requires_stopped_server: boolean;
+  version_changing: boolean;
+  destructive: boolean;
+  restart_expectation: "required" | "recommended" | "not_needed" | "unknown";
+  checks: string[];
+}
+export interface MaintenanceCatalog { version: string; changes: MaintenanceChange[] }
+export interface MaintenanceFinding {
+  id: string;
+  label: string;
+  status: "ready" | "attention" | "blocked" | "unknown" | "info";
+  detail: string;
+  recommendation: string | null;
+}
+export interface MaintenanceStep {
+  id: string;
+  label: string;
+  detail: string;
+  requirement: "required" | "recommended" | "not_needed";
+  performed_by: "owner";
+  route: string | null;
+}
+export interface MaintenanceProtection {
+  verified: boolean;
+  detail: string;
+  backup_id: string | null;
+  created_at: string | null;
+  age_hours: number | null;
+}
+export interface UpgradeCandidate {
+  minecraft_version: string;
+  step: "patch" | "minor" | "major" | "unknown";
+  required_java_major: number | null;
+  java_available: boolean | null;
+  installable: boolean;
+  detail: string;
+}
+export interface UpgradeReview {
+  distribution: string;
+  distribution_label: string;
+  current_version: string | null;
+  source: "available" | "unavailable" | "not_supported";
+  source_detail: string;
+  /** null whenever Blockstead could not establish the ordering itself. */
+  up_to_date: boolean | null;
+  latest_version: string | null;
+  candidates: UpgradeCandidate[];
+  installable_here: boolean;
+  install_detail: string;
+  warnings: string[];
+}
+export interface MaintenanceBooking {
+  id: string;
+  profile_id: string;
+  run_at: string;
+  plan_id: string;
+  change_id: MaintenanceChangeId;
+  only_when_empty: boolean;
+  backup_before_stop: boolean;
+  detail: string;
+}
+export interface MaintenancePlan {
+  catalog_version: string;
+  plan_id: string;
+  profile_id: string;
+  change: MaintenanceChange;
+  readiness: "ready" | "ready_with_warnings" | "blocked" | "not_applicable";
+  headline: string;
+  detail: string;
+  findings: MaintenanceFinding[];
+  steps: MaintenanceStep[];
+  protection: MaintenanceProtection;
+  restart: "required" | "recommended" | "not_needed" | "unknown";
+  restart_detail: string;
+  blockers: string[];
+  reviewed_at: string;
+}
 export type TroubleshootingProblemId = "player_cannot_join" | "local_connection" | "public_connection" | "server_wont_start" | "timeouts_or_lag";
 export interface TroubleshootingSource { id: string; title: string; url: string; publisher: string; checked_at: string }
 export interface TroubleshootingProblem {
@@ -194,6 +277,20 @@ export interface FileDeleteResult { snapshot_name: string | null; preserved_name
 export interface FileUploadResult { uploaded: string[]; received_bytes: number }
 export interface ArchiveExtractResult { promoted: string[]; preserved: string[] }
 
+/**
+ * A failed request that keeps its parsed body.
+ *
+ * Some refusals are informative rather than fatal — a stale maintenance plan
+ * answers 409 with the fresh review attached — and a caller that only ever saw
+ * `message` would have to throw that away and ask again.
+ */
+export class ApiRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly body: unknown) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
 let csrfToken = sessionStorage.getItem("blockstead_csrf") ?? "";
 export const setCsrf = (value: string) => { csrfToken = value; sessionStorage.setItem("blockstead_csrf", value); };
 export const clearCsrf = () => { csrfToken = ""; sessionStorage.removeItem("blockstead_csrf"); };
@@ -245,8 +342,11 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api/v1${path}`, { ...init, headers, credentials: "same-origin" });
   if (!response.ok) {
     reportAuthExpired(response.status);
-    const body = await response.json() as ApiError;
-    throw new Error(body.error?.recovery ? `${body.error.message} ${body.error.recovery}` : body.error?.message ?? "Request failed.");
+    const body = await response.json().catch(() => null) as ApiError | null;
+    const message = body?.error?.recovery
+      ? `${body.error.message} ${body.error.recovery}`
+      : body?.error?.message ?? "Request failed.";
+    throw new ApiRequestError(message, response.status, body);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

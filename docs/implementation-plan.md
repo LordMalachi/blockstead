@@ -52,11 +52,13 @@
 
 Backups and staged restore, real Java launch plans, guided settings, diagnostics,
 scheduling, extensions, automation, and the profile-aware Activity workspace are
-complete. The next milestone is a safe file workspace restricted to approved
-server paths, followed by player and mobile improvements and a Maintenance and
-Upgrade Center. That center will compose the existing backup, compatibility,
-extension, scheduling, and activity boundaries into a reviewed, reversible
-change plan. World-care/performance insight and calm daily-operation refinements
+complete, as are the safe file workspace and the player and mobile
+improvements. The Maintenance and Upgrade Center is under way: its preflight
+and reviewed change plan compose the existing backup, compatibility,
+extension, scheduling, and activity boundaries into one read-only review, and
+guided execution plus server and loader upgrade discovery follow. Until an
+upgrade source can be verified, an upgrade is reported as blocked rather than
+offered. World-care/performance insight and calm daily-operation refinements
 follow; saved setups, helper access, and outbound notifications remain deferred
 until those local workflows have been proven in normal use. The detailed
 post-1.0 roadmap and decision gates live in [update.md](../update.md).
