@@ -107,8 +107,22 @@ function respond(body: unknown, status = 200) {
   });
 }
 
-function renderWizard(fetchImplementation: typeof fetch) {
-  vi.stubGlobal("fetch", vi.fn(fetchImplementation));
+/** What the stub actually needs: a URL and the init, answered synchronously. */
+type FetchStub = (url: string, init?: RequestInit) => Response;
+
+/** `fetch` accepts a string, a URL, or a Request; each carries its URL differently. */
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  return input instanceof URL ? input.href : input.url;
+}
+
+function renderWizard(handle: FetchStub) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      Promise.resolve(handle(requestUrl(input), init)),
+    ),
+  );
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -126,8 +140,7 @@ afterEach(() => {
 });
 
 test("walks through a read-only check before showing a repair", async () => {
-  renderWizard(async (input, init) => {
-    const url = String(input);
+  renderWizard((url, init) => {
     if (url.endsWith("/troubleshooting/problems")) return respond(catalog);
     if (url.endsWith("/troubleshooting/assess") && init?.method === "POST") {
       return respond(assessment);
@@ -152,8 +165,7 @@ test("walks through a read-only check before showing a repair", async () => {
 });
 
 test("requires a separate permission review before applying a bounded repair", async () => {
-  renderWizard(async (input, init) => {
-    const url = String(input);
+  renderWizard((url, init) => {
     if (url.endsWith("/troubleshooting/problems")) return respond(catalog);
     if (url.endsWith("/troubleshooting/assess")) return respond(assessment);
     if (url.endsWith("/troubleshooting/repair") && init?.method === "POST") {
@@ -208,10 +220,9 @@ test("can report no confirmed solution without presenting an unsafe action", asy
     next_steps: ["Ask someone on another network to test."],
     sources: [catalog.sources[1]],
   };
-  renderWizard(async input => {
-    const url = String(input);
-    return respond(url.endsWith("/troubleshooting/problems") ? catalog : noSolution);
-  });
+  renderWizard(url =>
+    respond(url.endsWith("/troubleshooting/problems") ? catalog : noSolution),
+  );
   const user = userEvent.setup();
 
   await user.click(await screen.findByRole("radio", { name: /Friends outside my network/ }));
