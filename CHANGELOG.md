@@ -12,6 +12,20 @@
   check reads as unknown rather than as clear, and a server or loader upgrade
   stays blocked until Blockstead can verify an upgrade source itself. Every
   review is recorded in Activity with the plan identity it was based on.
+- Add server and loader upgrade discovery to the Maintenance workspace. Published
+  releases come from the same official sources profile creation already uses, and
+  the review keeps two questions apart: whether a newer release exists, and
+  whether Blockstead can install it into this folder. A release list that could
+  not be read reads as "could not check" rather than "up to date", a version
+  Blockstead cannot order is never called current, published entries left out of
+  the comparison are disclosed, and a server already on the newest release is
+  told so instead of being shown a change it does not need.
+- Let an owner book a maintenance window directly from a reviewed plan.
+  Blockstead re-runs the review when the window is booked and compares it against
+  the plan the owner saw; a plan whose evidence has moved on is refused with the
+  current review attached rather than silently scheduled, and both the booking
+  and the refusal are recorded in Activity. A booked window always backs up
+  before it stops, and applying the change itself stays the owner's to do.
 
 - Add a deterministic Server Troubleshooting wizard to Help. Owners choose a
   known problem, preview and run read-only profile checks, see confirmed causes

@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 CATALOG_VERSION = "2026.07.1"
 
@@ -31,7 +31,9 @@ ChangeId = Literal[
     "server_upgrade",
 ]
 FindingStatus = Literal["ready", "attention", "blocked", "unknown", "info"]
-Readiness = Literal["ready", "ready_with_warnings", "blocked"]
+# "not_applicable" is deliberately separate from "blocked": having nothing to
+# change is not a safety problem, and must not be reported as one.
+Readiness = Literal["ready", "ready_with_warnings", "blocked", "not_applicable"]
 StepRequirement = Literal["required", "recommended", "not_needed"]
 RestartExpectation = Literal["required", "recommended", "not_needed", "unknown"]
 
@@ -46,6 +48,28 @@ COLLISION_MINUTES = 60
 
 class MaintenanceRequest(BaseModel):
     change_id: ChangeId
+
+
+class MaintenanceScheduleRequest(BaseModel):
+    """Book a window for a plan the owner has just reviewed.
+
+    `plan_id` is the fingerprint of the evidence that review was based on. The
+    server re-reviews and compares it rather than trusting the submitted plan.
+    """
+
+    change_id: ChangeId
+    plan_id: str = Field(pattern=r"^[0-9a-f]{16}$")
+    run_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T([01][0-9]|2[0-3]):[0-5][0-9]$")
+    only_when_empty: bool = False
+
+    @field_validator("run_at")
+    @classmethod
+    def valid_local_datetime(cls, value: str) -> str:
+        try:
+            datetime.strptime(value, "%Y-%m-%dT%H:%M")  # noqa: DTZ007
+        except ValueError as exc:
+            raise ValueError("run_at must be a real local date and time") from exc
+        return value
 
 
 class ChangeDefinition(BaseModel):
@@ -149,7 +173,19 @@ class MaintenanceContext:
     next_operation_at: datetime | None
     occupied_by: str | None
     now: datetime
+    # Only consulted for the server_upgrade change, which is the one review that
+    # needs a published release list to answer anything at all.
     upgrade_source_available: bool = False
+    upgrade_source_detail: str = ""
+    #: None whenever the ordering could not be established; never defaulted to True.
+    upgrade_up_to_date: bool | None = None
+    upgrade_target: str | None = None
+    upgrade_installable: bool = False
+    #: Whether this distribution has an in-place upgrade path at all. Separate
+    #: from `upgrade_installable`, because "wrong server type" and "missing Java
+    #: runtime" need different advice.
+    upgrade_distribution_supported: bool = False
+    upgrade_detail: str = ""
     recovery_paths: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -509,15 +545,6 @@ def _compatibility_finding(
     context: MaintenanceContext, change: ChangeDefinition
 ) -> MaintenanceFinding:
     label = "Compatibility limits"
-    if change.id == "server_upgrade" and not context.upgrade_source_available:
-        return _finding(
-            "compatibility",
-            label,
-            "blocked",
-            f"Blockstead has no verified upgrade source for {context.distribution_label}, "
-            "so it cannot tell you whether a newer version is safe to install here.",
-            "Upgrade this server with its own installer, then re-import the folder.",
-        )
     if context.is_fixture:
         return _finding(
             "compatibility",
@@ -566,6 +593,68 @@ def _compatibility_finding(
         "ready",
         f"Java {context.required_java_major} is available and the launch files for "
         f"{context.distribution_label} are complete.",
+    )
+
+
+def _upgrade_target_finding(context: MaintenanceContext) -> MaintenanceFinding:
+    """What the upgrade source actually said, for the server_upgrade review only."""
+
+    label = "Upgrade target"
+    if not context.upgrade_source_available:
+        return _finding(
+            "upgrade-target",
+            label,
+            "blocked",
+            context.upgrade_source_detail
+            or (
+                f"Blockstead has no verified upgrade source for "
+                f"{context.distribution_label}, so it cannot tell you whether a newer "
+                "version is safe to install here."
+            ),
+            "Upgrade this server with its own installer, then re-import the folder.",
+        )
+    if not context.upgrade_installable:
+        return _finding(
+            "upgrade-target",
+            label,
+            "blocked",
+            context.upgrade_detail
+            or (
+                "Blockstead can read the published releases for this server but cannot "
+                "install one into this folder."
+            ),
+            # This server type simply has no in-place path, versus it has one but
+            # the newest release needs a runtime this computer does not have.
+            "Install the Java runtime that release needs, then review this change again."
+            if context.upgrade_distribution_supported
+            else "Upgrade this server with its own installer, then re-import the folder.",
+        )
+    if context.upgrade_up_to_date is None:
+        return _finding(
+            "upgrade-target",
+            label,
+            "blocked",
+            context.upgrade_detail
+            or (
+                "Blockstead could not order this server's version against the published "
+                "releases, so it will not claim one is newer."
+            ),
+            "Check the distribution's own release notes before upgrading.",
+        )
+    if context.upgrade_up_to_date:
+        return _finding(
+            "upgrade-target",
+            label,
+            "info",
+            f"{context.profile_name} is already on the newest published "
+            f"{context.distribution_label} release.",
+        )
+    return _finding(
+        "upgrade-target",
+        label,
+        "ready",
+        f"{context.upgrade_target} is published and Blockstead can download and verify "
+        f"it for this folder. {context.upgrade_detail}".strip(),
     )
 
 
@@ -756,6 +845,9 @@ def _fingerprint(context: MaintenanceContext, change: ChangeDefinition) -> str:
         "verified" if context.last_backup and context.last_backup.verified else "unverified",
         context.launch_problem or "",
         str(context.required_java_major or ""),
+        # A plan reviewed against one upgrade target must not be reused once a
+        # different release becomes the newest one.
+        context.upgrade_target or "",
         *context.extension_signature,
     ]
     return sha256("".join(parts).encode("utf-8")).hexdigest()[:16]
@@ -773,6 +865,8 @@ def assess(context: MaintenanceContext, request: MaintenanceRequest) -> Maintena
     findings.append(protection_finding)
     findings.append(_disk_finding(context))
     findings.append(_pending_restart_finding(context))
+    if change.id == "server_upgrade":
+        findings.append(_upgrade_target_finding(context))
     findings.append(_compatibility_finding(context, change))
     findings.append(_schedule_finding(context))
 
@@ -781,8 +875,12 @@ def assess(context: MaintenanceContext, request: MaintenanceRequest) -> Maintena
         for finding in findings
         if finding.status == "blocked"
     ]
-    if blockers:
-        readiness: Readiness = "blocked"
+    # Having nothing to change outranks every other finding: telling an owner to
+    # free disk for an upgrade that does not exist would be noise, not safety.
+    if change.id == "server_upgrade" and context.upgrade_up_to_date is True:
+        readiness: Readiness = "not_applicable"
+    elif blockers:
+        readiness = "blocked"
     elif any(finding.status in {"attention", "unknown"} for finding in findings):
         readiness = "ready_with_warnings"
     else:
@@ -813,6 +911,13 @@ def _summary(
     readiness: Readiness,
     findings: list[MaintenanceFinding],
 ) -> tuple[str, str]:
+    if readiness == "not_applicable":
+        return (
+            f"There is nothing to change on {context.profile_name}",
+            f"{context.profile_name} is already on the newest published "
+            f"{context.distribution_label} release, so there is no upgrade to plan. "
+            "This is not a problem to fix.",
+        )
     if readiness == "blocked":
         return (
             f"Blockstead cannot call this change safe on {context.profile_name} yet",

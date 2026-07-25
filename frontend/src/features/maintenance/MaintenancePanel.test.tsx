@@ -2,7 +2,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
-import type { MaintenanceCatalog, MaintenancePlan } from "../../api/client";
+import type {
+  MaintenanceBooking,
+  MaintenanceCatalog,
+  MaintenancePlan,
+  UpgradeReview,
+} from "../../api/client";
 import { MaintenancePanel } from "./MaintenancePanel";
 
 const catalog: MaintenanceCatalog = {
@@ -107,13 +112,73 @@ const blockedPlan: MaintenancePlan = {
   blockers: ["Upgrade this server with its own installer, then re-import the folder."],
 };
 
-function respond(body: unknown) {
-  return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+const upgradeReview: UpgradeReview = {
+  distribution: "vanilla",
+  distribution_label: "Vanilla Minecraft",
+  current_version: "1.21.4",
+  source: "available",
+  source_detail: "812 published Vanilla Minecraft releases were read.",
+  up_to_date: false,
+  latest_version: "1.21.6",
+  candidates: [
+    {
+      minecraft_version: "1.21.6",
+      step: "patch",
+      required_java_major: 21,
+      java_available: true,
+      installable: true,
+      detail: "A patch step from 1.21.4. Blockstead can download and verify this release.",
+    },
+    {
+      minecraft_version: "1.21.5",
+      step: "patch",
+      required_java_major: 21,
+      java_available: false,
+      installable: false,
+      detail: "This release needs Java 21, and no matching runtime was found on this computer.",
+    },
+  ],
+  installable_here: true,
+  install_detail: "Blockstead keeps the previous jar so the change can be undone.",
+  warnings: ["2 published entries could not be ordered and were left out of this comparison."],
+};
+
+const currentReview: UpgradeReview = {
+  ...upgradeReview,
+  up_to_date: true,
+  current_version: "1.21.6",
+  candidates: [],
+  warnings: [],
+};
+
+const booking: MaintenanceBooking = {
+  id: "event-1",
+  profile_id: "profile-1",
+  run_at: "2026-07-25T02:00",
+  plan_id: "abc123def456",
+  change_id: "world_files",
+  only_when_empty: true,
+  backup_before_stop: true,
+  detail: "Blockstead will stop Homestead at 2026-07-25T02:00 after a verified backup.",
+};
+
+function respond(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function renderPanel(plan: MaintenancePlan = readyPlan) {
+function renderPanel({
+  plan = readyPlan,
+  review = upgradeReview,
+  scheduleResponse = () => respond(booking, 201),
+}: {
+  plan?: MaintenancePlan;
+  review?: UpgradeReview;
+  scheduleResponse?: () => Response;
+} = {}) {
   vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
     if (url.includes("/maintenance/preflight")) return Promise.resolve(respond(plan));
+    if (url.includes("/maintenance/schedule")) return Promise.resolve(scheduleResponse());
+    if (url.includes("/maintenance/upgrades")) return Promise.resolve(respond(review));
     return Promise.resolve(respond(catalog));
   }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -122,6 +187,11 @@ function renderPanel(plan: MaintenancePlan = readyPlan) {
       <MemoryRouter><MaintenancePanel profileId="profile-1" /></MemoryRouter>
     </QueryClientProvider>,
   );
+}
+
+async function reviewWorldFiles() {
+  fireEvent.click(await screen.findByRole("radio", { name: /Edit or replace world files/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Run the preflight" }));
 }
 
 test("lists the reviewable changes and states which need a stopped server", async () => {
@@ -178,11 +248,110 @@ test("an unverified protection point is never described as a way back", async ()
 });
 
 test("a blocked change shows the blocker instead of a plan to follow", async () => {
-  renderPanel(blockedPlan);
+  renderPanel({ plan: blockedPlan });
   fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
   fireEvent.click(screen.getByRole("button", { name: "Run the preflight" }));
 
   expect(await screen.findByText("Resolve this first")).toBeVisible();
   expect(screen.queryByRole("list", { name: "Reviewed plan" })).toBeNull();
   expect(screen.getByText("Blockstead has no verified upgrade source for Fabric.")).toBeVisible();
+  // A blocked plan is not bookable.
+  expect(screen.queryByRole("button", { name: "Schedule this plan" })).toBeNull();
+});
+
+test("published releases are only fetched for the upgrade review", async () => {
+  renderPanel();
+  await screen.findByText("Edit or replace world files");
+  fireEvent.click(screen.getByRole("radio", { name: /Edit or replace world files/ }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Run the preflight" })).toBeVisible());
+  expect(fetch).not.toHaveBeenCalledWith(
+    expect.stringContaining("/maintenance/upgrades"),
+    expect.anything(),
+  );
+
+  fireEvent.click(screen.getByRole("radio", { name: /Upgrade the server or loader version/ }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    expect.stringContaining("/maintenance/upgrades"),
+    expect.anything(),
+  ));
+});
+
+test("the release list separates what is published from what can be installed", async () => {
+  renderPanel();
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+
+  const releases = await screen.findByRole("list", { name: "Newer published releases" });
+  expect(releases).toHaveTextContent("1.21.6");
+  expect(releases).toHaveTextContent("Blockstead can install");
+  expect(releases).toHaveTextContent("Not installable here");
+  // Entries the source could not order are disclosed, not silently dropped.
+  expect(screen.getByText(/could not be ordered/)).toBeVisible();
+});
+
+test("a server on the newest release is told so instead of being offered an upgrade", async () => {
+  renderPanel({ review: currentReview });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+
+  expect(await screen.findByText(/newest published Vanilla Minecraft release/)).toBeVisible();
+  expect(screen.queryByRole("list", { name: "Newer published releases" })).toBeNull();
+});
+
+test("a reviewed plan can be booked as a maintenance window", async () => {
+  renderPanel();
+  await reviewWorldFiles();
+  fireEvent.click(await screen.findByRole("button", { name: "Schedule this plan" }));
+
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/schedule",
+    expect.objectContaining({ method: "POST" }),
+  ));
+  const call = vi.mocked(fetch).mock.calls.find(
+    ([url]) => typeof url === "string" && url.includes("/schedule"),
+  );
+  const body = call?.[1]?.body;
+  const sent = JSON.parse(typeof body === "string" ? body : "{}") as Record<string, unknown>;
+  expect(sent).toMatchObject({ change_id: "world_files", plan_id: "abc123def456", only_when_empty: true });
+  expect(await screen.findByText(booking.detail)).toBeVisible();
+});
+
+test("a stale plan is answered with the fresh review rather than a dead end", async () => {
+  const fresh: MaintenancePlan = {
+    ...readyPlan,
+    plan_id: "ffff0000ffff0000",
+    headline: "Edit or replace world files is possible on Homestead, with things to know",
+    protection: { ...readyPlan.protection, verified: true, backup_id: "backup-9" },
+  };
+  renderPanel({
+    scheduleResponse: () => respond(
+      { error: { code: "stale_plan", message: "This server has changed since you reviewed that plan." }, plan: fresh },
+      409,
+    ),
+  });
+  await reviewWorldFiles();
+  fireEvent.click(await screen.findByRole("button", { name: "Schedule this plan" }));
+
+  expect(await screen.findByText(/This server has changed since you reviewed that plan/)).toBeVisible();
+  // The fresh review replaces the stale one in place, so the owner can just re-book.
+  expect(await screen.findByText(/re-checked this backup against its manifest/)).toBeVisible();
+  expect(screen.getByText(/plan ffff0000ffff0000/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Schedule this plan" })).toBeVisible();
+});
+
+test("nothing to change is not presented as a safety problem", async () => {
+  const nothingToDo: MaintenancePlan = {
+    ...readyPlan,
+    change: catalog.changes[1],
+    readiness: "not_applicable",
+    headline: "There is nothing to change on Homestead",
+    detail: "Homestead is already on the newest published release. This is not a problem to fix.",
+    blockers: [],
+  };
+  renderPanel({ plan: nothingToDo, review: currentReview });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Run the preflight" }));
+
+  expect(await screen.findByText("Nothing to change")).toBeVisible();
+  expect(screen.queryByText("Resolve this first")).toBeNull();
+  expect(screen.queryByRole("list", { name: "Reviewed plan" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Schedule this plan" })).toBeNull();
 });

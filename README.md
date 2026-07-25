@@ -71,8 +71,12 @@ Blockstead manages the process around them.
   verifies, whether the disk has room for a fresh one, whether a restart is
   already pending, and what the known compatibility limits are — then lays out
   one ordered plan with an explicit stop and restart expectation. It never calls
-  a check clear when it could not run it, and it will not offer a server or
-  loader upgrade until it can verify one itself
+  a check clear when it could not run it. It also reads the published release
+  list for your server type and keeps two questions apart: whether a newer
+  release exists, and whether Blockstead can install it into your folder. When
+  the plan looks right you can book a maintenance window straight from it —
+  Blockstead re-checks the evidence at booking time and refuses a plan that has
+  gone stale rather than scheduling it quietly
 - creates private, verified manual and scheduled world backups, keeps a clear
   per-server history, lets you save a portable copy when you need one, and can
   mirror successful archives to approved folders on another drive

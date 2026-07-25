@@ -124,7 +124,9 @@ from .java_runtime import discover_java_runtimes, find_java
 from .maintenance import (
     BackupPoint,
     MaintenanceContext,
+    MaintenancePlan,
     MaintenanceRequest,
+    MaintenanceScheduleRequest,
 )
 from .maintenance import (
     assess as assess_maintenance,
@@ -263,6 +265,10 @@ from .server_settings import (
     preview_raw_settings,
     preview_settings_update,
     read_raw_settings,
+)
+from .server_upgrades import UpgradeContext, UpgradeReview
+from .server_upgrades import (
+    review as review_upgrades,
 )
 from .shared_map import read_shared_map
 from .troubleshooting import (
@@ -3434,19 +3440,57 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             f"{event.safe_detail}"
         )
 
-    @app.post("/api/v1/profiles/{profile_id}/maintenance/preflight")
-    async def maintenance_preflight(
-        profile_id: str,
-        payload: MaintenanceRequest,
-        request: Request,
-        db: Db,
-    ) -> dict[str, object]:
-        """Review one maintenance change against current evidence. Changes nothing."""
+    async def upgrade_review_for(profile: Profile) -> UpgradeReview:
+        """Read the published release list for one profile's distribution.
 
-        admin = mutation(request, db)
+        A source that fails is passed through as a failure; it never becomes an
+        empty list, which would read as "no newer release exists".
+        """
+
+        published: tuple[str, ...] | None = None
+        problem: str | None = None
+        if not profile.is_fixture:
+            try:
+                published = tuple(await list_versions(http_client, profile.distribution))
+            except ProvisionError as exc:
+                problem = str(exc)
+        java_majors = frozenset(
+            runtime.major
+            for runtime in ([] if profile.is_fixture else discover_java_runtimes())
+        )
+        return review_upgrades(
+            UpgradeContext(
+                distribution=profile.distribution,
+                current_version=profile.minecraft_version,
+                is_fixture=profile.is_fixture,
+                published=published,
+                source_problem=problem,
+                java_majors=java_majors,
+            )
+        )
+
+    @app.get("/api/v1/profiles/{profile_id}/maintenance/upgrades")
+    async def maintenance_upgrades(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        """Report published server releases and whether Blockstead can install one."""
+
+        current(request, db)
         profile = db.get(Profile, profile_id)
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
+        return (await upgrade_review_for(profile)).model_dump()
+
+    async def build_maintenance_plan(
+        profile: Profile, payload: MaintenanceRequest, db: Session
+    ) -> MaintenancePlan:
+        """Gather current evidence and review one change against it.
+
+        Scheduling re-runs this rather than trusting a plan the browser sends
+        back, so a plan whose evidence has moved on cannot be acted on.
+        """
+
+        profile_id = profile.id
         directory = profile_directory(profile_id, db)
         properties = read_properties(directory)
 
@@ -3474,9 +3518,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 configured_max = possible_max
         except ValueError:
             pass
-        online = None
-        if status is not None and isinstance(status.get("online"), int):
-            online = int(status["online"])
+        online: int | None = None
+        if status is not None:
+            reported = status.get("online")
+            if isinstance(reported, int):
+                online = reported
 
         newest_backup = db.scalar(
             select(BackupRecord)
@@ -3553,6 +3599,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         restart_pending, restart_detail = pending_restart_for(profile, db)
         info = DISTRIBUTIONS.get(profile.distribution, DISTRIBUTIONS["unknown"])
+        # Only the upgrade review needs a published release list, so only it pays
+        # for the lookup — the other reviews stay offline and fast.
+        upgrade = (
+            await upgrade_review_for(profile)
+            if payload.change_id == "server_upgrade"
+            else None
+        )
+        # The newest published release, installable or not: naming it lets the
+        # review explain why it cannot be installed instead of going quiet.
+        newest = upgrade.candidates[0] if upgrade and upgrade.candidates else None
         plan = assess_maintenance(
             MaintenanceContext(
                 profile_id=profile.id,
@@ -3581,9 +3637,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 next_operation_at=next_at,
                 occupied_by=occupant,
                 now=now_local,
+                upgrade_source_available=upgrade is not None and upgrade.source == "available",
+                upgrade_source_detail=upgrade.source_detail if upgrade else "",
+                upgrade_up_to_date=upgrade.up_to_date if upgrade else None,
+                upgrade_target=newest.minecraft_version if newest else None,
+                upgrade_installable=bool(newest and newest.installable),
+                upgrade_distribution_supported=bool(upgrade and upgrade.installable_here),
+                upgrade_detail=(
+                    newest.detail if newest else (upgrade.install_detail if upgrade else "")
+                ),
             ),
             payload,
         )
+        return plan
+
+    @app.post("/api/v1/profiles/{profile_id}/maintenance/preflight")
+    async def maintenance_preflight(
+        profile_id: str,
+        payload: MaintenanceRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        """Review one maintenance change against current evidence. Changes nothing."""
+
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        plan = await build_maintenance_plan(profile, payload, db)
         db.add(
             AuditEvent(
                 admin_id=admin.id,
@@ -3595,6 +3676,119 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         db.commit()
         return plan.model_dump()
+
+    # response_model=None: a stale plan answers 409 with the fresh review attached,
+    # so this route returns either a body or a prepared response.
+    @app.post(
+        "/api/v1/profiles/{profile_id}/maintenance/schedule",
+        status_code=201,
+        response_model=None,
+    )
+    async def schedule_reviewed_plan(
+        profile_id: str,
+        payload: MaintenanceScheduleRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object] | JSONResponse:
+        """Book a one-time maintenance window for a plan the owner just reviewed.
+
+        The plan is re-reviewed here. A stale plan is refused with the fresh
+        review attached, so a schedule can never be built on evidence that has
+        since changed.
+        """
+
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        if payload.run_at <= datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M"):
+            raise HTTPException(422, "Choose a maintenance time in the future.")
+
+        fresh = await build_maintenance_plan(
+            profile, MaintenanceRequest(change_id=payload.change_id), db
+        )
+        if fresh.plan_id != payload.plan_id:
+            db.add(
+                AuditEvent(
+                    admin_id=admin.id,
+                    profile_id=profile.id,
+                    category="maintenance_schedule",
+                    result="refused",
+                    safe_detail=(
+                        f"Refused to schedule a stale plan for {profile.name}: reviewed "
+                        f"{payload.plan_id}, current evidence is {fresh.plan_id}"
+                    ),
+                )
+            )
+            db.commit()
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": {
+                        "code": "stale_plan",
+                        "message": (
+                            "This server has changed since you reviewed that plan, so "
+                            "Blockstead did not schedule it. Review the current plan below."
+                        ),
+                    },
+                    "plan": fresh.model_dump(),
+                },
+            )
+        if fresh.readiness == "blocked":
+            raise HTTPException(
+                409, "This plan is blocked right now, so Blockstead will not schedule it."
+            )
+        if fresh.readiness == "not_applicable":
+            raise HTTPException(409, "There is nothing to change, so there is nothing to schedule.")
+
+        pending_count = db.scalar(
+            select(func.count())
+            .select_from(AutomationEvent)
+            .where(
+                AutomationEvent.profile_id == profile_id,
+                AutomationEvent.completed_at.is_(None),
+            )
+        )
+        if pending_count is not None and pending_count >= 20:
+            raise HTTPException(409, "This server already has 20 pending maintenance events.")
+        if db.scalar(select(Schedule).where(Schedule.profile_id == profile_id)) is None:
+            db.add(Schedule(profile_id=profile_id, enabled=False))
+        # The reviewed plan always carries a protection step, so the booked
+        # window always backs up before it stops; that is not an owner toggle.
+        event = AutomationEvent(
+            profile_id=profile_id,
+            run_at=payload.run_at,
+            backup_before_stop=True,
+            power_off_after_stop=False,
+            only_when_empty=payload.only_when_empty,
+        )
+        db.add(event)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="maintenance_schedule",
+                result="success",
+                safe_detail=(
+                    f"Scheduled “{fresh.change.title}” on {profile.name} for "
+                    f"{payload.run_at} from reviewed plan {fresh.plan_id}"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "id": event.id,
+            "profile_id": profile_id,
+            "run_at": payload.run_at,
+            "plan_id": fresh.plan_id,
+            "change_id": payload.change_id,
+            "only_when_empty": payload.only_when_empty,
+            "backup_before_stop": True,
+            "detail": (
+                f"Blockstead will stop {profile.name} at {payload.run_at} after a "
+                "verified backup. Applying the change itself is still yours to do."
+            ),
+        }
 
     @app.get("/api/v1/troubleshooting/problems")
     def troubleshooting_problems(request: Request, db: Db) -> dict[str, object]:

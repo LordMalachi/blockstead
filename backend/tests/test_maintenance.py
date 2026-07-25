@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -11,7 +11,7 @@ from blockstead.maintenance import (
     catalog,
 )
 
-NOW = datetime(2026, 7, 24, 20, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 24, 20, 0, tzinfo=UTC)
 GIB = 1024**3
 
 
@@ -133,9 +133,127 @@ def test_an_unanswered_status_check_reads_as_unknown_not_empty() -> None:
 def test_an_unverified_upgrade_source_is_never_presented_as_safe() -> None:
     plan = plan_for("server_upgrade")
     assert plan.readiness == "blocked"
-    assert finding(plan, "compatibility").status == "blocked"
-    assert "no verified upgrade source" in finding(plan, "compatibility").detail
+    assert finding(plan, "upgrade-target").status == "blocked"
+    assert "no verified upgrade source" in finding(plan, "upgrade-target").detail
     assert plan.blockers
+
+
+def test_a_readable_source_with_no_install_path_still_blocks_the_upgrade() -> None:
+    plan = plan_for(
+        "server_upgrade",
+        upgrade_source_available=True,
+        upgrade_installable=False,
+        upgrade_distribution_supported=False,
+        upgrade_up_to_date=False,
+        upgrade_target="1.21.6",
+        upgrade_detail="A Fabric upgrade installs many files through its own installer.",
+    )
+    assert plan.readiness == "blocked"
+    assert finding(plan, "upgrade-target").status == "blocked"
+    assert "own installer" in finding(plan, "upgrade-target").detail
+    assert "re-import the folder" in (finding(plan, "upgrade-target").recommendation or "")
+
+
+def test_a_missing_runtime_is_not_blamed_on_the_server_type() -> None:
+    """Vanilla can be upgraded in place; a missing Java runtime is the real blocker."""
+
+    plan = plan_for(
+        "server_upgrade",
+        distribution="vanilla",
+        distribution_label="Vanilla Minecraft",
+        upgrade_source_available=True,
+        upgrade_installable=False,
+        upgrade_distribution_supported=True,
+        upgrade_up_to_date=False,
+        upgrade_target="26.2",
+        upgrade_detail="This release needs Java 25, and no matching runtime was found.",
+    )
+    assert plan.readiness == "blocked"
+    recommendation = finding(plan, "upgrade-target").recommendation or ""
+    assert "Install the Java runtime" in recommendation
+    assert "re-import" not in recommendation
+
+
+def test_an_installable_newer_release_makes_the_upgrade_reviewable() -> None:
+    plan = plan_for(
+        "server_upgrade",
+        upgrade_source_available=True,
+        upgrade_installable=True,
+        upgrade_distribution_supported=True,
+        upgrade_up_to_date=False,
+        upgrade_target="1.21.6",
+        upgrade_detail="Blockstead keeps the previous jar so the change can be undone.",
+    )
+    assert plan.readiness in {"ready", "ready_with_warnings"}
+    assert finding(plan, "upgrade-target").status == "ready"
+    assert "1.21.6" in finding(plan, "upgrade-target").detail
+    assert step(plan, "backup").requirement == "required"
+
+
+def test_an_already_current_server_is_not_reported_as_a_safety_problem() -> None:
+    plan = plan_for(
+        "server_upgrade",
+        upgrade_source_available=True,
+        upgrade_installable=True,
+        upgrade_up_to_date=True,
+        upgrade_target=None,
+    )
+    assert plan.readiness == "not_applicable"
+    assert "nothing to change" in plan.headline
+    assert "not a problem to fix" in plan.detail
+    assert finding(plan, "upgrade-target").status == "info"
+
+
+def test_nothing_to_change_outranks_an_unrelated_blocker() -> None:
+    """An owner on the newest release should not be told to free disk for it."""
+
+    plan = plan_for(
+        "server_upgrade",
+        upgrade_source_available=True,
+        upgrade_installable=True,
+        upgrade_up_to_date=True,
+        disk_free_bytes=1 * GIB,
+        world_size_bytes=40 * GIB,
+    )
+    assert plan.readiness == "not_applicable"
+
+
+def test_an_unorderable_upgrade_comparison_blocks_rather_than_guesses() -> None:
+    plan = plan_for(
+        "server_upgrade",
+        upgrade_source_available=True,
+        upgrade_installable=True,
+        upgrade_up_to_date=None,
+        upgrade_detail="Blockstead could not order this server's version.",
+    )
+    assert plan.readiness == "blocked"
+    assert finding(plan, "upgrade-target").status == "blocked"
+
+
+def test_the_upgrade_target_is_part_of_the_reviewed_evidence() -> None:
+    base = dict(
+        upgrade_source_available=True,
+        upgrade_installable=True,
+        upgrade_up_to_date=False,
+    )
+    first = plan_for("server_upgrade", **base, upgrade_target="1.21.5")
+    same = plan_for("server_upgrade", **base, upgrade_target="1.21.5")
+    later = plan_for("server_upgrade", **base, upgrade_target="1.21.6")
+    assert first.plan_id == same.plan_id
+    assert first.plan_id != later.plan_id
+
+
+def test_only_the_upgrade_review_carries_an_upgrade_target_finding() -> None:
+    assert {item.id for item in plan_for("world_files").findings} == {
+        "server-state",
+        "connected-players",
+        "protection-point",
+        "disk-space",
+        "pending-restart",
+        "compatibility",
+        "scheduled-operation",
+    }
+    assert "upgrade-target" in {item.id for item in plan_for("server_upgrade").findings}
 
 
 def test_a_disk_that_cannot_hold_a_backup_blocks_the_change() -> None:

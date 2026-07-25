@@ -394,10 +394,10 @@ questions.
 
 ## Milestone 9: Maintenance and Upgrade Center
 
-**Status: In progress** — the preflight and the reviewed plan are complete and
-shipped as the Maintenance workspace. Guided execution of a reviewed plan,
-server and loader upgrade discovery, the per-extension update review, and
-creating a schedule from a reviewed plan are the remaining slices.
+**Status: In progress** — the preflight, the reviewed plan, upgrade discovery,
+and booking a window from a reviewed plan are complete and shipped as the
+Maintenance workspace. The per-extension update review and applying a server
+or loader upgrade in place are the remaining slices.
 
 ### Why
 
@@ -415,10 +415,12 @@ extension, and schedule capabilities into one reversible maintenance workflow.
 - [x] Offer a readable plan: announce/count down when configured, save,
       create and verify a pre-change backup, stop when required, apply the
       selected change, validate the launch plan, and state the restart choice.
-- [ ] Add supported server and loader upgrade discovery for each distribution;
+- [x] Add supported server and loader upgrade discovery for each distribution;
       clearly distinguish an available release from one Blockstead can safely
-      install. Until then the upgrade change is blocked, not hidden: the
-      preflight states that no verified upgrade source exists.
+      install. Published releases come from the same official sources profile
+      creation already uses; an unreachable source reads as "could not check",
+      never as "up to date", and a release Blockstead cannot install in place
+      is labelled as exactly that.
 - [ ] Show a version, Java-requirement, file, dependency, and restart-impact
       review for extension updates; retain a per-change rollback path.
 - [ ] Make server/loader upgrades opt-in and stopped-server-only; preserve the
@@ -427,9 +429,10 @@ extension, and schedule capabilities into one reversible maintenance workflow.
       action in Activity and in the downloadable support report. Preflight
       findings and the plan identity are recorded now; step results follow with
       guided execution.
-- [ ] Let an owner create a maintenance schedule from a reviewed plan without
-      silently reusing a stale plan. Each plan already carries the fingerprint
-      of the evidence it was reviewed against.
+- [x] Let an owner create a maintenance schedule from a reviewed plan without
+      silently reusing a stale plan. Booking re-runs the review server-side and
+      compares fingerprints; a plan whose evidence moved on is refused with the
+      current review attached, and the refusal is recorded in Activity.
 
 ### Acceptance criteria
 
