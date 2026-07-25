@@ -5,7 +5,7 @@ import { api, type ActivityFeed, type LocalNotifications, type NotificationPrefe
 import { Button } from "../../components/Button";
 import { Tooltip } from "../../components/Tooltip";
 
-const groups = ["lifecycle", "backup", "settings", "extension", "player", "automation", "update", "system"];
+const groups = ["lifecycle", "backup", "maintenance", "settings", "extension", "player", "files", "automation", "update", "system"];
 
 export function ActivityPage() {
   const queryClient = useQueryClient();

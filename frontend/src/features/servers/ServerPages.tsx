@@ -1,5 +1,6 @@
 import { ExtensionsPanel } from "../extensions/ExtensionsPanel";
 import { FilesPanel } from "../files/FilesPanel";
+import { MaintenancePanel } from "../maintenance/MaintenancePanel";
 import { PlayersPanel } from "../players/PlayersPanel";
 import { SchedulePanel } from "../schedule/SchedulePanel";
 import { SettingsPanel } from "../settings/SettingsPanel";
@@ -28,6 +29,11 @@ export function BackupsPage() {
 export function SettingsPage() {
   const scope = useServerScope();
   return <SettingsPanel profileId={scope.profile.id} running={scope.running} />;
+}
+
+export function MaintenancePage() {
+  const scope = useServerScope();
+  return <MaintenancePanel profileId={scope.profile.id} />;
 }
 
 export function FilesPage() {

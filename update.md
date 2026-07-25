@@ -43,7 +43,7 @@ remain available without dominating normal server care.
 | 6. Activity and notifications | Complete | Human-readable audit history, local operational alerts, and event-focused support reports |
 | 7. Safe file workspace | Complete | Category-scoped browsing, editing, uploads, downloads, and archive extraction with recovery snapshots |
 | 8. Player and mobile improvements | Complete | Merged player roster with best-effort session history, search, filters, opt-in avatars, quicker actions, PWA installability, and clearer mobile navigation |
-| 9. Maintenance and Upgrade Center | Planned | A backed-up, compatibility-aware way to review and apply server, loader, and extension changes |
+| 9. Maintenance and Upgrade Center | In progress | A backed-up, compatibility-aware way to review and apply server, loader, and extension changes; the preflight and reviewed plan are shipped |
 | 10. World Care and performance insight | Planned | Honest performance evidence, safe world/storage care, and recovery cleanup |
 | 11. Calm daily operations | Planned | A task-first daily summary and incident story that connect the evidence already collected |
 | 12. Saved setups and trusted connections | Deferred | Explicit profile switching plus narrowly scoped sharing and notifications, after the local workflows are proven |
@@ -57,8 +57,9 @@ and scheduling workspaces, extensions and modpacks, account recovery,
 diagnostics, in-app help, and Linux Mint installation and upkeep. See
 [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
-Milestone 8 is now complete. The next work sequence is a Maintenance and
-Upgrade Center. The later milestones below are deliberately ordered so that
+Milestone 8 is complete and Milestone 9 is under way: the maintenance preflight
+and the reviewed change plan are shipped, and guided execution plus upgrade
+discovery are the remaining slices. The later milestones below are ordered so that
 Blockstead improves the confidence of everyday care before it adds optional
 sharing or integrations. The two
 remaining shared-map refinements are tracked separately below.
@@ -95,6 +96,12 @@ Blockstead already provides:
   live status when reachable and best-effort join/leave session history,
   search, filters, an opt-in avatar preference, and a quicker kick action; an
   installable Progressive Web App shell; and clearer mobile navigation.
+- a Maintenance workspace that reviews a proposed change before it is made:
+  a read-only preflight over connected players, server state, a re-verified
+  protection point, free disk against the measured world size, a pending
+  restart, compatibility limits, and colliding automation, presented as one
+  ordered plan with a required protection step for any destructive or
+  version-changing change and an explicit stop and restart expectation.
 
 The main limitations to address are:
 
@@ -387,7 +394,10 @@ questions.
 
 ## Milestone 9: Maintenance and Upgrade Center
 
-**Status: Planned**
+**Status: In progress** — the preflight and the reviewed plan are complete and
+shipped as the Maintenance workspace. Guided execution of a reviewed plan,
+server and loader upgrade discovery, the per-extension update review, and
+creating a schedule from a reviewed plan are the remaining slices.
 
 ### Why
 
@@ -399,23 +409,27 @@ extension, and schedule capabilities into one reversible maintenance workflow.
 
 ### Work checklist
 
-- [ ] Add a maintenance preflight that reports connected players, server state,
+- [x] Add a maintenance preflight that reports connected players, server state,
       last verified backup, free disk, pending restart, and known compatibility
       limits before a risky change.
-- [ ] Offer a readable plan: announce/count down when configured, save,
+- [x] Offer a readable plan: announce/count down when configured, save,
       create and verify a pre-change backup, stop when required, apply the
       selected change, validate the launch plan, and state the restart choice.
 - [ ] Add supported server and loader upgrade discovery for each distribution;
       clearly distinguish an available release from one Blockstead can safely
-      install.
+      install. Until then the upgrade change is blocked, not hidden: the
+      preflight states that no verified upgrade source exists.
 - [ ] Show a version, Java-requirement, file, dependency, and restart-impact
       review for extension updates; retain a per-change rollback path.
 - [ ] Make server/loader upgrades opt-in and stopped-server-only; preserve the
       prior launch target and never automatically roll a world back.
-- [ ] Record every preflight finding, owner decision, step result, and recovery
-      action in Activity and in the downloadable support report.
+- [x] Record every preflight finding, owner decision, step result, and recovery
+      action in Activity and in the downloadable support report. Preflight
+      findings and the plan identity are recorded now; step results follow with
+      guided execution.
 - [ ] Let an owner create a maintenance schedule from a reviewed plan without
-      silently reusing a stale plan.
+      silently reusing a stale plan. Each plan already carries the fingerprint
+      of the evidence it was reviewed against.
 
 ### Acceptance criteria
 

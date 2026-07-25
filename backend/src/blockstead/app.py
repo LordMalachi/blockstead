@@ -50,6 +50,7 @@ from .backups import (
     mirror_backup_archive,
     perform_restore,
     plan_restore,
+    verify_backup_archive,
 )
 from .catalog import CatalogError, PlannedFile
 from .command_catalog import GuidedCommandRequest, catalog_payload, render_guided_command
@@ -120,6 +121,20 @@ from .import_scan import (
     scan_server,
 )
 from .java_runtime import discover_java_runtimes, find_java
+from .maintenance import (
+    BackupPoint,
+    MaintenanceContext,
+    MaintenanceRequest,
+)
+from .maintenance import (
+    assess as assess_maintenance,
+)
+from .maintenance import (
+    audit_detail as maintenance_audit_detail,
+)
+from .maintenance import (
+    catalog as maintenance_catalog,
+)
 from .mod_configs import (
     ModConfigError,
     list_mod_configs,
@@ -3324,6 +3339,262 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "distribution_label": info.label,
             },
         }
+
+    @app.get("/api/v1/maintenance/changes")
+    def maintenance_changes(request: Request, db: Db) -> dict[str, object]:
+        """Return the versioned catalog of reviewable maintenance changes."""
+
+        current(request, db)
+        return maintenance_catalog().model_dump()
+
+    def verify_protection_point(
+        profile_id: str,
+        backup_id: str,
+        created_at: datetime,
+        file_name: str,
+        manifest_name: str,
+        expected_sha256: str | None,
+        size_bytes: int | None,
+    ) -> BackupPoint:
+        """Re-verify a backup archive instead of trusting its database record.
+
+        Runs off the event loop because it hashes the archive, so it is handed
+        plain values rather than the request's ORM objects or session.
+        """
+
+        try:
+            verify_backup_archive(
+                config.data_dir,
+                profile_id,
+                file_name,
+                manifest_name,
+                expected_sha256,
+            )
+        except (RestoreError, OSError) as exc:
+            return BackupPoint(
+                id=backup_id,
+                created_at=created_at,
+                verified=False,
+                problem=str(exc),
+                size_bytes=size_bytes,
+            )
+        return BackupPoint(
+            id=backup_id, created_at=created_at, verified=True, size_bytes=size_bytes
+        )
+
+    # Categories whose saved change only reaches Minecraft on the next start.
+    RESTART_PENDING_CATEGORIES = frozenset(
+        {
+            "settings_update",
+            "settings_raw_update",
+            "mod_config_update",
+            "extension_install",
+            "extension_update",
+            "extension_toggle",
+            "extension_remove",
+            "extension_upload",
+        }
+    )
+
+    def pending_restart_for(profile: Profile, db: Session) -> tuple[bool, str]:
+        """Whether a saved change is waiting for this running server's next start."""
+
+        started_at = manager.started_at
+        if started_at is None or app.state.active_profile_id != profile.id:
+            return False, "The server is stopped, so nothing is waiting for a restart."
+        recent = db.scalars(
+            select(AuditEvent)
+            .where(
+                AuditEvent.profile_id == profile.id,
+                AuditEvent.category.in_(RESTART_PENDING_CATEGORIES),
+                AuditEvent.result.in_(("success", "accepted")),
+            )
+            .order_by(AuditEvent.created_at.desc())
+            .limit(20)
+        ).all()
+        # Compare in Python: SQLite stores these timestamps without an offset,
+        # so a timezone-aware bound cannot be compared reliably in SQL.
+        event = next(
+            (
+                candidate
+                for candidate in recent
+                if (
+                    candidate.created_at.replace(tzinfo=timezone.utc)  # noqa: UP017
+                    if candidate.created_at.tzinfo is None
+                    else candidate.created_at
+                )
+                > started_at
+            ),
+            None,
+        )
+        if event is None:
+            return False, "No saved change is waiting for a restart on this running server."
+        return True, (
+            f"A change saved after this server started is still waiting for a restart: "
+            f"{event.safe_detail}"
+        )
+
+    @app.post("/api/v1/profiles/{profile_id}/maintenance/preflight")
+    async def maintenance_preflight(
+        profile_id: str,
+        payload: MaintenanceRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        """Review one maintenance change against current evidence. Changes nothing."""
+
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        properties = read_properties(directory)
+
+        active = app.state.active_profile_id == profile.id
+        snapshot = manager.snapshot()
+        raw_state = str(snapshot["state"])
+        if raw_state.startswith("ProcessState."):
+            raw_state = raw_state.removeprefix("ProcessState.")
+        state = raw_state if active else "STOPPED"
+        occupant: str | None = None
+        if not active and raw_state in {"STARTING", "RUNNING", "STOPPING", "DEGRADED"}:
+            holder_id = snapshot["profile_id"]
+            holder = db.get(Profile, str(holder_id)) if holder_id else None
+            occupant = holder.name if holder else "Another server"
+
+        status = (
+            await minecraft_status(properties)
+            if active and state in {"RUNNING", "DEGRADED"}
+            else None
+        )
+        configured_max = 20
+        try:
+            possible_max = int(properties.get("max-players", "20"))
+            if 1 <= possible_max <= 1000:
+                configured_max = possible_max
+        except ValueError:
+            pass
+        online = None
+        if status is not None and isinstance(status.get("online"), int):
+            online = int(status["online"])
+
+        newest_backup = db.scalar(
+            select(BackupRecord)
+            .where(BackupRecord.profile_id == profile.id, BackupRecord.status == "completed")
+            .order_by(BackupRecord.created_at.desc())
+            .limit(1)
+        )
+        backup: BackupPoint | None = None
+        if newest_backup is not None:
+            backup_at = newest_backup.created_at
+            if backup_at.tzinfo is None:
+                backup_at = backup_at.replace(tzinfo=timezone.utc)  # noqa: UP017
+            if newest_backup.file_name and newest_backup.manifest_name:
+                backup = await asyncio.to_thread(
+                    verify_protection_point,
+                    profile.id,
+                    newest_backup.id,
+                    backup_at,
+                    newest_backup.file_name,
+                    newest_backup.manifest_name,
+                    newest_backup.sha256,
+                    newest_backup.size_bytes,
+                )
+            else:
+                backup = BackupPoint(
+                    id=newest_backup.id,
+                    created_at=backup_at,
+                    verified=False,
+                    problem="This backup has no stored manifest, so it cannot be verified.",
+                    size_bytes=newest_backup.size_bytes,
+                )
+        disk = psutil.disk_usage(str(config.data_dir))
+
+        extensions_view = read_extensions(directory, profile.distribution)
+        signature = tuple(
+            sorted(
+                f"{entry.file_name}@{entry.version or 'unknown'}"
+                for entry in extensions_view.entries
+            )
+        )
+        warnings = tuple(warning.message for warning in extensions_view.warnings)
+
+        required = None if profile.is_fixture else required_java_major(profile.minecraft_version)
+        compatible_java: bool | None = None
+        launch_problem: str | None = None
+        if not profile.is_fixture:
+            runtimes = discover_java_runtimes()
+            compatible_java = find_java(required, runtimes) is not None if required else None
+            if profile.distribution == "unknown":
+                launch_problem = "Blockstead did not recognize this server folder's distribution."
+            else:
+                try:
+                    launch_arguments(profile.distribution, directory)
+                except LaunchPlanError as exc:
+                    launch_problem = str(exc)
+
+        schedule = db.scalar(select(Schedule).where(Schedule.profile_id == profile.id))
+        pending_events = db.scalars(
+            select(AutomationEvent).where(
+                AutomationEvent.profile_id == profile.id,
+                AutomationEvent.completed_at.is_(None),
+            )
+        ).all()
+        now_local = datetime.now().astimezone()
+        upcoming = next_executions(schedule, pending_events, now_local, limit=1)
+        next_label: str | None = None
+        next_at: datetime | None = None
+        if upcoming:
+            next_label = str(upcoming[0]["label"])
+            try:
+                next_at = datetime.fromisoformat(str(upcoming[0]["at"]))
+            except ValueError:
+                next_at = None
+
+        restart_pending, restart_detail = pending_restart_for(profile, db)
+        info = DISTRIBUTIONS.get(profile.distribution, DISTRIBUTIONS["unknown"])
+        plan = assess_maintenance(
+            MaintenanceContext(
+                profile_id=profile.id,
+                profile_name=profile.name,
+                distribution=profile.distribution,
+                distribution_label=info.label,
+                minecraft_version=profile.minecraft_version,
+                is_fixture=profile.is_fixture,
+                state=state,
+                selected_server_active=active,
+                state_reason=str(snapshot["reason"]) if active else "This server is stopped.",
+                online_players=online,
+                max_players=configured_max,
+                last_backup=backup,
+                disk_free_bytes=int(disk.free),
+                disk_total_bytes=int(disk.total),
+                world_size_bytes=world_size(directory, properties),
+                extension_signature=signature,
+                extension_warnings=warnings,
+                required_java_major=required,
+                compatible_java_found=compatible_java,
+                launch_problem=launch_problem,
+                pending_restart=restart_pending,
+                pending_restart_detail=restart_detail,
+                next_operation_label=next_label,
+                next_operation_at=next_at,
+                occupied_by=occupant,
+                now=now_local,
+            ),
+            payload,
+        )
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="maintenance_preflight",
+                result="reviewed",
+                safe_detail=maintenance_audit_detail(plan, profile.name),
+            )
+        )
+        db.commit()
+        return plan.model_dump()
 
     @app.get("/api/v1/troubleshooting/problems")
     def troubleshooting_problems(request: Request, db: Db) -> dict[str, object]:

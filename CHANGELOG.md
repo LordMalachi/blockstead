@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Add a Maintenance workspace that answers "is this change safe to make
+  tonight?" before a risky change. A read-only preflight reports connected
+  players, server state, a re-verified protection point, free disk against the
+  measured world size, a pending restart, known compatibility limits, and any
+  automated operation due soon; it then turns those findings into one ordered,
+  readable plan with an explicit stop and restart expectation. A destructive or
+  version-changing plan always carries a required backup step, an unanswered
+  check reads as unknown rather than as clear, and a server or loader upgrade
+  stays blocked until Blockstead can verify an upgrade source itself. Every
+  review is recorded in Activity with the plan identity it was based on.
+
 - Add a deterministic Server Troubleshooting wizard to Help. Owners choose a
   known problem, preview and run read-only profile checks, see confirmed causes
   separately from possible or unavailable checks, and explicitly approve only

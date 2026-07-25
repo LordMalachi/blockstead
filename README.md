@@ -35,7 +35,8 @@ Blockstead manages the process around them.
 ## What it does today
 
 - lists every server it looks after, and gives each one its own workspace with a
-  bookmarkable page for the console, players, mods, schedule, and settings
+  bookmarkable page for the console, players, mods, backups, maintenance, files,
+  schedule, and settings
 - imports an existing vanilla `server.jar` folder from anywhere on the computer,
   copying it in through the browser — no terminal or file moving required
 - starts, stops, restarts, and watches the managed server process
@@ -65,6 +66,13 @@ Blockstead manages the process around them.
 - separates a detected LAN address from public reachability: it checks the
   current public IP at the overview, never treats a configured or dashboard
   address as public, and opens connection help when it cannot verify the route
+- reviews a risky change before you make it: the Maintenance workspace checks who
+  is connected, whether the server is stopped, whether the latest backup really
+  verifies, whether the disk has room for a fresh one, whether a restart is
+  already pending, and what the known compatibility limits are — then lays out
+  one ordered plan with an explicit stop and restart expectation. It never calls
+  a check clear when it could not run it, and it will not offer a server or
+  loader upgrade until it can verify one itself
 - creates private, verified manual and scheduled world backups, keeps a clear
   per-server history, lets you save a portable copy when you need one, and can
   mirror successful archives to approved folders on another drive

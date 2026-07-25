@@ -982,6 +982,57 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
 .troubleshooting-confirmation dl > div { padding: .7rem; background: var(--surface-2); border-radius: 8px; }
 .troubleshooting-confirmation dt { color: var(--muted); font-size: .62rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .troubleshooting-confirmation dd { margin: .2rem 0 0; font-size: .8rem; }
+.maintenance-panel { display: grid; gap: var(--space-4); }
+.maintenance-intro { max-width: 82ch; margin: 0; color: var(--muted); font-size: .82rem; line-height: 1.6; }
+.maintenance-changes { padding: 0; border: 0; }
+.maintenance-changes legend { padding: 0 0 .55rem; font-size: .78rem; font-weight: 800; }
+.maintenance-change-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: .6rem; }
+.maintenance-change-grid label { position: relative; display: grid; gap: .3rem; padding: .95rem .95rem .95rem 2.4rem; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
+.maintenance-change-grid label.is-selected { background: color-mix(in srgb, var(--brand-soft) 42%, var(--surface)); border-color: var(--brand); box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 8%, transparent); }
+.maintenance-change-grid input { position: absolute; top: 1.05rem; left: 1rem; width: 1.05rem; height: 1.05rem; accent-color: var(--brand); }
+.maintenance-change-grid strong { font-size: .88rem; }
+.maintenance-change-grid span { color: var(--muted); font-size: .76rem; line-height: 1.45; }
+.maintenance-change-grid small { color: var(--muted); font-size: .68rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.maintenance-review { padding: 1.1rem; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; }
+.maintenance-review h3 { margin: 0 0 .5rem; font-size: .92rem; }
+.maintenance-review ul { display: grid; gap: .35rem; margin: 0; padding-left: 1.2rem; color: var(--muted); font-size: .78rem; }
+.maintenance-actions { display: flex; flex-wrap: wrap; gap: .55rem; align-items: center; margin-top: .9rem; }
+.maintenance-outcome { padding: 1rem 1.1rem; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; }
+.maintenance-outcome h3 { margin: .1rem 0 .25rem; }
+.maintenance-outcome p:last-child { margin-bottom: 0; color: var(--muted); font-size: .82rem; }
+.maintenance-outcome--ready { border-color: color-mix(in srgb, var(--ok) 30%, var(--line)); background: color-mix(in srgb, var(--ok) 6%, var(--surface)); }
+.maintenance-outcome--ready_with_warnings { border-color: color-mix(in srgb, var(--warning) 35%, var(--line)); background: color-mix(in srgb, var(--warning) 6%, var(--surface)); }
+.maintenance-outcome--blocked { border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); background: color-mix(in srgb, var(--danger) 6%, var(--surface)); }
+.maintenance-findings { display: grid; gap: .55rem; margin: 0; padding: 0; list-style: none; }
+.maintenance-finding { display: grid; grid-template-columns: 1.8rem minmax(0, 1fr); gap: .7rem; padding: .85rem; border: 1px solid var(--line); border-radius: 10px; }
+.maintenance-finding > span { display: grid; place-items: center; width: 1.7rem; height: 1.7rem; color: var(--muted); background: var(--surface-2); border-radius: 6px; font-size: .72rem; font-weight: 900; }
+.maintenance-finding--ready > span { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--surface)); }
+.maintenance-finding--attention > span { color: var(--warning); background: color-mix(in srgb, var(--warning) 11%, var(--surface)); }
+.maintenance-finding--blocked > span { color: var(--danger); background: color-mix(in srgb, var(--danger) 11%, var(--surface)); }
+.maintenance-finding--unknown > span { color: var(--warning); background: color-mix(in srgb, var(--warning) 11%, var(--surface)); }
+.maintenance-finding small, .maintenance-finding strong { display: block; }
+.maintenance-finding small { color: var(--muted); font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.maintenance-finding strong { margin-top: .1rem; font-size: .84rem; }
+.maintenance-finding p { margin: .2rem 0 0; color: var(--muted); font-size: .76rem; }
+.maintenance-recommendation { color: var(--ink); font-weight: 650; }
+.maintenance-protection, .maintenance-restart, .maintenance-blocked { padding: 1rem 1.1rem; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
+.maintenance-protection h3, .maintenance-restart h3, .maintenance-blocked h3 { margin: 0 0 .4rem; font-size: .92rem; }
+.maintenance-protection p, .maintenance-restart p, .maintenance-blocked p { margin: 0 0 .75rem; max-width: 82ch; color: var(--muted); font-size: .8rem; line-height: 1.55; }
+.maintenance-restart p:last-child { margin-bottom: 0; }
+.maintenance-blocked { border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); background: color-mix(in srgb, var(--danger) 6%, var(--surface)); }
+.maintenance-blocked ul { display: grid; gap: .35rem; margin: 0 0 .75rem; padding-left: 1.2rem; font-size: .8rem; }
+.maintenance-steps { display: grid; gap: .55rem; margin: 0; padding: 0; list-style: none; counter-reset: maintenance-step; }
+.maintenance-step { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .8rem; padding: .9rem 1rem; border: 1px solid var(--line); border-radius: 10px; counter-increment: maintenance-step; }
+.maintenance-step small { display: block; color: var(--muted); font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.maintenance-step strong { display: block; margin-top: .1rem; font-size: .84rem; }
+.maintenance-step strong::before { content: counter(maintenance-step) ". "; color: var(--muted); }
+.maintenance-step p { margin: .2rem 0 0; color: var(--muted); font-size: .76rem; }
+.maintenance-step--required { border-color: color-mix(in srgb, var(--brand) 30%, var(--line)); background: color-mix(in srgb, var(--brand-soft) 30%, var(--surface)); }
+.maintenance-step--not_needed { opacity: .72; }
+@media (max-width: 640px) {
+  .maintenance-step { grid-template-columns: minmax(0, 1fr); }
+}
+
 .help-topics { margin-top: var(--space-5); }
 .help-topic-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
 .help-topic { display: flex; flex-direction: column; min-width: 0; padding: 1.25rem; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow-sm); }

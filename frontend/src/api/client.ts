@@ -58,6 +58,57 @@ export interface DiagnosticsReport {
   recent_errors: DiagnosticLogEntry[];
   recent_log: DiagnosticLogEntry[];
 }
+export type MaintenanceChangeId = "extension_update" | "extension_install" | "settings_change" | "world_files" | "server_upgrade";
+export interface MaintenanceChange {
+  id: MaintenanceChangeId;
+  title: string;
+  summary: string;
+  workspace: string;
+  requires_stopped_server: boolean;
+  version_changing: boolean;
+  destructive: boolean;
+  restart_expectation: "required" | "recommended" | "not_needed" | "unknown";
+  checks: string[];
+}
+export interface MaintenanceCatalog { version: string; changes: MaintenanceChange[] }
+export interface MaintenanceFinding {
+  id: string;
+  label: string;
+  status: "ready" | "attention" | "blocked" | "unknown" | "info";
+  detail: string;
+  recommendation: string | null;
+}
+export interface MaintenanceStep {
+  id: string;
+  label: string;
+  detail: string;
+  requirement: "required" | "recommended" | "not_needed";
+  performed_by: "owner";
+  route: string | null;
+}
+export interface MaintenanceProtection {
+  verified: boolean;
+  detail: string;
+  backup_id: string | null;
+  created_at: string | null;
+  age_hours: number | null;
+}
+export interface MaintenancePlan {
+  catalog_version: string;
+  plan_id: string;
+  profile_id: string;
+  change: MaintenanceChange;
+  readiness: "ready" | "ready_with_warnings" | "blocked";
+  headline: string;
+  detail: string;
+  findings: MaintenanceFinding[];
+  steps: MaintenanceStep[];
+  protection: MaintenanceProtection;
+  restart: "required" | "recommended" | "not_needed" | "unknown";
+  restart_detail: string;
+  blockers: string[];
+  reviewed_at: string;
+}
 export type TroubleshootingProblemId = "player_cannot_join" | "local_connection" | "public_connection" | "server_wont_start" | "timeouts_or_lag";
 export interface TroubleshootingSource { id: string; title: string; url: string; publisher: string; checked_at: string }
 export interface TroubleshootingProblem {
