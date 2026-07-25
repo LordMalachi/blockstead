@@ -138,9 +138,9 @@ def integer_property(
     return value if minimum <= value <= maximum else default
 
 
-def world_size(server_directory: Path, values: dict[str, str] | None = None) -> int | None:
-    """Return the byte size of recognized world folders, excluding links."""
-
+def _measure_world(
+    server_directory: Path, values: dict[str, str] | None, *, strict: bool
+) -> int | None:
     values = values if values is not None else read_properties(server_directory)
     prefixes = {"world"}
     level_name = values.get("level-name", "")
@@ -164,10 +164,33 @@ def world_size(server_directory: Path, values: dict[str, str] | None = None) -> 
                 if path.is_file() and not path.is_symlink():
                     total += path.stat().st_size
         except OSError:
-            # A live server may replace a file between traversal and stat. Keep
-            # the useful partial measurement instead of failing the overview.
+            # A live server may replace a file between traversal and stat.
+            if strict:
+                return None
+            # Keep the useful partial measurement instead of failing the overview.
             continue
     return total
+
+
+def world_size(server_directory: Path, values: dict[str, str] | None = None) -> int | None:
+    """Byte size of recognized world folders, excluding links.
+
+    Tolerant by design: a file that disappears mid-scan yields a partial total
+    rather than nothing, which is what the overview's size display wants.
+    """
+
+    return _measure_world(server_directory, values, strict=False)
+
+
+def strict_world_size(server_directory: Path, values: dict[str, str] | None = None) -> int | None:
+    """Byte size of recognized world folders, or None if anything was unreadable.
+
+    A safety estimate must not silently shrink. Any traversal or stat error
+    makes the whole measurement unknown, so a caller sizing a backup against
+    free disk reports "could not check" instead of "it fits".
+    """
+
+    return _measure_world(server_directory, values, strict=True)
 
 
 def _lan_addresses() -> list[str]:

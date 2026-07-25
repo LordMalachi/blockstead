@@ -1,9 +1,11 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from blockstead.overview import (
@@ -11,6 +13,7 @@ from blockstead.overview import (
     join_details,
     minecraft_status,
     read_properties,
+    strict_world_size,
     world_size,
 )
 
@@ -196,6 +199,35 @@ def test_world_size_uses_configured_world_name_and_ignores_links(tmp_path: Path)
 
     assert read_properties(tmp_path)["level-name"] == "survival"
     assert world_size(tmp_path) == len(b"world-data")
+
+
+def test_strict_world_size_refuses_a_partial_measurement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A safety estimate must not silently shrink when a file cannot be read."""
+
+    (tmp_path / "server.properties").write_text("level-name=survival\n", encoding="utf-8")
+    world = tmp_path / "survival"
+    world.mkdir()
+    (world / "level.dat").write_bytes(b"world-data")
+    (world / "region.mca").write_bytes(b"x" * 64)
+
+    real_stat = Path.stat
+
+    def flaky_stat(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if self.name == "region.mca":
+            raise OSError("file replaced while the server was running")
+        return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+
+    # The overview still produces a number it can display...
+    lenient = world_size(tmp_path)
+    assert lenient is not None
+    assert lenient < len(b"world-data") + 64
+    # ...but the maintenance preflight refuses to guess, because a safety
+    # estimate that quietly shrinks would report that a backup fits.
+    assert strict_world_size(tmp_path) is None
 
 
 def encode_varint(value: int) -> bytes:

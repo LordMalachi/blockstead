@@ -132,7 +132,11 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
 
 .layout { display: grid; grid-template-columns: 244px minmax(0, 1fr); max-width: 1600px; margin: 0 auto; }
 .sidebar { position: sticky; top: 76px; height: calc(100vh - 76px); display: flex; flex-direction: column; padding: 1.7rem 1rem 1.2rem; color: #dfe9e1; background: var(--forest); }
-.sidebar nav { display: flex; flex-direction: column; gap: .25rem; }
+/* The sidebar is a fixed-height flex column, so the nav must be allowed to
+   shrink (min-height: 0) and scroll. Without this, a workspace with enough
+   tools pushes its last items past the bottom edge with no way to reach them
+   on a short screen. */
+.sidebar nav { display: flex; flex-direction: column; gap: .25rem; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
 .nav-heading { margin: 0 .8rem .65rem; color: #71897a; font-size: .64rem; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
 .nav-heading--server { overflow: hidden; margin-top: 1.35rem; color: #9eb0a3; font-size: .72rem; letter-spacing: .02em; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
 .sidebar nav a, .sidebar nav .nav-disabled { position: relative; display: grid; grid-template-columns: 1.25rem minmax(0,1fr) auto; align-items: center; gap: .75rem; min-height: 2.7rem; padding: .62rem .78rem; border-radius: 10px; color: #9eb0a3; font-size: .84rem; font-weight: 650; text-decoration: none; transition: background .15s ease, color .15s ease; }
@@ -144,7 +148,7 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
 .sidebar nav small { padding: .15rem .35rem; border: 1px solid rgba(255,255,255,.1); border-radius: 5px; color: #71897a; font-size: .52rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .sidebar nav .nav-count { min-width: 1.25rem; margin-left: auto; color: #eaf5ed; background: var(--danger); border-color: transparent; text-align: center; }
 .sidebar-scroll-hint { display: none; }
-.privacy-card { display: flex; align-items: flex-start; gap: .7rem; margin-top: auto; padding: .85rem; border: 1px solid rgba(255,255,255,.07); border-radius: 12px; background: rgba(255,255,255,.035); }
+.privacy-card { display: flex; flex-shrink: 0; align-items: flex-start; gap: .7rem; margin-top: auto; padding: .85rem; border: 1px solid rgba(255,255,255,.07); border-radius: 12px; background: rgba(255,255,255,.035); }
 .privacy-card__icon { color: #77ad8a; font-size: .55rem; padding-top: .25rem; }
 .privacy-card strong, .privacy-card small { display: block; }
 .privacy-card strong { font-size: .72rem; }

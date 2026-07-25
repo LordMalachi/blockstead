@@ -230,6 +230,54 @@ def test_an_unorderable_upgrade_comparison_blocks_rather_than_guesses() -> None:
     assert finding(plan, "upgrade-target").status == "blocked"
 
 
+def test_the_plan_id_changes_when_any_finding_outcome_changes() -> None:
+    """The stale-plan guard is only trustworthy if it covers every finding."""
+
+    baseline = plan_for("world_files").plan_id
+    changed = {
+        # disk space: enough room, then not enough
+        "disk": plan_for("world_files", disk_free_bytes=1 * GIB, world_size_bytes=40 * GIB),
+        # connected players: nobody, then three
+        "players": plan_for(
+            "world_files", state="RUNNING", selected_server_active=True, online_players=3
+        ),
+        # pending restart
+        "restart": plan_for(
+            "world_files",
+            state="RUNNING",
+            selected_server_active=True,
+            online_players=0,
+            pending_restart=True,
+            pending_restart_detail="A saved change is waiting.",
+        ),
+        # a scheduled operation that would collide
+        "schedule": plan_for(
+            "world_files",
+            next_operation_label="Maintenance stop",
+            next_operation_at=NOW + timedelta(minutes=20),
+        ),
+        # a flagged extension
+        "extensions": plan_for("world_files", extension_warnings=("A mod looks incompatible.",)),
+        # another server holding the process
+        "occupied": plan_for("world_files", occupied_by="Creative build"),
+        # an unmeasurable world
+        "world": plan_for("world_files", world_size_bytes=None),
+    }
+    for name, plan in changed.items():
+        assert plan.plan_id != baseline, f"{name} did not change the plan id"
+    # Distinct evidence changes stay distinct from each other too.
+    assert len({plan.plan_id for plan in changed.values()}) == len(changed)
+
+
+def test_the_plan_id_survives_harmless_drift_while_the_owner_reads_it() -> None:
+    """Outcomes are hashed, not raw readings, so a plan is not stale in seconds."""
+
+    baseline = plan_for("world_files").plan_id
+    # Free space moved by a few hundred megabytes; every finding says the same thing.
+    assert plan_for("world_files", disk_free_bytes=199 * GIB).plan_id == baseline
+    assert plan_for("world_files", now=NOW + timedelta(minutes=3)).plan_id == baseline
+
+
 def test_the_upgrade_target_is_part_of_the_reviewed_evidence() -> None:
     base = dict(
         upgrade_source_available=True,
@@ -260,6 +308,27 @@ def test_a_disk_that_cannot_hold_a_backup_blocks_the_change() -> None:
     plan = plan_for("extension_install", disk_free_bytes=1 * GIB, world_size_bytes=40 * GIB)
     assert plan.readiness == "blocked"
     assert finding(plan, "disk-space").status == "blocked"
+
+
+def test_a_change_that_needs_no_world_backup_is_not_blocked_by_backup_space() -> None:
+    """The guided settings editor snapshots one small file, not the world."""
+
+    plan = plan_for("settings_change", disk_free_bytes=1 * GIB, world_size_bytes=40 * GIB)
+    assert plan.readiness != "blocked"
+    disk = finding(plan, "disk-space")
+    assert disk.status == "attention"
+    assert "does not need a world backup" in disk.detail
+    # The same shortage still stops a change whose plan requires a fresh backup.
+    assert plan_for(
+        "world_files", disk_free_bytes=1 * GIB, world_size_bytes=40 * GIB
+    ).readiness == "blocked"
+
+
+def test_an_unmeasurable_world_only_warns_when_a_backup_is_required() -> None:
+    risky = plan_for("world_files", world_size_bytes=None)
+    reversible = plan_for("settings_change", world_size_bytes=None)
+    assert finding(risky, "disk-space").status == "unknown"
+    assert finding(reversible, "disk-space").status == "info"
 
 
 def test_an_unmeasurable_world_is_reported_as_unknown() -> None:

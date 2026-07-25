@@ -477,26 +477,40 @@ def _protection_finding(
     )
 
 
-def _disk_finding(context: MaintenanceContext) -> MaintenanceFinding:
+def _disk_finding(context: MaintenanceContext, change: ChangeDefinition) -> MaintenanceFinding:
     label = "Disk space for a backup"
+    # Only a change whose plan requires a fresh world backup can be stopped by
+    # the room that backup needs. The guided settings editor writes a small file
+    # snapshot instead, so a full disk is worth saying out loud but must not
+    # hide an otherwise safe plan.
+    backup_required = change.destructive or change.version_changing
     if context.world_size_bytes is None:
         return _finding(
             "disk-space",
             label,
-            "unknown",
+            "unknown" if backup_required else "info",
             "Blockstead could not measure this world, so it cannot say whether a "
             f"backup fits in the {_gib(context.disk_free_bytes)} free on the data disk.",
-            "Check free space yourself before creating the pre-change backup.",
+            "Check free space yourself before creating the pre-change backup."
+            if backup_required
+            else None,
         )
     needed = int(context.world_size_bytes * ARCHIVE_SIZE_FACTOR) + BACKUP_OVERHEAD_BYTES
     if context.disk_free_bytes < needed:
         return _finding(
             "disk-space",
             label,
-            "blocked",
+            "blocked" if backup_required else "attention",
             f"A backup of this world needs about {_gib(needed)}, and only "
-            f"{_gib(context.disk_free_bytes)} is free on the data disk.",
-            "Free disk space or remove old backups before making this change.",
+            f"{_gib(context.disk_free_bytes)} is free on the data disk."
+            + (
+                ""
+                if backup_required
+                else " This change does not need a world backup, so it is not blocked by that."
+            ),
+            "Free disk space or remove old backups before making this change."
+            if backup_required
+            else "Free disk space before the next change that does need a world backup.",
         )
     if context.disk_free_bytes < needed * 2:
         return _finding(
@@ -827,11 +841,22 @@ def _restart_detail(change: ChangeDefinition, running: bool) -> str:
     )
 
 
-def _fingerprint(context: MaintenanceContext, change: ChangeDefinition) -> str:
-    """Identify the evidence this review was based on.
+def _fingerprint(
+    context: MaintenanceContext,
+    change: ChangeDefinition,
+    findings: list[MaintenanceFinding],
+    steps: list[PlanStep],
+) -> str:
+    """Identify the evidence this review was based on, and the answer it gave.
 
     A schedule built from a reviewed plan carries this value so a plan whose
     evidence has since changed can be recognized instead of silently reused.
+
+    Every finding's outcome and every step's requirement are folded in. That is
+    what makes the guard trustworthy: a disk-full review and a later clear one
+    cannot share an id. Outcomes are hashed rather than the raw readings behind
+    them, so ordinary drift - a few megabytes of free space, a player leaving
+    and rejoining - does not make a plan stale while it is still being read.
     """
 
     parts = [
@@ -848,9 +873,14 @@ def _fingerprint(context: MaintenanceContext, change: ChangeDefinition) -> str:
         # A plan reviewed against one upgrade target must not be reused once a
         # different release becomes the newest one.
         context.upgrade_target or "",
+        context.occupied_by or "",
         *context.extension_signature,
+        *(f"{finding.id}={finding.status}" for finding in findings),
+        *(f"{step.id}={step.requirement}" for step in steps),
     ]
-    return sha256("".join(parts).encode("utf-8")).hexdigest()[:16]
+    # A separator no field can contain keeps neighbouring values from running
+    # together into the same digest input.
+    return sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
 def assess(context: MaintenanceContext, request: MaintenanceRequest) -> MaintenancePlan:
@@ -863,7 +893,7 @@ def assess(context: MaintenanceContext, request: MaintenanceRequest) -> Maintena
     ]
     protection_finding, protection = _protection_finding(context, change)
     findings.append(protection_finding)
-    findings.append(_disk_finding(context))
+    findings.append(_disk_finding(context, change))
     findings.append(_pending_restart_finding(context))
     if change.id == "server_upgrade":
         findings.append(_upgrade_target_finding(context))
@@ -889,7 +919,7 @@ def assess(context: MaintenanceContext, request: MaintenanceRequest) -> Maintena
     steps = _steps(context, change, findings, protection)
     headline, detail = _summary(context, change, readiness, findings)
     return MaintenancePlan(
-        plan_id=_fingerprint(context, change),
+        plan_id=_fingerprint(context, change, findings, steps),
         profile_id=context.profile_id,
         change=change,
         readiness=readiness,

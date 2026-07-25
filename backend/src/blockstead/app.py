@@ -181,6 +181,7 @@ from .overview import (
     join_details,
     minecraft_status,
     read_properties,
+    strict_world_size,
     world_size,
 )
 from .player_sessions import (
@@ -3625,7 +3626,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 last_backup=backup,
                 disk_free_bytes=int(disk.free),
                 disk_total_bytes=int(disk.total),
-                world_size_bytes=world_size(directory, properties),
+                world_size_bytes=strict_world_size(directory, properties),
                 extension_signature=signature,
                 extension_warnings=warnings,
                 required_java_major=required,
