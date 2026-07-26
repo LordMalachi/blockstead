@@ -161,6 +161,13 @@ const booking: MaintenanceBooking = {
   backup_before_stop: true,
   detail: "Blockstead will stop Homestead at 2026-07-25T02:00 after a verified backup.",
 };
+const appliedUpgrade = {
+  minecraft_version: "1.21.6",
+  loader_version: null,
+  recovery_id: "abcdef1234567890abcdef12",
+  restart_required: true as const,
+  detail: "Homestead now uses 1.21.6. The previous launch file is preserved.",
+};
 
 function respond(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -178,6 +185,8 @@ function renderPanel({
   vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
     if (url.includes("/maintenance/preflight")) return Promise.resolve(respond(plan));
     if (url.includes("/maintenance/schedule")) return Promise.resolve(scheduleResponse());
+    if (url.includes("/maintenance/upgrades/apply")) return Promise.resolve(respond(appliedUpgrade));
+    if (url.includes("/maintenance/upgrades/recovery")) return Promise.resolve(respond({ detail: "The previous launch file was restored. The world was not rolled back." }));
     if (url.includes("/maintenance/upgrades")) return Promise.resolve(respond(review));
     return Promise.resolve(respond(catalog));
   }));
@@ -294,6 +303,36 @@ test("a server on the newest release is told so instead of being offered an upgr
 
   expect(await screen.findByText(/newest published Vanilla Minecraft release/)).toBeVisible();
   expect(screen.queryByRole("list", { name: "Newer published releases" })).toBeNull();
+});
+
+test("applies a reviewed upgrade only with fresh verified protection and offers recovery", async () => {
+  const upgradePlan: MaintenancePlan = {
+    ...readyPlan,
+    plan_id: "1234567890abcdef",
+    change: catalog.changes[1],
+    readiness: "ready",
+    protection: {
+      verified: true,
+      detail: "Fresh verified backup.",
+      backup_id: "backup-1",
+      created_at: "2026-07-26T12:00:00Z",
+      age_hours: 1,
+    },
+  };
+  renderPanel({ plan: upgradePlan });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Run the preflight" }));
+
+  fireEvent.click(await screen.findByRole("button", { name: "Upgrade to 1.21.6" }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/upgrades/apply",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ minecraft_version: "1.21.6", plan_id: "1234567890abcdef" }),
+    }),
+  ));
+  expect(await screen.findByText(/previous launch file is preserved/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Restore previous launch file" })).toBeVisible();
 });
 
 test("a reviewed plan can be booked as a maintenance window", async () => {

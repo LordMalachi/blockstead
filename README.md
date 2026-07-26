@@ -59,10 +59,11 @@ Blockstead manages the process around them.
   categories, and sort orders; then install a checksum-verified release when
   the server is safely stopped. A one-click vanilla switch parks every
   extension without deleting anything, ready for the next game night
-- checks installed plugins and mods for newer releases listed for that setup and updates
-  the changed file with any newly required Modrinth dependencies once the full
-  verified set is ready; changes promote as one transaction, so a failed file
-  move restores the prior loadout instead of leaving mixed versions behind
+- checks installed plugins and mods for newer releases listed for that setup,
+  then reviews the exact version, files, dependencies, Java requirement,
+  restart impact, and fresh backup before applying anything. The full verified
+  set promotes as one transaction, the replaced jar stays in a private recovery
+  bundle, and Undo refuses to overwrite files changed after the update
 - separates a detected LAN address from public reachability: it checks the
   current public IP at the overview, never treats a configured or dashboard
   address as public, and opens connection help when it cannot verify the route
@@ -77,6 +78,11 @@ Blockstead manages the process around them.
   the plan looks right you can book a maintenance window straight from it —
   Blockstead re-checks the evidence at booking time and refuses a plan that has
   gone stale rather than scheduling it quietly
+- applies a reviewed Vanilla, Paper, or Fabric upgrade only while the server is
+  stopped and a fresh verified backup exists; the official replacement is
+  staged and launch-checked, the previous launch file is retained for explicit
+  recovery, and Blockstead never pretends that restoring a jar also rolls back
+  or repairs the world
 - creates private, verified manual and scheduled world backups, keeps a clear
   per-server history, lets you save a portable copy when you need one, and can
   mirror successful archives to approved folders on another drive
@@ -257,9 +263,13 @@ playing. Search the catalog, compare projects, and use the version picker at
 any time. Blockstead matches what it shows to the server's Minecraft version
 and loader. When you are ready to install, update, upload, enable, disable, or
 remove a jar, stop the server first — the page explains why and unlocks the
-change controls once Minecraft is fully stopped. Disabling keeps a file handy
-for later; removing it deletes that file after one last confirmation. After a
-change, start the server and give the first few console lines a quick look.
+change controls once Minecraft is fully stopped. Updating first shows the exact
+replacement and dependency files, Java and restart impact, and fresh backup
+status. A successful update keeps the replaced jar in a private recovery bundle
+and offers Undo while the newly installed files remain unchanged. Disabling
+keeps a file handy for later; removing it deletes that file after one last
+confirmation. After a change, start the server and give the first few console
+lines a quick look.
 
 The **Backup Center** is your world safety net. **Back up now** makes a private,
 checksum-verified restore point; it does not ask you to pick a download folder.

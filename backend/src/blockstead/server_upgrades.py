@@ -17,10 +17,11 @@ from pydantic import BaseModel, Field
 
 from .distributions import DISTRIBUTIONS, required_java_major
 
-# Distributions whose upgrade is one published, checksum-verified server jar
-# that replaces the previous one. Loader distributions install many files
-# through their own installer, so an in-place upgrade is not offered yet.
-IN_PLACE_DISTRIBUTIONS = frozenset({"vanilla", "paper"})
+# Distributions whose upgrade has one bounded launch artifact. Vanilla and
+# Paper publish a server jar; Fabric publishes its official launcher for a
+# selected Minecraft/loader pair. The remaining loader installers rewrite a
+# multi-file library tree and stay discovery-only.
+IN_PLACE_DISTRIBUTIONS = frozenset({"vanilla", "paper", "fabric"})
 
 UpgradeStep = Literal["patch", "minor", "major", "unknown"]
 SourceState = Literal["available", "unavailable", "not_supported"]
@@ -257,8 +258,8 @@ def _candidate(
         detail = _java_detail(required, available)
     else:
         detail = (
-            f"A {step} step from {current}. Blockstead can download and verify this "
-            "release for a stopped server."
+            f"A {step} step from {current}. Blockstead can stage the official "
+            "release for a stopped server and preserve the current launch file."
         )
     return UpgradeCandidate(
         minecraft_version=version,
@@ -275,9 +276,9 @@ def _install_detail(context: UpgradeContext, label: str, installable_here: bool)
         return "The practice server is not upgraded; it has no real Minecraft files."
     if installable_here:
         return (
-            f"A {label} upgrade replaces one published, checksum-verified server jar. "
-            "Blockstead keeps the previous jar so the change can be undone, and only "
-            "runs against a stopped server."
+            f"A {label} upgrade replaces one bounded launch artifact from the official "
+            "distribution source. Blockstead keeps the previous launch file so the "
+            "change can be undone, and only runs against a stopped server."
         )
     if context.distribution in DISTRIBUTIONS and context.distribution != "unknown":
         return (

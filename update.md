@@ -43,7 +43,7 @@ remain available without dominating normal server care.
 | 6. Activity and notifications | Complete | Human-readable audit history, local operational alerts, and event-focused support reports |
 | 7. Safe file workspace | Complete | Category-scoped browsing, editing, uploads, downloads, and archive extraction with recovery snapshots |
 | 8. Player and mobile improvements | Complete | Merged player roster with best-effort session history, search, filters, opt-in avatars, quicker actions, PWA installability, and clearer mobile navigation |
-| 9. Maintenance and Upgrade Center | In progress | A backed-up, compatibility-aware way to review and apply server, loader, and extension changes; the preflight and reviewed plan are shipped |
+| 9. Maintenance and Upgrade Center | Complete | Reviewed extension updates with retained rollback bundles plus stopped-server Vanilla, Paper, and Fabric upgrades that preserve the prior launch artifact |
 | 10. World Care and performance insight | Planned | Honest performance evidence, safe world/storage care, and recovery cleanup |
 | 11. Calm daily operations | Planned | A task-first daily summary and incident story that connect the evidence already collected |
 | 12. Saved setups and trusted connections | Deferred | Explicit profile switching plus narrowly scoped sharing and notifications, after the local workflows are proven |
@@ -57,9 +57,10 @@ and scheduling workspaces, extensions and modpacks, account recovery,
 diagnostics, in-app help, and Linux Mint installation and upkeep. See
 [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
-Milestone 8 is complete and Milestone 9 is under way: the maintenance preflight
-and the reviewed change plan are shipped, and guided execution plus upgrade
-discovery are the remaining slices. The later milestones below are ordered so that
+Milestone 9 is complete: maintenance preflight, reviewed change plans, exact
+extension-update impact reviews, retained rollback bundles, official upgrade
+discovery, reviewed window booking, and bounded Vanilla, Paper, and Fabric
+upgrade execution are shipped. The later milestones below are ordered so that
 Blockstead improves the confidence of everyday care before it adds optional
 sharing or integrations. The two
 remaining shared-map refinements are tracked separately below.
@@ -102,6 +103,16 @@ Blockstead already provides:
   restart, compatibility limits, and colliding automation, presented as one
   ordered plan with a required protection step for any destructive or
   version-changing change and an explicit stop and restart expectation.
+- an extension-update review that names the old and new release, every file and
+  newly required dependency, the server's Java requirement, restart impact, and
+  retained private recovery bundle before confirmation; applying it rechecks
+  both the extension plan and maintenance evidence, requires a fresh verified
+  world backup, and offers an explicit undo while the new files remain unchanged;
+- stopped-server Vanilla, Paper, and Fabric upgrades from official distribution
+  sources after a reviewed preflight and fresh verified backup. Blockstead
+  stages the replacement, preserves the prior launch artifact, validates the
+  resulting launch plan, and offers explicit launch-file recovery without ever
+  claiming that a world downgrade is safe.
 
 The main limitations to address are:
 
@@ -394,10 +405,12 @@ questions.
 
 ## Milestone 9: Maintenance and Upgrade Center
 
-**Status: In progress** — the preflight, the reviewed plan, upgrade discovery,
-and booking a window from a reviewed plan are complete and shipped as the
-Maintenance workspace. The per-extension update review and applying a server
-or loader upgrade in place are the remaining slices.
+**Status: Complete** — the preflight, reviewed plan, upgrade discovery,
+reviewed-window booking, detailed extension update review and rollback, and
+bounded in-place Vanilla, Paper, and Fabric upgrade execution are shipped.
+Forge, Quilt, and NeoForge releases remain visible but are deliberately not
+offered through this path because their installers rewrite a multi-file library
+tree that does not yet meet the same bounded rollback guarantee.
 
 ### Why
 
@@ -421,9 +434,9 @@ extension, and schedule capabilities into one reversible maintenance workflow.
       creation already uses; an unreachable source reads as "could not check",
       never as "up to date", and a release Blockstead cannot install in place
       is labelled as exactly that.
-- [ ] Show a version, Java-requirement, file, dependency, and restart-impact
+- [x] Show a version, Java-requirement, file, dependency, and restart-impact
       review for extension updates; retain a per-change rollback path.
-- [ ] Make server/loader upgrades opt-in and stopped-server-only; preserve the
+- [x] Make supported server/loader upgrades opt-in and stopped-server-only; preserve the
       prior launch target and never automatically roll a world back.
 - [x] Record every preflight finding, owner decision, step result, and recovery
       action in Activity and in the downloadable support report. Preflight
@@ -588,6 +601,28 @@ Before marking any milestone complete:
 - [ ] The progress summary and progress log below are updated.
 
 ## Progress log
+
+- **2026-07-26 — Maintenance and Upgrade Center complete.** Closed Milestone 9
+  with the two execution boundaries that remained after preflight and booking.
+  A recognized Modrinth update now opens an exact review before any write:
+  installed and target versions, replacement jar, required dependency files,
+  Minecraft/loader scope, Java requirement, restart impact, fresh verified
+  world protection, and the rollback promise. Apply re-resolves and
+  fingerprints both the file plan and maintenance evidence, refuses a running
+  server or stale review, promotes the checksum-verified dependency set as one
+  transaction, and retains the replaced jar in a private per-change recovery
+  bundle. Undo verifies that every newly installed file is still unchanged
+  before restoring the old loadout and never touches world data.
+  Vanilla, Paper, and Fabric profiles now offer an explicit stopped-server
+  upgrade after the newest official release, Java runtime, preflight, and fresh
+  verified backup all agree. The replacement is downloaded into private
+  same-filesystem staging, the active launch artifact is preserved, and the
+  new launch plan is validated before the profile version advances. An
+  explicit recovery action restores that artifact only while the current file
+  still matches the upgrade record; it warns that the world is not downgraded.
+  Forge, Quilt, and NeoForge remain honest discovery-only results because their
+  installers rewrite a multi-file library tree rather than one bounded launch
+  artifact.
 
 - **2026-07-23 — Player and mobile improvements complete.** Closed
   Milestone 8. The Players page is now a merged roster: allowlist, operator,

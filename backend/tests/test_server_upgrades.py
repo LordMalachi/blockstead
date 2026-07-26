@@ -90,8 +90,8 @@ def test_unorderable_published_entries_are_disclosed_not_silently_dropped() -> N
     assert "2 published entries could not be ordered" in result.warnings[0]
 
 
-def test_a_loader_distribution_sees_releases_but_is_not_installable_in_place() -> None:
-    result = review(context(distribution="fabric"))
+def test_a_multi_file_loader_sees_releases_but_is_not_installable_in_place() -> None:
+    result = review(context(distribution="forge"))
     assert result.installable_here is False
     assert result.candidates
     assert all(not item.installable for item in result.candidates)
@@ -99,10 +99,11 @@ def test_a_loader_distribution_sees_releases_but_is_not_installable_in_place() -
     assert "re-import the folder" in result.install_detail
 
 
-def test_paper_and_vanilla_are_the_in_place_upgrade_paths() -> None:
+def test_direct_launch_artifact_distributions_are_the_in_place_upgrade_paths() -> None:
     assert review(context(distribution="vanilla")).installable_here is True
     assert review(context(distribution="paper")).installable_here is True
-    for distribution in ("fabric", "forge", "quilt", "neoforge", "unknown"):
+    assert review(context(distribution="fabric")).installable_here is True
+    for distribution in ("forge", "quilt", "neoforge", "unknown"):
         assert review(context(distribution=distribution)).installable_here is False
 
 

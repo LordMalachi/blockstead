@@ -254,6 +254,49 @@ export interface PrerequisitesView { distribution: string; label: string; minecr
 export interface ExtensionEntry { file_name: string; size_bytes: number; sha256: string | null; sha512?: string | null; kind: "paper-plugin" | "fabric-mod" | "quilt-mod" | "neoforge-mod" | "forge-mod" | "unknown"; loaders: string[]; identifier: string | null; display_name: string | null; version: string | null; minecraft_constraint: string | null; environment: string | null; dependencies: string[]; readable: boolean }
 export interface ExtensionUpdate { file_name: string; installed_version: string | null; new_version_number: string | null; new_file_name: string; project_id: string; version_id: string }
 export interface ExtensionUpdates { updates: ExtensionUpdate[]; up_to_date: number; unknown: string[]; checked: number }
+export interface ExtensionUpdateReviewFile {
+  file_name: string;
+  version_number: string | null;
+  role: "replacement" | "dependency";
+  action: "replace" | "install" | "already_present";
+  required_by: string | null;
+}
+export interface ExtensionUpdateReview {
+  review_id: string;
+  file_name: string;
+  installed_version: string | null;
+  new_file_name: string;
+  new_version_number: string | null;
+  project_id: string;
+  version_id: string;
+  minecraft_version: string | null;
+  distribution: string;
+  required_java_major: number | null;
+  files: ExtensionUpdateReviewFile[];
+  dependencies: string[];
+  restart_required: true;
+  rollback_detail: string;
+}
+export interface ExtensionUpdateReviewResponse {
+  review: ExtensionUpdateReview;
+  maintenance_plan: MaintenancePlan;
+}
+export interface ExtensionUpdateResult {
+  file_name: string;
+  replaced: string;
+  version_number: string | null;
+  dependencies_installed: string[];
+  recovery_id: string;
+  rollback_detail: string;
+  restart_required: true;
+}
+export interface ServerUpgradeResult {
+  minecraft_version: string | null;
+  loader_version: string | null;
+  recovery_id: string;
+  restart_required: true;
+  detail: string;
+}
 export interface ExtensionWarning { code: string; message: string; files: string[] }
 export interface ExtensionsView { directory: string | null; present: boolean; entries: ExtensionEntry[]; disabled_entries: ExtensionEntry[]; warnings: ExtensionWarning[]; truncated: boolean }
 export interface SharedMapView { config_present: boolean; config_path: string | null; internal_webserver_enabled: boolean; bind: string; port: number; problem: string | null }

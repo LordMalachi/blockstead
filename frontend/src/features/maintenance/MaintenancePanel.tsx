@@ -8,6 +8,7 @@ import {
   type MaintenanceCatalog,
   type MaintenanceChangeId,
   type MaintenancePlan,
+  type ServerUpgradeResult,
   type UpgradeReview,
 } from "../../api/client";
 import { Button } from "../../components/Button";
@@ -64,6 +65,8 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
   const [booking, setBooking] = useState<MaintenanceBooking | null>(null);
   const [staleNotice, setStaleNotice] = useState("");
   const [freshPlan, setFreshPlan] = useState<MaintenancePlan | null>(null);
+  const [appliedUpgrade, setAppliedUpgrade] = useState<ServerUpgradeResult | null>(null);
+  const [recoveryNotice, setRecoveryNotice] = useState("");
 
   const catalog = useQuery({
     queryKey: ["maintenance-changes"],
@@ -82,6 +85,8 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
     setBooking(null);
     setStaleNotice("");
     setFreshPlan(null);
+    setAppliedUpgrade(null);
+    setRecoveryNotice("");
   }
 
   const preflight = useMutation({
@@ -123,6 +128,32 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
         setFreshPlan(body.plan);
         setStaleNotice(error.message);
       }
+    },
+  });
+  const applyUpgrade = useMutation({
+    mutationFn: (input: { version: string; planId: string }) =>
+      api<ServerUpgradeResult>(`/profiles/${profileId}/maintenance/upgrades/apply`, {
+        method: "POST",
+        body: JSON.stringify({
+          minecraft_version: input.version,
+          plan_id: input.planId,
+        }),
+      }),
+    onSuccess: result => {
+      setAppliedUpgrade(result);
+      setRecoveryNotice("");
+      void client.invalidateQueries();
+    },
+  });
+  const rollbackUpgrade = useMutation({
+    mutationFn: (recoveryId: string) =>
+      api<{ detail: string }>(`/profiles/${profileId}/maintenance/upgrades/recovery/${recoveryId}`, {
+        method: "POST",
+      }),
+    onSuccess: result => {
+      setAppliedUpgrade(null);
+      setRecoveryNotice(result.detail);
+      void client.invalidateQueries();
     },
   });
 
@@ -238,6 +269,39 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
           <h3>Stop and restart expectation</h3>
           <p>{plan.restart_detail}</p>
         </div>
+
+        {plan.change.id === "server_upgrade" && upgrades.data?.candidates[0]?.installable && <div className="maintenance-apply">
+          <h3>Apply the reviewed upgrade</h3>
+          <p>Blockstead will replace only the stopped server’s active launch file, then validate its launch plan. The previous launch file is retained. The world is never rolled back automatically.</p>
+          {plan.protection.verified && (plan.protection.age_hours ?? 25) <= 24
+            ? <p className="success">The required fresh protection point verifies.</p>
+            : <p className="warning">Create a fresh verified backup and run this preflight again before applying the upgrade.</p>}
+          <div className="maintenance-actions">
+            {(!plan.protection.verified || (plan.protection.age_hours ?? 25) > 24) && <Link className="button button--secondary" to={`/servers/${profileId}/backups`}>Create a backup</Link>}
+            <Button
+              disabled={applyUpgrade.isPending || !plan.protection.verified || (plan.protection.age_hours ?? 25) > 24}
+              onClick={() => applyUpgrade.mutate({
+                version: upgrades.data.candidates[0].minecraft_version,
+                planId: plan.plan_id,
+              })}
+            >
+              {applyUpgrade.isPending ? "Applying and validating…" : `Upgrade to ${upgrades.data.candidates[0].minecraft_version}`}
+            </Button>
+          </div>
+          {applyUpgrade.error && <p className="error" role="alert">{applyUpgrade.error.message}</p>}
+          {appliedUpgrade && <div className="maintenance-recovery" role="status">
+            <p>{appliedUpgrade.detail}</p>
+            <Button
+              className="button--secondary"
+              disabled={rollbackUpgrade.isPending}
+              onClick={() => rollbackUpgrade.mutate(appliedUpgrade.recovery_id)}
+            >
+              {rollbackUpgrade.isPending ? "Restoring launch file…" : "Restore previous launch file"}
+            </Button>
+          </div>}
+          {rollbackUpgrade.error && <p className="error" role="alert">{rollbackUpgrade.error.message}</p>}
+          {recoveryNotice && <p className="success" role="status">{recoveryNotice}</p>}
+        </div>}
 
         <div className="maintenance-booking">
           <h3>Book a window for this plan</h3>

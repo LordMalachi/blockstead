@@ -53,11 +53,12 @@
 Backups and staged restore, real Java launch plans, guided settings, diagnostics,
 scheduling, extensions, automation, and the profile-aware Activity workspace are
 complete, as are the safe file workspace and the player and mobile
-improvements. The Maintenance and Upgrade Center is under way: its preflight
-and reviewed change plan compose the existing backup, compatibility,
-extension, scheduling, and activity boundaries into one read-only review, and
-guided execution plus server and loader upgrade discovery follow. Until an
-upgrade source can be verified, an upgrade is reported as blocked rather than
+improvements. The Maintenance and Upgrade Center is complete: its preflight,
+reviewed plan, exact extension-update impact review and rollback, reviewed
+window booking, and bounded Vanilla, Paper, and Fabric upgrade execution
+compose the existing backup, compatibility, extension, scheduling, and
+activity boundaries into one reversible workflow. Until a source and rollback
+boundary can be verified, an upgrade is reported as blocked rather than
 offered. World-care/performance insight and calm daily-operation refinements
 follow; saved setups, helper access, and outbound notifications remain deferred
 until those local workflows have been proven in normal use. The detailed

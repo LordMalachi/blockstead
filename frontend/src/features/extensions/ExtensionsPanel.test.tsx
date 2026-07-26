@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { vi } from "vitest";
 import { ExtensionsPanel } from "./ExtensionsPanel";
 import type { ExtensionsView } from "../../api/client";
@@ -31,6 +32,52 @@ const updatesResponse = {
   unknown: [],
   checked: 1,
 };
+const updateReview = {
+  review: {
+    review_id: "1234567890abcdef",
+    file_name: "lithium.jar",
+    installed_version: "1.0",
+    new_file_name: "lithium-2.0.jar",
+    new_version_number: "2.0",
+    project_id: "proj-lithium",
+    version_id: "ver-2",
+    minecraft_version: "1.21.1",
+    distribution: "fabric",
+    required_java_major: 21,
+    files: [
+      { file_name: "lithium-2.0.jar", version_number: "2.0", role: "replacement", action: "replace", required_by: null },
+      { file_name: "fabric-api.jar", version_number: "1.0", role: "dependency", action: "install", required_by: "lithium-2.0.jar" },
+    ],
+    dependencies: ["fabric-api.jar"],
+    restart_required: true,
+    rollback_detail: "Blockstead keeps the exact replaced jar in a private recovery bundle.",
+  },
+  maintenance_plan: {
+    catalog_version: "2026.07.1",
+    plan_id: "fedcba0987654321",
+    profile_id: "profile-1",
+    change: { id: "extension_update", title: "Update installed mods or plugins", summary: "", workspace: "mods", requires_stopped_server: true, version_changing: true, destructive: false, restart_expectation: "required", checks: [] },
+    readiness: "ready",
+    headline: "Safe",
+    detail: "Safe",
+    findings: [],
+    steps: [],
+    protection: { verified: true, detail: "Fresh backup", backup_id: "backup-1", created_at: "2026-07-26T12:00:00Z", age_hours: 1 },
+    restart: "required",
+    restart_detail: "Restart required",
+    blockers: [],
+    reviewed_at: "2026-07-26T13:00:00Z",
+  },
+};
+const appliedUpdate = {
+  file_name: "lithium-2.0.jar",
+  replaced: "lithium.jar",
+  version_number: "2.0",
+  dependencies_installed: ["fabric-api.jar"],
+  recovery_id: "abcdef1234567890abcdef12",
+  rollback_detail: updateReview.review.rollback_detail,
+  restart_required: true,
+};
 
 function renderPanel(stopped = true, view: ExtensionsView = inventory) {
   const fetch = vi.fn().mockImplementation((url: string) => {
@@ -38,6 +85,8 @@ function renderPanel(stopped = true, view: ExtensionsView = inventory) {
     const body = target.includes("/catalog/categories") ? { categories: ["optimization", "technology"] }
       : target.includes("/catalog/versions") ? versionList
       : target.includes("/catalog/search") ? searchPage
+      : target.includes("/extensions/update-review") ? updateReview
+      : target.endsWith("/extensions/update") ? appliedUpdate
       : target.includes("/extensions/updates") ? updatesResponse
       : target.includes("/settings/curseforge") ? { configured: false }
       : view;
@@ -45,7 +94,7 @@ function renderPanel(stopped = true, view: ExtensionsView = inventory) {
   });
   vi.stubGlobal("fetch", fetch);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={client}><ExtensionsPanel profileId="profile-1" stopped={stopped} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><MemoryRouter><ExtensionsPanel profileId="profile-1" stopped={stopped} /></MemoryRouter></QueryClientProvider>);
   return fetch;
 }
 
@@ -104,16 +153,33 @@ test("searches with filters, pages results, and installs a chosen version", asyn
   ));
 });
 
-test("checks for updates and applies one through the update endpoint", async () => {
+test("reviews exact update impact before applying it", async () => {
   const fetch = renderPanel();
   fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
   expect(await screen.findByText("1 update available.")).toBeVisible();
 
-  fireEvent.click(screen.getByRole("button", { name: "Update Lithium to 2.0" }));
+  fireEvent.click(screen.getByRole("button", { name: "Review update for Lithium to 2.0" }));
   await waitFor(() => expect(fetch).toHaveBeenCalledWith(
-    "/api/v1/profiles/profile-1/extensions/update",
+    "/api/v1/profiles/profile-1/extensions/update-review",
     expect.objectContaining({ method: "POST", body: JSON.stringify({ file_name: "lithium.jar" }) }),
   ));
+  expect(await screen.findByText(/The server still requires Java 21/)).toBeVisible();
+  expect(screen.getByText("fabric-api.jar")).toBeVisible();
+  expect(screen.getByText(/exact replaced jar/)).toBeVisible();
+
+  fireEvent.click(screen.getByRole("button", { name: "Apply reviewed update" }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/extensions/update",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        file_name: "lithium.jar",
+        review_id: "1234567890abcdef",
+        maintenance_plan_id: "fedcba0987654321",
+      }),
+    }),
+  ));
+  expect(await screen.findByRole("button", { name: "Undo this update" })).toBeVisible();
 });
 
 test("offers Hangar only for plugin servers and passes the source through", async () => {

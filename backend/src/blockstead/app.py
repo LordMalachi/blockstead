@@ -30,6 +30,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Scope
@@ -94,7 +95,26 @@ from .extension_ops import (
 from .extension_ops import (
     remove as remove_extension,
 )
-from .extensions import read_extensions
+from .extension_updates import (
+    ExtensionRecoveryError,
+    ExtensionUpdateReview,
+)
+from .extension_updates import (
+    build_review as build_extension_update_review,
+)
+from .extension_updates import (
+    discard_recovery as discard_extension_recovery,
+)
+from .extension_updates import (
+    finalize_recovery as finalize_extension_recovery,
+)
+from .extension_updates import (
+    prepare_recovery as prepare_extension_recovery,
+)
+from .extension_updates import (
+    rollback_update as rollback_extension_update,
+)
+from .extensions import ExtensionEntry, read_extensions
 from .file_paths import CATEGORIES as FILE_CATEGORIES
 from .file_paths import FileCategory, FilePathError
 from .hangar import (
@@ -122,6 +142,7 @@ from .import_scan import (
 )
 from .java_runtime import discover_java_runtimes, find_java
 from .maintenance import (
+    FRESH_PROTECTION_HOURS,
     BackupPoint,
     MaintenanceContext,
     MaintenancePlan,
@@ -198,6 +219,7 @@ from .provisioning import (
     download_verified_file,
     list_versions,
     provision_profile,
+    resolve_plan,
 )
 from .retention import enforce_retention
 from .scheduler import Scheduler, automation_steps, next_executions, parse_weekdays
@@ -224,11 +246,13 @@ from .schemas import (
     ProvisionRequest,
     RawSettingsUpdateRequest,
     ScheduleRequest,
+    ServerUpgradeRequest,
     SettingsUpdateRequest,
     StartRequest,
     ToggleAllRequest,
     ToggleRequest,
     UpdateRequest,
+    UpdateReviewRequest,
 )
 from .security import (
     SESSION_COOKIE,
@@ -282,6 +306,13 @@ from .troubleshooting import (
 )
 from .troubleshooting import (
     catalog as troubleshooting_catalog,
+)
+from .upgrade_ops import (
+    UpgradeOperationError,
+    active_launch_file,
+    create_upgrade_staging,
+    promote_launch_upgrade,
+    rollback_launch_upgrade,
 )
 
 log = logging.getLogger("blockstead.api")
@@ -2365,53 +2396,201 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "checked": len(entries),
         }
 
+    async def reviewed_extension_update(
+        profile: Profile,
+        extension_dir: Path,
+        entry: ExtensionEntry,
+    ) -> tuple[list[PlannedFile], ExtensionUpdateReview]:
+        """Re-resolve one exact update and its dependency closure."""
+
+        assert entry.sha512 is not None
+        try:
+            found = await modrinth_check_updates(
+                http_client,
+                profile.distribution,
+                profile.minecraft_version,
+                [entry.sha512],
+            )
+        except CatalogError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        planned_update = found.get(entry.sha512)
+        if planned_update is None:
+            raise HTTPException(409, "No newer compatible version is known for that file.")
+        try:
+            update_plan = await plan_install(
+                http_client,
+                profile.distribution,
+                profile.minecraft_version,
+                planned_update.project_id,
+                planned_update.version_id,
+            )
+        except CatalogError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if (
+            not update_plan
+            or update_plan[0].project_id != planned_update.project_id
+            or update_plan[0].version_id != planned_update.version_id
+            or update_plan[0].file_name != planned_update.file_name
+            or update_plan[0].checksum_algorithm != planned_update.checksum_algorithm
+            or update_plan[0].checksum != planned_update.checksum
+        ):
+            raise HTTPException(409, "Modrinth returned an unusable extension update plan.")
+        directory = ensure_managed_directory(extension_dir, create=True)
+        verified_existing: set[str] = set()
+        for item in update_plan[1:]:
+            target = directory / item.file_name
+            if (
+                target.is_file()
+                and not target.is_symlink()
+                and item.checksum_algorithm
+                and item.checksum
+                and checksum_matches(
+                    target, item.checksum_algorithm, item.checksum
+                )
+            ):
+                verified_existing.add(item.file_name)
+        try:
+            review = build_extension_update_review(
+                profile_id=profile.id,
+                distribution=profile.distribution,
+                minecraft_version=profile.minecraft_version,
+                required_java=required_java_major(profile.minecraft_version),
+                installed_name=entry.file_name,
+                installed_version=entry.version,
+                installed_sha512=entry.sha512,
+                planned=update_plan,
+                existing_names=frozenset(verified_existing),
+            )
+        except ExtensionRecoveryError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return update_plan, review
+
+    def extension_update_entry(
+        profile_id: str, file_name: str, db: Session
+    ) -> tuple[Profile, Path, ExtensionEntry]:
+        profile, extension_dir = extension_context(profile_id, db)
+        view = read_extensions(profile_directory(profile_id, db), profile.distribution)
+        entry = next((item for item in view.entries if item.file_name == file_name), None)
+        if entry is None or not entry.sha512:
+            raise HTTPException(404, "That file is not in the live extensions folder.")
+        return profile, extension_dir, entry
+
+    @app.post("/api/v1/profiles/{profile_id}/extensions/update-review")
+    async def extension_update_review(
+        profile_id: str,
+        payload: UpdateReviewRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        """Review exact files, dependencies, restart impact, and recovery first."""
+
+        admin = mutation(request, db)
+        profile, extension_dir, entry = extension_update_entry(
+            profile_id, payload.file_name, db
+        )
+        _, review = await reviewed_extension_update(profile, extension_dir, entry)
+        maintenance_plan = await build_maintenance_plan(
+            profile, MaintenanceRequest(change_id="extension_update"), db
+        )
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="maintenance_preflight",
+                result="reviewed",
+                safe_detail=(
+                    f"Reviewed extension update {entry.file_name} -> "
+                    f"{review.new_file_name}; update {review.review_id}; "
+                    f"plan {maintenance_plan.plan_id}"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "review": review.model_dump(),
+            "maintenance_plan": maintenance_plan.model_dump(),
+        }
+
     @app.post("/api/v1/profiles/{profile_id}/extensions/update")
     async def extension_apply_update(
         profile_id: str, payload: UpdateRequest, request: Request, db: Db
     ) -> dict[str, object]:
         admin = mutation(request, db)
         require_server_stopped()
-        profile, extension_dir = extension_context(profile_id, db)
-        view = read_extensions(profile_directory(profile_id, db), profile.distribution)
-        entry = next((item for item in view.entries if item.file_name == payload.file_name), None)
-        if entry is None or not entry.sha512:
-            raise HTTPException(404, "That file is not in the live extensions folder.")
-        try:
-            found = await modrinth_check_updates(
-                http_client, profile.distribution, profile.minecraft_version, [entry.sha512]
+        profile, extension_dir, entry = extension_update_entry(
+            profile_id, payload.file_name, db
+        )
+        update_plan, review = await reviewed_extension_update(profile, extension_dir, entry)
+        if review.review_id != payload.review_id:
+            raise HTTPException(
+                409,
+                "This extension update changed since it was reviewed. Review its files "
+                "and dependencies again before applying it.",
             )
-        except CatalogError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        planned = found.get(entry.sha512)
-        if planned is None:
-            raise HTTPException(409, "No newer compatible version is known for that file.")
+        maintenance_plan = await build_maintenance_plan(
+            profile, MaintenanceRequest(change_id="extension_update"), db
+        )
+        if maintenance_plan.plan_id != payload.maintenance_plan_id:
+            raise HTTPException(
+                409,
+                "This server changed since the maintenance review. Run the extension "
+                "update review again before applying it.",
+            )
+        if (
+            not maintenance_plan.protection.verified
+            or maintenance_plan.protection.age_hours is None
+            or maintenance_plan.protection.age_hours > FRESH_PROTECTION_HOURS
+        ):
+            raise HTTPException(
+                409,
+                "Create a fresh verified backup, then review this extension update again.",
+            )
+        planned = update_plan[0]
         if planned.file_name != entry.file_name and (extension_dir / planned.file_name).exists():
             raise HTTPException(409, "A file with the new version's name already exists.")
+        assert entry.sha512 is not None
+        recovery: Path | None = None
         try:
-            update_plan = await plan_install(
-                http_client,
-                profile.distribution,
-                profile.minecraft_version,
-                planned.project_id,
-                planned.version_id,
+            recovery_id, recovery = prepare_extension_recovery(
+                recovery_root=config.data_dir,
+                profile_id=profile.id,
+                extension_directory=extension_dir,
+                review=review,
+                installed_sha512=entry.sha512,
             )
-        except CatalogError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        if (
-            not update_plan
-            or update_plan[0].project_id != planned.project_id
-            or update_plan[0].version_id != planned.version_id
-            or update_plan[0].file_name != planned.file_name
-            or update_plan[0].checksum_algorithm != planned.checksum_algorithm
-            or update_plan[0].checksum != planned.checksum
-        ):
-            raise HTTPException(409, "Modrinth returned an unusable extension update plan.")
-        installed, _ = await stage_extension_install(
-            extension_dir,
-            update_plan,
-            retire_names=frozenset({entry.file_name}),
-            expected_retired_checksums={entry.file_name: ("sha512", entry.sha512)},
-        )
+            changed_names = {
+                item.file_name for item in review.files if item.action != "already_present"
+            }
+            recovery_files: list[tuple[str, str, str]] = []
+            for item in update_plan:
+                if item.file_name not in changed_names:
+                    continue
+                if not item.checksum_algorithm or not item.checksum:
+                    raise HTTPException(
+                        409,
+                        "The reviewed update lost a required published checksum.",
+                    )
+                recovery_files.append(
+                    (item.file_name, item.checksum_algorithm, item.checksum)
+                )
+            # Persist the exact recovery contract before live promotion. If the
+            # promotion then fails, extension_ops restores the loadout and this
+            # private bundle is discarded.
+            finalize_extension_recovery(recovery, new_files=recovery_files)
+            installed, _ = await stage_extension_install(
+                extension_dir,
+                update_plan,
+                retire_names=frozenset({entry.file_name}),
+                expected_retired_checksums={entry.file_name: ("sha512", entry.sha512)},
+            )
+        except (ExtensionRecoveryError, ExtensionOpsError) as exc:
+            if recovery is not None:
+                discard_extension_recovery(recovery)
+            raise HTTPException(409, str(exc)) from exc
+        except HTTPException:
+            if recovery is not None:
+                discard_extension_recovery(recovery)
+            raise
         sha256 = next(
             (str(item["sha256"]) for item in installed if item["file_name"] == planned.file_name),
             None,
@@ -2424,7 +2603,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 profile_id=profile_id,
                 category="extension_update",
                 result="success",
-                safe_detail=(f"Updated {entry.file_name} to {planned.file_name} (sha256 {sha256})"),
+                safe_detail=(
+                    f"Updated {entry.file_name} to {planned.file_name} "
+                    f"(sha256 {sha256}); recovery {recovery_id}"
+                ),
             )
         )
         db.commit()
@@ -2435,7 +2617,53 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "dependencies_installed": [
                 item["file_name"] for item in installed if item["file_name"] != planned.file_name
             ],
+            "recovery_id": recovery_id,
+            "rollback_detail": review.rollback_detail,
             "restart_required": True,
+        }
+
+    @app.post(
+        "/api/v1/profiles/{profile_id}/extensions/update-recovery/{recovery_id}"
+    )
+    def extension_update_rollback(
+        profile_id: str,
+        recovery_id: str,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        require_server_stopped()
+        profile, extension_dir = extension_context(profile_id, db)
+        try:
+            recovery = rollback_extension_update(
+                recovery_root=config.data_dir,
+                profile_id=profile.id,
+                recovery_id=recovery_id,
+                extension_directory=extension_dir,
+            )
+        except (ExtensionRecoveryError, ExtensionOpsError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        old_name = str(recovery["old_file"])
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="extension_update",
+                result="recovered",
+                safe_detail=(
+                    f"Restored {old_name} from extension recovery {recovery_id}; "
+                    "world data was not changed"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "restored": old_name,
+            "restart_required": True,
+            "detail": (
+                f"Restored {old_name}. Restart the server to load the recovered extension. "
+                "World data was not rolled back."
+            ),
         }
 
     @app.post("/api/v1/profiles/{profile_id}/extensions/toggle-all")
@@ -3481,6 +3709,256 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
         return (await upgrade_review_for(profile)).model_dump()
+
+    @app.post("/api/v1/profiles/{profile_id}/maintenance/upgrades/apply")
+    async def apply_server_upgrade(
+        profile_id: str,
+        payload: ServerUpgradeRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        """Apply one reviewed direct-artifact upgrade to a stopped server."""
+
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        require_server_stopped()
+        fresh = await build_maintenance_plan(
+            profile, MaintenanceRequest(change_id="server_upgrade"), db
+        )
+        if fresh.plan_id != payload.plan_id:
+            raise HTTPException(
+                409,
+                "This server or its published upgrade target changed since the review. "
+                "Run the preflight again before applying an upgrade.",
+            )
+        if fresh.readiness in {"blocked", "not_applicable"}:
+            raise HTTPException(409, fresh.detail)
+        if (
+            not fresh.protection.verified
+            or fresh.protection.age_hours is None
+            or fresh.protection.age_hours > FRESH_PROTECTION_HOURS
+        ):
+            raise HTTPException(
+                409,
+                "Create a fresh verified backup, then run the upgrade preflight again.",
+            )
+        upgrade_review = await upgrade_review_for(profile)
+        newest = upgrade_review.candidates[0] if upgrade_review.candidates else None
+        if (
+            newest is None
+            or not newest.installable
+            or newest.minecraft_version != payload.minecraft_version
+        ):
+            raise HTTPException(
+                409,
+                "That release is no longer the reviewed installable upgrade. "
+                "Read the current release list and run the preflight again.",
+            )
+
+        directory = profile_directory(profile.id, db)
+        staging: Path | None = None
+        recovery_id: str | None = None
+        try:
+            async with update_lock:
+                if update_install_in_progress():
+                    raise HTTPException(
+                        409,
+                        "Blockstead itself is being updated. Upgrade the Minecraft server "
+                        "after that finishes.",
+                    )
+                if profile.id in restoring_profiles:
+                    raise HTTPException(
+                        409, "A restore is in progress for this server. Wait for it to finish."
+                    )
+                pending_backup = db.scalar(
+                    select(BackupRecord).where(
+                        BackupRecord.profile_id == profile.id,
+                        BackupRecord.status == "in_progress",
+                    )
+                )
+                if pending_backup is not None:
+                    raise HTTPException(
+                        409, "A backup is still in progress. Wait for it to finish."
+                    )
+                active = active_launch_file(profile.distribution, directory)
+                plan = await resolve_plan(
+                    http_client, profile.distribution, payload.minecraft_version
+                )
+                if (
+                    profile.distribution in {"vanilla", "paper"}
+                    and (not plan.checksum_algorithm or not plan.checksum)
+                ):
+                    raise HTTPException(
+                        409,
+                        "The official release did not provide the checksum Blockstead "
+                        "requires for an automatic server upgrade.",
+                    )
+                staging = create_upgrade_staging(directory)
+                await download_verified_file(
+                    http_client,
+                    plan.url,
+                    staging,
+                    active.name,
+                    plan.checksum_algorithm,
+                    plan.checksum,
+                )
+                recovery = promote_launch_upgrade(
+                    server_directory=directory,
+                    distribution=profile.distribution,
+                    staged_file=staging / active.name,
+                    recovery_root=config.data_dir,
+                    profile_id=profile.id,
+                    previous_version=profile.minecraft_version,
+                    new_version=plan.minecraft_version,
+                    previous_loader_version=profile.loader_version,
+                    new_loader_version=plan.loader_version,
+                )
+                recovery_id = recovery.recovery_id
+                profile.minecraft_version = plan.minecraft_version
+                if plan.loader_version is not None:
+                    profile.loader_version = plan.loader_version
+                db.add(
+                    AuditEvent(
+                        admin_id=admin.id,
+                        profile_id=profile.id,
+                        category="server_upgrade",
+                        result="success",
+                        safe_detail=(
+                            f"Upgraded {profile.name} to {plan.minecraft_version}; "
+                            f"preserved launch recovery {recovery.recovery_id}; "
+                            "world data was not rolled back"
+                        ),
+                    )
+                )
+                db.commit()
+        except ProvisionError as exc:
+            db.rollback()
+            db.add(
+                AuditEvent(
+                    admin_id=admin.id,
+                    profile_id=profile.id,
+                    category="server_upgrade",
+                    result="failed",
+                    safe_detail=f"Server upgrade failed before activation: {exc}",
+                )
+            )
+            db.commit()
+            raise HTTPException(409, str(exc)) from exc
+        except UpgradeOperationError as exc:
+            db.rollback()
+            db.add(
+                AuditEvent(
+                    admin_id=admin.id,
+                    profile_id=profile.id,
+                    category="server_upgrade",
+                    result="failed",
+                    safe_detail=f"Server upgrade was not activated: {exc}",
+                )
+            )
+            db.commit()
+            raise HTTPException(409, str(exc)) from exc
+        except SQLAlchemyError as exc:
+            db.rollback()
+            recovery_problem: str | None = None
+            if recovery_id is not None:
+                try:
+                    rollback_launch_upgrade(
+                        server_directory=directory,
+                        recovery_root=config.data_dir,
+                        profile_id=profile_id,
+                        recovery_id=recovery_id,
+                        distribution=profile.distribution,
+                    )
+                except UpgradeOperationError as recovery_exc:
+                    recovery_problem = str(recovery_exc)
+            if recovery_problem:
+                raise HTTPException(
+                    500,
+                    "The launch file changed, but Blockstead could not save the new "
+                    "profile version or restore the prior launch file. Leave the server "
+                    f"stopped and inspect its recovery record: {recovery_problem}",
+                ) from exc
+            raise HTTPException(
+                500,
+                "Blockstead could not save the upgraded profile, so the prior launch "
+                "file was restored.",
+            ) from exc
+        finally:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
+
+        assert recovery_id is not None
+        return {
+            "minecraft_version": profile.minecraft_version,
+            "loader_version": profile.loader_version,
+            "recovery_id": recovery_id,
+            "restart_required": True,
+            "detail": (
+                f"{profile.name} now uses {profile.minecraft_version}. The previous "
+                "launch file is preserved for an explicit rollback. Start the server "
+                "when ready and check its console; Blockstead never rolls a world back "
+                "automatically."
+            ),
+        }
+
+    @app.post(
+        "/api/v1/profiles/{profile_id}/maintenance/upgrades/recovery/{recovery_id}"
+    )
+    def rollback_server_upgrade(
+        profile_id: str,
+        recovery_id: str,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        """Explicitly restore a preserved launch file, never the world."""
+
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        require_server_stopped()
+        try:
+            recovered = rollback_launch_upgrade(
+                server_directory=profile_directory(profile.id, db),
+                recovery_root=config.data_dir,
+                profile_id=profile.id,
+                recovery_id=recovery_id,
+                distribution=profile.distribution,
+            )
+        except UpgradeOperationError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        previous_version = recovered.get("previous_version")
+        previous_loader = recovered.get("previous_loader_version")
+        profile.minecraft_version = (
+            previous_version if isinstance(previous_version, str) else None
+        )
+        profile.loader_version = (
+            previous_loader if isinstance(previous_loader, str) else None
+        )
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="server_upgrade",
+                result="recovered",
+                safe_detail=(
+                    f"Restored the prior launch file for {profile.name} from "
+                    f"recovery {recovery_id}; world data was not changed"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "minecraft_version": profile.minecraft_version,
+            "loader_version": profile.loader_version,
+            "restart_required": True,
+            "detail": (
+                "The previous launch file was restored. The world was not rolled back; "
+                "review the distribution's downgrade guidance before starting."
+            ),
+        }
 
     async def build_maintenance_plan(
         profile: Profile, payload: MaintenanceRequest, db: Session

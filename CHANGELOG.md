@@ -26,6 +26,19 @@
   current review attached rather than silently scheduled, and both the booking
   and the refusal are recorded in Activity. A booked window always backs up
   before it stops, and applying the change itself stays the owner's to do.
+- Finish the Maintenance and Upgrade Center with exact extension-update review
+  and recovery. Before confirmation, Blockstead names the installed and target
+  versions, every replacement and required dependency file, the current Java
+  requirement, restart impact, and fresh verified world protection. Apply
+  rechecks both fingerprints, promotes the verified set transactionally, and
+  retains the replaced jar in a private recovery bundle; undo verifies the new
+  files are unchanged and never alters world data.
+- Apply reviewed Vanilla, Paper, and Fabric upgrades to stopped servers. The
+  official replacement is staged, the active launch artifact is preserved, and
+  the resulting launch plan is validated before the recorded version advances.
+  Explicit recovery restores only that artifact and clearly does not claim to
+  downgrade or repair a world. Multi-file Forge, Quilt, and NeoForge installer
+  upgrades remain discovery-only instead of being presented as equally safe.
 
 - Add a deterministic Server Troubleshooting wizard to Help. Owners choose a
   known problem, preview and run read-only profile checks, see confirmed causes

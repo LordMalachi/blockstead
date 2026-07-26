@@ -108,8 +108,20 @@ class ToggleAllRequest(BaseModel):
     enabled: bool
 
 
-class UpdateRequest(BaseModel):
+class UpdateReviewRequest(BaseModel):
     file_name: str = Field(min_length=5, max_length=132)
+
+
+class UpdateRequest(UpdateReviewRequest):
+    review_id: str = Field(pattern=r"^[0-9a-f]{16}$")
+    maintenance_plan_id: str = Field(pattern=r"^[0-9a-f]{16}$")
+
+
+class ServerUpgradeRequest(BaseModel):
+    minecraft_version: str = Field(
+        min_length=1, max_length=32, pattern=r"^[0-9][0-9A-Za-z._-]*$"
+    )
+    plan_id: str = Field(pattern=r"^[0-9a-f]{16}$")
 
 
 class ModConfigUpdateRequest(BaseModel):

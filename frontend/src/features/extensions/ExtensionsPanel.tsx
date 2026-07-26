@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import {
   api,
   type CatalogSearch,
   type CatalogVersion,
   type ExtensionEntry,
   type ExtensionUpdate,
+  type ExtensionUpdateResult,
+  type ExtensionUpdateReviewResponse,
   type ExtensionUpdates,
   type ExtensionsView,
   type SharedMapView,
@@ -138,7 +141,7 @@ function ExtensionRow({
         <Button className="button--quiet button--small" aria-label={`Cancel removing ${name}`} onClick={() => setConfirmingRemove(false)}>Cancel</Button>
       </div>
     </div> : <div className="row-actions extension-row__actions">
-      {update && <Button className="button--small" aria-label={`Update ${name} to ${update.new_version_number ?? "latest"}`} disabled={locked} onClick={() => act("update", entry, disabled)}>Update to {update.new_version_number ?? "latest"}</Button>}
+      {update && <Button className="button--small" aria-label={`Review update for ${name} to ${update.new_version_number ?? "latest"}`} disabled={locked} onClick={() => act("update", entry, disabled)}>Review {update.new_version_number ?? "latest"}</Button>}
       <Button className="button--secondary button--small" aria-label={`${disabled ? "Enable" : "Disable"} ${name}`} disabled={locked} onClick={() => act("toggle", entry, disabled)}>{disabled ? "Enable" : "Disable"}</Button>
       <Button ref={removeTrigger} className="button--quiet button--small" aria-label={`Remove ${name}`} disabled={locked} onClick={() => setConfirmingRemove(true)}>Remove</Button>
     </div>}
@@ -176,6 +179,8 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   const [source, setSource] = useState<CatalogSource>("modrinth");
   const [versionsFor, setVersionsFor] = useState<string | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [reviewedUpdate, setReviewedUpdate] = useState<ExtensionUpdateReviewResponse | null>(null);
+  const [appliedUpdate, setAppliedUpdate] = useState<ExtensionUpdateResult | null>(null);
   const guideTrigger = useRef<HTMLButtonElement>(null);
 
   const inventory = useQuery({
@@ -245,6 +250,52 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     },
     onError: error => showNotice("error", error.message),
   });
+  const reviewUpdate = useMutation({
+    mutationFn: (fileName: string) => api<ExtensionUpdateReviewResponse>(
+      `/profiles/${profileId}/extensions/update-review`,
+      { method: "POST", body: JSON.stringify({ file_name: fileName }) },
+    ),
+    onSuccess: result => {
+      setAppliedUpdate(null);
+      setReviewedUpdate(result);
+      void client.invalidateQueries({ queryKey: ["activity"] });
+    },
+    onError: error => showNotice("error", error.message),
+  });
+  const applyUpdate = useMutation({
+    mutationFn: (review: ExtensionUpdateReviewResponse) => api<ExtensionUpdateResult>(
+      `/profiles/${profileId}/extensions/update`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          file_name: review.review.file_name,
+          review_id: review.review.review_id,
+          maintenance_plan_id: review.maintenance_plan.plan_id,
+        }),
+      },
+    ),
+    onSuccess: result => {
+      setReviewedUpdate(null);
+      setAppliedUpdate(result);
+      showNotice("success", `${result.file_name} installed from the reviewed plan. Restart the server to load it.`);
+      refresh();
+      void client.invalidateQueries({ queryKey: ["activity"] });
+    },
+    onError: error => showNotice("error", error.message),
+  });
+  const rollbackUpdate = useMutation({
+    mutationFn: (recoveryId: string) => api<{ detail: string }>(
+      `/profiles/${profileId}/extensions/update-recovery/${recoveryId}`,
+      { method: "POST" },
+    ),
+    onSuccess: result => {
+      setAppliedUpdate(null);
+      showNotice("success", result.detail);
+      refresh();
+      void client.invalidateQueries({ queryKey: ["activity"] });
+    },
+    onError: error => showNotice("error", error.message),
+  });
 
   function manage(kind: "toggle" | "remove" | "update", entry: ExtensionEntry, disabled: boolean) {
     clearNotice();
@@ -254,11 +305,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
       init: { method: "POST", body: JSON.stringify({ file_name: entry.file_name, enabled: disabled }) },
       success: `${name} ${disabled ? "enabled" : "disabled"}. Restart the server for the new loadout to take effect.`,
     });
-    else if (kind === "update") action.mutate({
-      endpoint: `/profiles/${profileId}/extensions/update`,
-      init: { method: "POST", body: JSON.stringify({ file_name: entry.file_name }) },
-      success: `${name} updated. Restart the server to load the new release.`,
-    });
+    else if (kind === "update") reviewUpdate.mutate(entry.file_name);
     else action.mutate({
       endpoint: `/profiles/${profileId}/extensions/${encodeURIComponent(entry.file_name)}?disabled=${disabled}`,
       init: { method: "DELETE" },
@@ -435,6 +482,52 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
           {updates.data.unknown.length ? ` ${updates.data.unknown.length} file${updates.data.unknown.length === 1 ? " was" : "s were"} not matched to Modrinth.` : ""}
         </p>}
         {updates.error && <div className="query-error"><p className="error" role="alert">Update check failed: {updates.error.message}</p><Button className="button--secondary button--small" onClick={() => void updates.refetch()}>Check again</Button></div>}
+        {reviewUpdate.isPending && <p className="empty-note" role="status">Resolving the update files and required dependencies…</p>}
+
+        {reviewedUpdate && <div className="extension-update-review" aria-label="Extension update review">
+          <div>
+            <p className="eyebrow">Reviewed update</p>
+            <h4>{reviewedUpdate.review.file_name} → {reviewedUpdate.review.new_file_name}</h4>
+            <p>For Minecraft {reviewedUpdate.review.minecraft_version ?? "version unknown"} on {reviewedUpdate.review.distribution}. {reviewedUpdate.review.required_java_major ? `The server still requires Java ${reviewedUpdate.review.required_java_major}.` : "The Java requirement could not be confirmed."} A restart is required.</p>
+          </div>
+          <ul>
+            {reviewedUpdate.review.files.map(file => <li key={`${file.role}-${file.file_name}`}>
+              <strong>{file.file_name}</strong>
+              <span>{file.role === "replacement" ? "Replaces the installed extension" : file.action === "already_present" ? "Required dependency already present" : `Install required dependency${file.required_by ? ` for ${file.required_by}` : ""}`}</span>
+            </li>)}
+          </ul>
+          <p>{reviewedUpdate.review.rollback_detail}</p>
+          <p className={reviewedUpdate.maintenance_plan.protection.verified && (reviewedUpdate.maintenance_plan.protection.age_hours ?? 25) <= 24 ? "success" : "warning"}>
+            {reviewedUpdate.maintenance_plan.protection.verified && (reviewedUpdate.maintenance_plan.protection.age_hours ?? 25) <= 24
+              ? `Protection verified: ${reviewedUpdate.maintenance_plan.protection.detail}`
+              : "A fresh verified world backup is required before Blockstead will apply this version-changing update."}
+          </p>
+          <div className="row-actions">
+            {(!reviewedUpdate.maintenance_plan.protection.verified || (reviewedUpdate.maintenance_plan.protection.age_hours ?? 25) > 24) && <Link className="button button--secondary button--small" to={`/servers/${profileId}/backups`}>Create a backup</Link>}
+            <Button
+              className="button--small"
+              disabled={!stopped || applyUpdate.isPending || !reviewedUpdate.maintenance_plan.protection.verified || (reviewedUpdate.maintenance_plan.protection.age_hours ?? 25) > 24}
+              onClick={() => applyUpdate.mutate(reviewedUpdate)}
+            >
+              {applyUpdate.isPending ? "Applying reviewed update…" : "Apply reviewed update"}
+            </Button>
+            <Button className="button--quiet button--small" onClick={() => setReviewedUpdate(null)}>Cancel</Button>
+          </div>
+        </div>}
+
+        {appliedUpdate && <div className="extension-update-recovery" role="status">
+          <div>
+            <strong>Previous extension retained</strong>
+            <span>{appliedUpdate.rollback_detail}</span>
+          </div>
+          <Button
+            className="button--secondary button--small"
+            disabled={!stopped || rollbackUpdate.isPending}
+            onClick={() => rollbackUpdate.mutate(appliedUpdate.recovery_id)}
+          >
+            {rollbackUpdate.isPending ? "Restoring…" : "Undo this update"}
+          </Button>
+        </div>}
 
         <div className="extension-columns">
           <div className="extension-list-panel">
@@ -444,7 +537,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
                 key={entry.file_name}
                 entry={entry}
                 disabled={false}
-                locked={!stopped || action.isPending}
+                locked={!stopped || action.isPending || reviewUpdate.isPending || applyUpdate.isPending}
                 act={manage}
                 update={updates.data?.updates.find(item => item.file_name === entry.file_name)}
               />)}

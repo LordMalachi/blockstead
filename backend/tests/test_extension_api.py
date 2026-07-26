@@ -240,6 +240,9 @@ def test_update_check_and_apply(
     plugins.mkdir()
     (plugins / "old-plugin-1.0.jar").write_bytes(b"old bytes")
     (plugins / "homemade.jar").write_bytes(b"private plugin")
+    world = root / "paper-server" / "world"
+    world.mkdir()
+    (world / "level.dat").write_bytes(b"world")
     old_hash = hashlib.sha512(b"old bytes").hexdigest()
 
     planned = PlannedFile(
@@ -249,7 +252,7 @@ def test_update_check_and_apply(
         file_name="old-plugin-2.0.jar",
         url="https://cdn.example/new.jar",
         checksum_algorithm="sha512",
-        checksum="f" * 128,
+        checksum=hashlib.sha512(b"https://cdn.example/new.jar").hexdigest(),
         required_by=None,
     )
     dependency = PlannedFile(
@@ -259,7 +262,7 @@ def test_update_check_and_apply(
         file_name="new-core-3.0.jar",
         url="https://cdn.example/core.jar",
         checksum_algorithm="sha512",
-        checksum="e" * 128,
+        checksum=hashlib.sha512(b"https://cdn.example/core.jar").hexdigest(),
         required_by="old-plugin-2.0.jar",
     )
 
@@ -282,8 +285,9 @@ def test_update_check_and_apply(
         checksum: str | None,
     ) -> str:
         assert url in {"https://cdn.example/new.jar", "https://cdn.example/core.jar"}
-        (directory / file_name).write_bytes(url.encode())
-        return "a" * 64
+        raw = url.encode()
+        (directory / file_name).write_bytes(raw)
+        return hashlib.sha256(raw).hexdigest()
 
     async def fake_plan(
         _client: httpx.AsyncClient,
@@ -320,10 +324,30 @@ def test_update_check_and_apply(
         }
     ]
 
+    backup = client.post(
+        f"/api/v1/profiles/{paper_profile}/backups", headers=headers
+    )
+    assert backup.status_code == 201
+    reviewed = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/update-review",
+        headers=headers,
+        json={"file_name": "old-plugin-1.0.jar"},
+    )
+    assert reviewed.status_code == 200
+    review = reviewed.json()
+    assert review["review"]["dependencies"] == ["new-core-3.0.jar"]
+    assert review["review"]["required_java_major"] == 21
+    assert review["review"]["restart_required"] is True
+    assert review["maintenance_plan"]["protection"]["verified"] is True
+
     applied = client.post(
         f"/api/v1/profiles/{paper_profile}/extensions/update",
         headers=headers,
-        json={"file_name": "old-plugin-1.0.jar"},
+        json={
+            "file_name": "old-plugin-1.0.jar",
+            "review_id": review["review"]["review_id"],
+            "maintenance_plan_id": review["maintenance_plan"]["plan_id"],
+        },
     )
     assert applied.status_code == 200
     assert applied.json()["file_name"] == "old-plugin-2.0.jar"
@@ -332,9 +356,19 @@ def test_update_check_and_apply(
     assert applied.json()["dependencies_installed"] == ["new-core-3.0.jar"]
     assert (plugins / "new-core-3.0.jar").is_file()
     assert not (plugins / "old-plugin-1.0.jar").exists()
+    recovery_id = applied.json()["recovery_id"]
+
+    recovered = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/update-recovery/{recovery_id}",
+        headers=headers,
+    )
+    assert recovered.status_code == 200
+    assert (plugins / "old-plugin-1.0.jar").read_bytes() == b"old bytes"
+    assert not (plugins / "old-plugin-2.0.jar").exists()
+    assert not (plugins / "new-core-3.0.jar").exists()
 
     missing = client.post(
-        f"/api/v1/profiles/{paper_profile}/extensions/update",
+        f"/api/v1/profiles/{paper_profile}/extensions/update-review",
         headers=headers,
         json={"file_name": "nowhere.jar"},
     )
