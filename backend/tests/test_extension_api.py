@@ -10,6 +10,13 @@ from fastapi.testclient import TestClient
 
 from blockstead.app import create_app
 from blockstead.config import Settings
+from blockstead.db import create_session_factory
+from blockstead.extension_origins import (
+    load_origin_map,
+    record_catalog_files,
+    record_local_files,
+)
+from blockstead.models import Profile
 from blockstead.modrinth import PlannedFile, ProjectVersion, SearchPage
 
 
@@ -17,6 +24,33 @@ def jar_bytes() -> bytes:
     content = io.BytesIO()
     with zipfile.ZipFile(content, "w") as archive:
         archive.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+    return content.getvalue()
+
+
+def paper_plugin_bytes(name: str, dependencies: tuple[str, ...] = ()) -> bytes:
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, "w") as archive:
+        depend = f"depend: [{', '.join(dependencies)}]\n" if dependencies else ""
+        archive.writestr(
+            "plugin.yml",
+            f"name: {name}\nversion: 1.0\napi-version: '1.21'\n{depend}",
+        )
+    return content.getvalue()
+
+
+def fabric_mod_bytes(identifier: str, environment: str = "*") -> bytes:
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, "w") as archive:
+        archive.writestr(
+            "fabric.mod.json",
+            (
+                '{"schemaVersion":1,"id":"'
+                + identifier
+                + '","version":"1.0.0","environment":"'
+                + environment
+                + '"}'
+            ),
+        )
     return content.getvalue()
 
 
@@ -87,6 +121,181 @@ def test_upload_toggle_and_remove_flow(
     )
     assert removed.status_code == 200
     assert not (root / "paper-server" / "plugins-disabled" / "essentials.jar").exists()
+
+
+def test_manual_import_reviews_dependencies_then_promotes_the_batch(
+    api: tuple[TestClient, Path], headers: dict[str, str], paper_profile: str
+) -> None:
+    client, root = api
+    review = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/manual-import/review",
+        headers=headers,
+        files=[
+            (
+                "files",
+                ("base.jar", paper_plugin_bytes("Base"), "application/java-archive"),
+            ),
+            (
+                "files",
+                (
+                    "addon.jar",
+                    paper_plugin_bytes("Addon", ("Base",)),
+                    "application/java-archive",
+                ),
+            ),
+        ],
+    )
+    assert review.status_code == 201, review.text
+    body = review.json()
+    assert body["destination"] == "plugins"
+    assert body["blockers"] == []
+    assert body["requires_acknowledgement"] is False
+    assert {entry["identifier"] for entry in body["files"]} == {"Base", "Addon"}
+
+    applied = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/manual-import/apply",
+        headers=headers,
+        json={"review_id": body["review_id"], "acknowledge_unknown": False},
+    )
+    assert applied.status_code == 201, applied.text
+    assert applied.json()["batch_id"] == body["review_id"]
+    plugins = root / "paper-server" / "plugins"
+    assert (plugins / "base.jar").is_file()
+    assert (plugins / "addon.jar").is_file()
+    assert not list(plugins.glob(".blockstead-manual-*"))
+
+    server = root / "paper-server"
+    (server / "eula.txt").write_text("eula=true\n", encoding="utf-8")
+    world = server / "world"
+    world.mkdir()
+    (world / "owner-build.dat").write_bytes(b"unchanged")
+    tested = client.post(
+        f"/api/v1/profiles/{paper_profile}/loadout/test-start",
+        headers=headers,
+        json={"recent_batch_ids": [body["review_id"]], "retry_of": None},
+    )
+    assert tested.status_code == 200, tested.text
+    assert tested.json()["status"] == "passed"
+    assert tested.json()["live_world_untouched"] is True
+    assert tested.json()["validation_workspace_removed"] is True
+    assert (world / "owner-build.dat").read_bytes() == b"unchanged"
+    assert not list(root.glob(".paper-server.blockstead-validation-*"))
+
+    lockfile = client.get(
+        f"/api/v1/profiles/{paper_profile}/loadout/lockfile",
+        headers=headers,
+    )
+    assert lockfile.status_code == 200
+    locked = lockfile.json()
+    assert {item["file_name"] for item in locked["installed"]} == {
+        "base.jar",
+        "addon.jar",
+    }
+    assert {item["origin"]["source"] for item in locked["installed"]} == {"local"}
+    assert not any(item["origin"]["verified"] for item in locked["installed"])
+
+    compared = client.post(
+        f"/api/v1/profiles/{paper_profile}/loadout/lockfile/review",
+        headers=headers,
+        files={"file": ("loadout.json", lockfile.content, "application/json")},
+    )
+    assert compared.status_code == 200
+    assert compared.json()["compatible"] is True
+    assert compared.json()["mutation_performed"] is False
+
+    player_pack = client.get(
+        f"/api/v1/profiles/{paper_profile}/loadout/player-pack",
+        headers=headers,
+    )
+    assert player_pack.status_code == 409
+    assert "Paper plugins" in player_pack.json()["error"]["message"]
+
+
+def test_manual_import_requires_acknowledgement_for_unidentified_jars(
+    api: tuple[TestClient, Path], headers: dict[str, str], paper_profile: str
+) -> None:
+    client, root = api
+    review = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/manual-import/review",
+        headers=headers,
+        files=[("files", ("mystery.jar", jar_bytes(), "application/java-archive"))],
+    )
+    assert review.status_code == 201
+    body = review.json()
+    assert body["requires_acknowledgement"] is True
+
+    refused = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/manual-import/apply",
+        headers=headers,
+        json={"review_id": body["review_id"], "acknowledge_unknown": False},
+    )
+    assert refused.status_code == 422
+    assert not (root / "paper-server" / "plugins" / "mystery.jar").exists()
+
+    applied = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/manual-import/apply",
+        headers=headers,
+        json={"review_id": body["review_id"], "acknowledge_unknown": True},
+    )
+    assert applied.status_code == 201
+    assert (root / "paper-server" / "plugins" / "mystery.jar").is_file()
+
+
+def test_player_pack_download_requires_a_fresh_review(
+    api: tuple[TestClient, Path], headers: dict[str, str], paper_profile: str
+) -> None:
+    client, root = api
+    factory = create_session_factory(root.parent / "data" / "blockstead.db")
+    with factory() as db:
+        profile = db.get(Profile, paper_profile)
+        assert profile is not None
+        profile.distribution = "fabric"
+        profile.loader_version = "0.16.10"
+        db.commit()
+    mods = root / "paper-server" / "mods"
+    mods.mkdir()
+    content = fabric_mod_bytes("client_mod", "client")
+    path = mods / "client-mod.jar"
+    path.write_bytes(content)
+    planned = PlannedFile(
+        project_id="client-project",
+        version_id="client-version",
+        version_number="1.0.0",
+        file_name=path.name,
+        url="https://cdn.modrinth.com/client-mod.jar",
+        checksum_algorithm="sha512",
+        checksum=hashlib.sha512(content).hexdigest(),
+        required_by=None,
+    )
+    record_catalog_files(mods, "modrinth", [planned])
+
+    reviewed = client.get(
+        f"/api/v1/profiles/{paper_profile}/loadout/player-pack/review",
+        headers=headers,
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    review = reviewed.json()
+    assert review["included"][0]["file_name"] == path.name
+    assert review["manual_requirements"] == []
+
+    downloaded = client.get(
+        f"/api/v1/profiles/{paper_profile}/loadout/player-pack"
+        f"?review_id={review['review_id']}",
+        headers=headers,
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.headers["content-type"].startswith(
+        "application/x-modrinth-modpack"
+    )
+
+    path.write_bytes(fabric_mod_bytes("client_mod", "*"))
+    stale = client.get(
+        f"/api/v1/profiles/{paper_profile}/loadout/player-pack"
+        f"?review_id={review['review_id']}",
+        headers=headers,
+    )
+    assert stale.status_code == 409
+    assert "changed after" in stale.json()["error"]["message"]
 
 
 def test_toggle_all_round_trip(
@@ -240,6 +449,7 @@ def test_update_check_and_apply(
     plugins.mkdir()
     (plugins / "old-plugin-1.0.jar").write_bytes(b"old bytes")
     (plugins / "homemade.jar").write_bytes(b"private plugin")
+    record_local_files(plugins, ["old-plugin-1.0.jar"])
     world = root / "paper-server" / "world"
     world.mkdir()
     (world / "level.dat").write_bytes(b"world")
@@ -366,6 +576,9 @@ def test_update_check_and_apply(
     assert (plugins / "old-plugin-1.0.jar").read_bytes() == b"old bytes"
     assert not (plugins / "old-plugin-2.0.jar").exists()
     assert not (plugins / "new-core-3.0.jar").exists()
+    restored_origin = load_origin_map(plugins)["old-plugin-1.0.jar"]
+    assert restored_origin.source == "local"
+    assert restored_origin.verified is False
 
     missing = client.post(
         f"/api/v1/profiles/{paper_profile}/extensions/update-review",

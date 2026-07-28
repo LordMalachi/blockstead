@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
@@ -11,6 +11,9 @@ import {
   type ExtensionUpdateReviewResponse,
   type ExtensionUpdates,
   type ExtensionsView,
+  type LoaderMigrationResult,
+  type ManualImportResult,
+  type ManualImportReview,
   type SharedMapView,
 } from "../../api/client";
 import { Button } from "../../components/Button";
@@ -18,6 +21,7 @@ import { NavIcon } from "../../components/NavIcon";
 import { Tooltip } from "../../components/Tooltip";
 import { formatBytes } from "../../lib/format";
 import { ModConfigEditor } from "./ModConfigEditor";
+import { LoadoutSafetyPanel } from "./LoadoutSafetyPanel";
 import { SharedMapCard, SHARED_MAP_PROJECT_ID } from "./SharedMapCard";
 
 const SORT_OPTIONS = [
@@ -41,7 +45,12 @@ interface ActionRequest {
   endpoint: string;
   init: RequestInit;
   success: string;
-  afterSuccess?: () => void;
+  afterSuccess?: (result: unknown) => void;
+}
+
+interface ExtensionInstallResult {
+  batch_id?: string | null;
+  warnings?: string[];
 }
 
 function VersionChooser({
@@ -181,6 +190,18 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   const [guideOpen, setGuideOpen] = useState(false);
   const [reviewedUpdate, setReviewedUpdate] = useState<ExtensionUpdateReviewResponse | null>(null);
   const [appliedUpdate, setAppliedUpdate] = useState<ExtensionUpdateResult | null>(null);
+  const [manualFiles, setManualFiles] = useState<File[]>([]);
+  const [manualReview, setManualReview] = useState<ManualImportReview | null>(null);
+  const [acknowledgeUnknown, setAcknowledgeUnknown] = useState(false);
+  const [recentBatchIds, setRecentBatchIds] = useState<string[]>([]);
+  const [migrationContext, setMigrationContext] = useState<LoaderMigrationResult | null>(() => {
+    try {
+      const raw = sessionStorage.getItem(`blockstead_migration_${profileId}`);
+      return raw ? JSON.parse(raw) as LoaderMigrationResult : null;
+    } catch {
+      return null;
+    }
+  });
   const guideTrigger = useRef<HTMLButtonElement>(null);
 
   const inventory = useQuery({
@@ -190,6 +211,13 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   const sharedMap = useQuery({
     queryKey: ["shared-map", profileId],
     queryFn: () => api<SharedMapView>(`/profiles/${profileId}/shared-map`),
+  });
+  const sharedMapVersions = useQuery({
+    queryKey: ["shared-map-versions", profileId],
+    queryFn: () => api<{ versions: CatalogVersion[] }>(
+      `/profiles/${profileId}/catalog/versions?source=modrinth&project_id=${SHARED_MAP_PROJECT_ID}`,
+    ),
+    enabled: inventory.data?.directory != null,
   });
   const curseforge = useQuery({
     queryKey: ["curseforge-settings"],
@@ -243,9 +271,9 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   });
   const action = useMutation({
     mutationFn: async ({ endpoint, init }: ActionRequest) => api<unknown>(endpoint, init),
-    onSuccess: (_result, request) => {
+    onSuccess: (result, request) => {
       showNotice("success", request.success);
-      request.afterSuccess?.();
+      request.afterSuccess?.(result);
       refresh();
     },
     onError: error => showNotice("error", error.message),
@@ -277,6 +305,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     onSuccess: result => {
       setReviewedUpdate(null);
       setAppliedUpdate(result);
+      if (result.batch_id) setRecentBatchIds([result.batch_id]);
       showNotice("success", `${result.file_name} installed from the reviewed plan. Restart the server to load it.`);
       refresh();
       void client.invalidateQueries({ queryKey: ["activity"] });
@@ -295,6 +324,58 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
       void client.invalidateQueries({ queryKey: ["activity"] });
     },
     onError: error => showNotice("error", error.message),
+  });
+  const reviewManualImport = useMutation({
+    mutationFn: (files: File[]) => {
+      const body = new FormData();
+      files.forEach(file => body.append("files", file));
+      return api<ManualImportReview>(
+        `/profiles/${profileId}/extensions/manual-import/review`,
+        { method: "POST", body },
+      );
+    },
+    onSuccess: result => {
+      setManualReview(result);
+      setAcknowledgeUnknown(false);
+      clearNotice();
+    },
+    onError: error => showNotice("error", error.message),
+  });
+  const applyManualImport = useMutation({
+    mutationFn: (review: ManualImportReview) => api<ManualImportResult>(
+      `/profiles/${profileId}/extensions/manual-import/apply`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          review_id: review.review_id,
+          acknowledge_unknown: acknowledgeUnknown,
+        }),
+      },
+    ),
+    onSuccess: result => {
+      setManualFiles([]);
+      setManualReview(null);
+      setAcknowledgeUnknown(false);
+      if (result.batch_id) setRecentBatchIds([result.batch_id]);
+      showNotice(
+        "success",
+        `${result.installed.length} downloaded ${result.destination === "plugins" ? "plugin" : "mod"} file${result.installed.length === 1 ? "" : "s"} installed. Run a safe test start before inviting players.`,
+      );
+      refresh();
+      void client.invalidateQueries({ queryKey: ["activity"] });
+    },
+    onError: error => showNotice("error", error.message),
+  });
+  const cancelManualImport = useMutation({
+    mutationFn: (reviewId: string) => api<void>(
+      `/profiles/${profileId}/extensions/manual-import/${reviewId}`,
+      { method: "DELETE" },
+    ),
+    onSettled: () => {
+      setManualFiles([]);
+      setManualReview(null);
+      setAcknowledgeUnknown(false);
+    },
   });
 
   function manage(kind: "toggle" | "remove" | "update", entry: ExtensionEntry, disabled: boolean) {
@@ -352,7 +433,12 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     action.mutate({
       endpoint: `/profiles/${profileId}/extensions/install`,
       init: { method: "POST", body: JSON.stringify({ project_id: projectId, source, ...(versionId ? { version_id: versionId } : {}) }) },
-      success: "Extension installed and verified. Restart the server to load it.",
+      success: "Extension installed and verified. Run a safe test start before inviting players.",
+      afterSuccess: result => {
+        const installed = result as ExtensionInstallResult;
+        if (installed.batch_id) setRecentBatchIds([installed.batch_id]);
+        if (installed.warnings?.length) showNotice("error", installed.warnings.join(" "));
+      },
     });
   }
 
@@ -365,20 +451,22 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     keyAction.mutate({ endpoint: "/settings/curseforge", init: { method: "PUT", body: JSON.stringify({ api_key: value.trim() }) }, success: "CurseForge key saved. You can search that catalog now." });
   }
 
-  function upload(event: FormEvent<HTMLFormElement>) {
+  function chooseManualFiles(files: File[]) {
+    const jars = files.filter(file => file.name.toLowerCase().endsWith(".jar"));
+    setManualFiles(jars);
+    setManualReview(null);
+    setAcknowledgeUnknown(false);
+    if (jars.length !== files.length) {
+      showNotice("error", "Choose .jar plugin or mod files. Do not extract them first.");
+    } else {
+      clearNotice();
+    }
+  }
+
+  function dropManualFiles(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    const form = event.currentTarget;
-    const file = new FormData(form).get("file");
-    if (!(file instanceof File) || !file.name) return;
-    const body = new FormData();
-    body.set("file", file);
-    clearNotice();
-    action.mutate({
-      endpoint: `/profiles/${profileId}/extensions/upload`,
-      init: { method: "POST", body },
-      success: `${file.name} uploaded. Restart the server to load it.`,
-      afterSuccess: () => form.reset(),
-    });
+    if (!stopped) return;
+    chooseManualFiles(Array.from(event.dataTransfer.files));
   }
 
   function closeGuide() {
@@ -393,6 +481,10 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   const categoryLimit = source === "curseforge" ? 1 : 5;
   const availableSources = (Object.keys(SOURCE_LABELS) as CatalogSource[])
     .filter(key => key !== "hangar" || view?.directory === "plugins");
+  const squaremapPresent = Boolean(view && [...view.entries, ...view.disabled_entries].some(
+    entry => entry.identifier?.toLowerCase() === SHARED_MAP_PROJECT_ID
+      || entry.display_name?.toLowerCase() === SHARED_MAP_PROJECT_ID,
+  ));
 
   return <section className="card extensions-workspace" id="extensions">
     <header className="workspace-hero workspace-hero--extensions">
@@ -429,14 +521,118 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     </div> : view ? <>
       <nav className="workspace-jump" aria-label="Extension workspace sections">
         <a href="#extension-loadout"><span>01</span><strong>Manage</strong><small>Active and disabled</small></a>
-        <a href="#extension-catalog"><span>02</span><strong>Discover</strong><small>Search listed projects</small></a>
-        <a href="#extension-config"><span>03</span><strong>Configure</strong><small>Tune generated files</small></a>
+        <a href="#loadout-safety"><span>02</span><strong>Test</strong><small>Validate and preserve</small></a>
+        <a href="#extension-catalog"><span>03</span><strong>Discover</strong><small>Search listed projects</small></a>
+        <a href="#extension-config"><span>04</span><strong>Configure</strong><small>Tune generated files</small></a>
       </nav>
 
       {!stopped && <div className="workspace-lock-note" role="note">
         <span aria-hidden="true">■</span>
         <div><strong>Your loadout is protected while Minecraft is running.</strong><p>Stop the server before changing extension files.</p><small>You can keep browsing and comparing projects in the meantime.</small></div>
       </div>}
+
+      {migrationContext && <div className="migration-arrival" role="status">
+        <div>
+          <p className="eyebrow">Modded copy created</p>
+          <h3>{migrationContext.name} is ready for its loadout</h3>
+          <p>Copied {migrationContext.worlds_copied.join(", ")}. The source server is unchanged. Reinstall compatible extensions here, review the EULA, and inspect the first startup console before inviting players.</p>
+        </div>
+        {migrationContext.extensions.length > 0 && <ul>{migrationContext.extensions.map(extension => <li key={extension.file_name}>
+          <strong>{extension.name}</strong>
+          <span>{extension.classification.replaceAll("_", " ")}</span>
+          <small>{extension.detail}</small>
+          {extension.identifier && ["compatible_candidate", "replacement_needed"].includes(extension.classification) && <button type="button" className="button button--quiet button--small" onClick={() => {
+            setQuery(extension.identifier ?? extension.name);
+            setSearched(extension.identifier ?? extension.name);
+            document.getElementById("extension-catalog")?.scrollIntoView({ behavior: "smooth" });
+          }}>Find for this loader</button>}
+        </li>)}</ul>}
+        <div className="row-actions">
+          <Link className="button button--secondary button--small" to={`/servers/${profileId}/overview`}>Review readiness and EULA</Link>
+          <Button className="button--quiet button--small" onClick={() => {
+            sessionStorage.removeItem(`blockstead_migration_${profileId}`);
+            setMigrationContext(null);
+          }}>Dismiss checklist</Button>
+        </div>
+      </div>}
+
+      <section className="manual-install manual-install--prominent" aria-labelledby="manual-install-heading">
+        <div>
+          <p className="eyebrow">Install downloaded files</p>
+          <h3 id="manual-install-heading">Bring your own {view.directory === "plugins" ? "Paper plugins" : "mods"}</h3>
+          <p>Select or drop one or more `.jar` files. Do not extract them. Blockstead reviews their loader, metadata, dependencies, and checksums before placing them in <strong>{view.directory}/</strong>.</p>
+        </div>
+        {!manualReview ? <>
+          <div
+            className={`manual-dropzone${stopped ? "" : " is-disabled"}`}
+            onDragOver={event => event.preventDefault()}
+            onDrop={dropManualFiles}
+          >
+            <strong>{stopped ? "Drop downloaded .jar files here" : "Stop the server to import downloaded files"}</strong>
+            <span>or choose up to 20 files from this computer</span>
+            <label className="button button--secondary button--small">
+              Choose jar files
+              <input
+                name="files"
+                type="file"
+                accept=".jar,application/java-archive"
+                multiple
+                disabled={!stopped}
+                onChange={event => chooseManualFiles(Array.from(event.target.files ?? []))}
+              />
+            </label>
+          </div>
+          {manualFiles.length > 0 && <div className="manual-selection">
+            <ul>{manualFiles.map(file => <li key={`${file.name}-${file.size}`}><strong>{file.name}</strong><span>{formatBytes(file.size)}</span></li>)}</ul>
+            <div className="row-actions">
+              <Button disabled={!stopped || reviewManualImport.isPending} onClick={() => reviewManualImport.mutate(manualFiles)}>
+                {reviewManualImport.isPending ? "Inspecting jars…" : `Review ${manualFiles.length} file${manualFiles.length === 1 ? "" : "s"}`}
+              </Button>
+              <Button className="button--quiet button--small" onClick={() => setManualFiles([])}>Clear</Button>
+            </div>
+          </div>}
+        </> : <div className="manual-import-review">
+          <div>
+            <strong>Review before installing to {manualReview.destination}/</strong>
+            <span>A local SHA-256 proves these staged files stay unchanged. It does not prove who published them.</span>
+          </div>
+          <ul>{manualReview.files.map(file => <li key={file.file_name}>
+            <div><strong>{file.display_name ?? file.file_name}</strong><small>{file.file_name}</small></div>
+            <span>{file.version ? `v${file.version} · ` : ""}{file.kind.replace("-", " ")}</span>
+            <small>{[
+              file.loaders.length ? `loader: ${file.loaders.join(", ")}` : "loader unknown",
+              file.minecraft_constraint ? `Minecraft ${file.minecraft_constraint}` : "Minecraft version unknown",
+              file.environment ? `environment: ${file.environment}` : null,
+            ].filter(Boolean).join(" · ")}</small>
+            {file.dependencies.length > 0 && <small>Requires: {file.dependencies.join(", ")}</small>}
+            <small>SHA-256 {file.sha256 ?? "unavailable"}</small>
+          </li>)}</ul>
+          {manualReview.blockers.length > 0 && <div className="maintenance-blocked" role="alert">
+            <strong>Resolve before installing</strong>
+            <ul>{manualReview.blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul>
+            {manualReview.missing_dependencies.length > 0 && <a className="button button--secondary button--small" href="#extension-catalog">Find dependencies in the catalog</a>}
+          </div>}
+          {manualReview.requires_acknowledgement && <label className="maintenance-booking-toggle">
+            <input type="checkbox" checked={acknowledgeUnknown} onChange={event => setAcknowledgeUnknown(event.target.checked)} />
+            <span>I understand Blockstead could not verify the compatibility or origin of {manualReview.unknown_files.join(", ")}.</span>
+          </label>}
+          <div className="row-actions">
+            <Button
+              disabled={
+                applyManualImport.isPending
+                || manualReview.blockers.length > 0
+                || (manualReview.requires_acknowledgement && !acknowledgeUnknown)
+              }
+              onClick={() => applyManualImport.mutate(manualReview)}
+            >
+              {applyManualImport.isPending ? "Installing reviewed files…" : "Install reviewed files"}
+            </Button>
+            <Button className="button--quiet button--small" disabled={cancelManualImport.isPending} onClick={() => cancelManualImport.mutate(manualReview.review_id)}>Cancel</Button>
+          </div>
+        </div>}
+        {reviewManualImport.error && <p className="error" role="alert">{reviewManualImport.error.message}</p>}
+        {applyManualImport.error && <p className="error" role="alert">{applyManualImport.error.message}</p>}
+      </section>
 
       {view?.warnings.length ? <div className="workspace-warning-stack" aria-label="Extension warnings">
         {view.warnings.map(warning => <div className="warning" key={`${warning.code}-${warning.files.join()}`}>
@@ -554,7 +750,14 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
         </div>
       </section>
 
-      {view && <SharedMapCard
+      <LoadoutSafetyPanel
+        profileId={profileId}
+        stopped={stopped}
+        recentlyInstalledBatchIds={recentBatchIds}
+        playerPackAvailable={view.directory === "mods"}
+      />
+
+      {view && (squaremapPresent || Boolean(sharedMapVersions.data?.versions.length)) && <SharedMapCard
         entries={view.entries}
         disabledEntries={view.disabled_entries}
         map={sharedMap.data}
@@ -563,7 +766,11 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
         install={() => action.mutate({
           endpoint: `/profiles/${profileId}/extensions/install`,
           init: { method: "POST", body: JSON.stringify({ project_id: SHARED_MAP_PROJECT_ID }) },
-          success: "squaremap installed and verified. Start the server to finish its setup.",
+          success: "squaremap installed and verified. Run a safe test start before inviting players.",
+          afterSuccess: result => {
+            const installed = result as ExtensionInstallResult;
+            if (installed.batch_id) setRecentBatchIds([installed.batch_id]);
+          },
         })}
       />}
 
@@ -664,18 +871,6 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
             </div>}
           </div>
         </div>
-      </section>
-
-      <section className="manual-install" aria-labelledby="manual-install-heading">
-        <div>
-          <p className="eyebrow">Bring your own file</p>
-          <h3 id="manual-install-heading">Upload a jar</h3>
-          <p>Only upload a jar from a source you trust when it is not in a connected catalog. Blockstead records the file, but cannot verify its origin or guarantee that it works with your loadout.</p>
-        </div>
-        <form className="upload-form" onSubmit={upload}>
-          <label>Local .jar file<input name="file" type="file" accept=".jar,application/java-archive" required /></label>
-          <Button disabled={!stopped || action.isPending}>Upload</Button>
-        </form>
       </section>
 
       <section className="workspace-section extension-configuration" id="extension-config" aria-label="Extension configuration">

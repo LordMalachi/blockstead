@@ -44,6 +44,17 @@ _HOME_PATTERN = re.compile(r"(/home/|/Users/)[^/\s'\"]+")
 log = logging.getLogger(__name__)
 
 
+def _host_uptime_seconds(now: datetime) -> float | None:
+    """Return host uptime when the operating system permits the lookup."""
+
+    try:
+        return max(0.0, now.timestamp() - psutil.boot_time())
+    except (OSError, RuntimeError):
+        # Sandboxes and hardened macOS hosts can deny the underlying sysctl.
+        # A support report should remain downloadable with this field unknown.
+        return None
+
+
 def redact(text: str) -> str:
     """Hide the account name inside home-directory paths before it leaves the app."""
     return _HOME_PATTERN.sub(r"\1[account]", text)
@@ -192,7 +203,7 @@ def build_report(
                 "percent": memory.percent,
             },
             "disk": {"total_bytes": disk.total, "used_bytes": disk.used, "percent": disk.percent},
-            "uptime_seconds": max(0.0, now.timestamp() - psutil.boot_time()),
+            "uptime_seconds": _host_uptime_seconds(now),
         },
         "java_runtimes": [
             {"path": redact(runtime.path), "version": runtime.version, "major": runtime.major}

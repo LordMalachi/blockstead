@@ -51,3 +51,16 @@ def test_diagnostics_report_downloads_as_a_file(
     assert disposition.startswith('attachment; filename="blockstead-report-')
     assert disposition.endswith('.json"')
     assert json.loads(response.content)["report_version"] == 1
+
+
+def test_diagnostics_remain_available_when_host_uptime_is_restricted(
+    client: TestClient, auth: dict[str, str], monkeypatch
+) -> None:
+    def denied() -> float:
+        raise PermissionError("sysctl denied")
+
+    monkeypatch.setattr("blockstead.diagnostics.psutil.boot_time", denied)
+    response = client.get("/api/v1/system/diagnostics", headers=auth)
+
+    assert response.status_code == 200
+    assert response.json()["host"]["uptime_seconds"] is None

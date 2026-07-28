@@ -78,6 +78,25 @@ const appliedUpdate = {
   rollback_detail: updateReview.review.rollback_detail,
   restart_required: true,
 };
+const manualReview = {
+  created_at: Date.now() / 1000,
+  review_id: "1122334455667788",
+  profile_id: "profile-1",
+  distribution: "fabric",
+  destination: "mods",
+  files: [{ file_name: "local-mod.jar", size_bytes: 4096, sha256: "abc", sha512: "def", kind: "fabric-mod", loaders: ["fabric"], identifier: "local-mod", display_name: "Local Mod", version: "1.0", minecraft_constraint: "1.21.1", environment: "*", dependencies: [], readable: true }],
+  unknown_files: [],
+  blockers: [],
+  missing_dependencies: [],
+  requires_acknowledgement: false,
+  expires_in_seconds: 3600,
+};
+const manualResult = {
+  installed: manualReview.files,
+  destination: "mods",
+  restart_required: true,
+  source_verified: false,
+};
 
 function renderPanel(stopped = true, view: ExtensionsView = inventory) {
   const fetch = vi.fn().mockImplementation((url: string) => {
@@ -88,6 +107,8 @@ function renderPanel(stopped = true, view: ExtensionsView = inventory) {
       : target.includes("/extensions/update-review") ? updateReview
       : target.endsWith("/extensions/update") ? appliedUpdate
       : target.includes("/extensions/updates") ? updatesResponse
+      : target.includes("/manual-import/review") ? manualReview
+      : target.includes("/manual-import/apply") ? manualResult
       : target.includes("/settings/curseforge") ? { configured: false }
       : view;
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -110,8 +131,28 @@ test("locks file changes while the server is active", async () => {
   renderPanel(false);
   expect(await screen.findByText("Lithium")).toBeVisible();
   expect(screen.getByRole("button", { name: "Disable Lithium" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Upload" })).toBeDisabled();
+  expect(screen.getByLabelText("Choose jar files")).toBeDisabled();
   expect(screen.getByText("Stop the server before changing extension files.")).toBeVisible();
+});
+
+test("reviews downloaded jars before installing the batch", async () => {
+  const fetch = renderPanel();
+  await screen.findByText("Lithium");
+  const file = new File(["jar"], "local-mod.jar", { type: "application/java-archive" });
+  fireEvent.change(screen.getByLabelText("Choose jar files"), { target: { files: [file] } });
+  fireEvent.click(screen.getByRole("button", { name: "Review 1 file" }));
+
+  expect(await screen.findByText("Review before installing to mods/")).toBeVisible();
+  expect(screen.getByText("SHA-256 abc")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Install reviewed files" }));
+
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/extensions/manual-import/apply",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ review_id: manualReview.review_id, acknowledge_unknown: false }),
+    }),
+  ));
 });
 
 test("offers the vanilla switch and disables everything through toggle-all", async () => {

@@ -141,6 +141,48 @@ export interface MaintenancePlan {
   blockers: string[];
   reviewed_at: string;
 }
+export interface LoaderMigrationExtension {
+  file_name: string;
+  name: string;
+  version: string | null;
+  identifier: string | null;
+  source_kind: string;
+  classification: "compatible_candidate" | "replacement_needed" | "client_only" | "unknown";
+  detail: string;
+}
+export interface LoaderMigrationReview {
+  review_id: string;
+  profile_id: string;
+  source_distribution: string;
+  target_distribution: "paper" | "fabric" | "forge" | "quilt" | "neoforge";
+  minecraft_version: string;
+  loader_version: string | null;
+  level_name: string;
+  worlds: string[];
+  world_size_bytes: number | null;
+  disk_free_bytes: number;
+  required_java_major: number | null;
+  java_ready: boolean;
+  stopped: boolean;
+  protection: { verified: boolean; backup_id: string | null; age_hours: number | null; detail: string };
+  extensions: LoaderMigrationExtension[];
+  modded_world_warning: boolean;
+  blockers: string[];
+  ready: boolean;
+}
+export interface LoaderMigrationResult {
+  id: string;
+  name: string;
+  distribution: string;
+  minecraft_version: string;
+  loader_version: string | null;
+  worlds_copied: string[];
+  source_profile_id: string;
+  source_unchanged: boolean;
+  extensions: LoaderMigrationExtension[];
+  next_route: string;
+  eula_accepted: false;
+}
 export type TroubleshootingProblemId = "player_cannot_join" | "local_connection" | "public_connection" | "server_wont_start" | "timeouts_or_lag";
 export interface TroubleshootingSource { id: string; title: string; url: string; publisher: string; checked_at: string }
 export interface TroubleshootingProblem {
@@ -252,6 +294,27 @@ export interface BackupPolicy { keep_count: number | null; keep_days: number | n
 export interface JavaRuntime { path: string; version: string; major: number }
 export interface PrerequisitesView { distribution: string; label: string; minecraft_version: string | null; is_fixture: boolean; eula_accepted: boolean; required_java_major: number | null; java_runtimes: JavaRuntime[]; selected_java: JavaRuntime | null; java_satisfied: boolean; launch_files_ready: boolean; launch_problem: string | null; extension_directory: string | null; extension_directory_present: boolean }
 export interface ExtensionEntry { file_name: string; size_bytes: number; sha256: string | null; sha512?: string | null; kind: "paper-plugin" | "fabric-mod" | "quilt-mod" | "neoforge-mod" | "forge-mod" | "unknown"; loaders: string[]; identifier: string | null; display_name: string | null; version: string | null; minecraft_constraint: string | null; environment: string | null; dependencies: string[]; readable: boolean }
+export interface ManualImportReview {
+  created_at: number;
+  review_id: string;
+  profile_id: string;
+  distribution: string;
+  destination: "plugins" | "mods";
+  files: ExtensionEntry[];
+  unknown_files: string[];
+  blockers: string[];
+  missing_dependencies: string[];
+  requires_acknowledgement: boolean;
+  expires_in_seconds: number;
+}
+export interface ManualImportResult {
+  installed: ExtensionEntry[];
+  destination: "plugins" | "mods";
+  restart_required: boolean;
+  source_verified: false;
+  batch_id: string | null;
+  warnings: string[];
+}
 export interface ExtensionUpdate { file_name: string; installed_version: string | null; new_version_number: string | null; new_file_name: string; project_id: string; version_id: string }
 export interface ExtensionUpdates { updates: ExtensionUpdate[]; up_to_date: number; unknown: string[]; checked: number }
 export interface ExtensionUpdateReviewFile {
@@ -289,6 +352,8 @@ export interface ExtensionUpdateResult {
   recovery_id: string;
   rollback_detail: string;
   restart_required: true;
+  batch_id: string | null;
+  warnings: string[];
 }
 export interface ServerUpgradeResult {
   minecraft_version: string | null;

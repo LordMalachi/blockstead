@@ -2,8 +2,41 @@
 
 Blockstead is here to make running a Minecraft server feel more like hosting a
 world for friends and less like sorting through mystery files. This guide covers
-the two workspaces that change the most important things: your add-ons and your
-world backups.
+the three workflows that change the most important things: creating a protected
+modded copy, managing its add-ons, and protecting its world with backups.
+
+## Create a protected modded copy
+
+Open **Maintenance** on any recognized Vanilla, Paper, Fabric, Forge, NeoForge,
+or Quilt profile and choose **Create a modded copy**. Blockstead keeps the same
+Minecraft version and asks which target you want:
+
+- **Paper** runs server-side plugins. Players normally connect with ordinary
+  Minecraft unless a particular plugin says otherwise.
+- **Fabric**, **Forge**, **NeoForge**, and **Quilt** run mods. Players often need
+  a matching client loadout.
+
+This is a copy, not an in-place conversion. Blockstead requires the source
+server to be stopped and a verified backup made within the last 24 hours. It
+checks Java, free disk space, world size, loader availability, and extension
+compatibility before showing the final review.
+
+The copied world includes the configured overworld, Nether, End, builds, player
+inventories, advancements, statistics, and other world-contained data. The
+source profile, source folder, and verified backup stay unchanged. Loader files,
+configuration, `mods`, `plugins`, and disabled-extension folders are not copied.
+Copying jars between loaders is unsafe, so the new profile receives a fresh
+extension checklist instead.
+
+Worlds that have already stored blocks, entities, dimensions, or registries
+from mods need extra care. If equivalent target mods do not exist, that content
+may be missing or the world may refuse to load. Blockstead calls this out and
+requires an acknowledgement; it cannot manufacture cross-loader compatibility.
+
+After creation, Blockstead opens the new profile's **Mods and plugins**
+workspace. The copy remains stopped until you review its loadout, accept the
+Minecraft EULA, and choose to start it. If anything is wrong, return to the
+untouched source profile or restore its retained backup.
 
 ## The Extension Workshop
 
@@ -40,6 +73,35 @@ before any of them are made live. Paper plugins sometimes name prerequisites
 without a catalog address; Blockstead asks you to install those named plugins
 first instead of guessing which jar to fetch.
 
+### Install files you downloaded
+
+Choose **Install downloaded files** beside Discover. Drop or select up to the
+displayed batch limit of `.jar` files at once. Do **not** extract them. A
+Modrinth `.mrpack` is a complete modpack and belongs in the separate modpack
+import workflow, not here.
+
+Blockstead uploads the batch to private temporary staging and inspects it before
+anything reaches the server. The review shows the detected name, version,
+extension type, supported loaders, Minecraft constraint, client/server
+environment, dependencies, SHA-256, and final destination:
+
+- Paper files go to `plugins`.
+- Fabric, Forge, NeoForge, and Quilt files go to `mods`.
+
+Invalid archives, unsafe names, oversized files, duplicate or conflicting
+files, known loader mismatches, and known client-only files are blocked.
+Unrecognized metadata can be installed only after you acknowledge that
+Blockstead could not verify compatibility or origin. Missing required
+dependencies can be satisfied by another staged jar or a compatible result from
+the filtered catalogs.
+
+Accepted batches are applied together: either every reviewed file is promoted
+or none is. Manually supplied files then use the same inventory, Activity
+history, enable/disable, update matching, and removal controls as catalog
+installs. A locally calculated SHA-256 proves that the reviewed bytes did not
+change; it does **not** prove who published them. Only install jars from sources
+you trust.
+
 ### Keep your loadout tidy
 
 **Manage** separates active files from files you have disabled. Each item shows
@@ -52,6 +114,8 @@ Minecraft version information when available.
   set, then promotes every jar as one transaction. It parks the old jars in a
   private rollback area until every promotion succeeds; a failure restores the
   prior loadout, while a success securely cleans up only those retired jars.
+  If an update is rolled back, Blockstead also restores the file's recorded
+  source information so later update and export decisions remain accurate.
 - **Disable** parks a jar in Blockstead's managed disabled area. It is a great
   way to troubleshoot or run a plain-Minecraft session without losing your
   usual setup.
@@ -59,24 +123,43 @@ Minecraft version information when available.
   saved loadout back. Nothing is deleted.
 - **Remove** permanently removes that jar after a confirmation. Use Disable if
   you think you might want it back soon.
-- **Upload a `.jar`** is for a file you already trust and downloaded yourself.
-  Jars contain executable code. Blockstead checks that the upload is a jar
-  archive, stages it, and waits for the server to stop before placing it, but
-  cannot verify its origin or guarantee that it works with your loadout.
+- **Test private startup** clones the server into a disposable local workspace,
+  binds it to loopback on an ephemeral port, and creates a disposable world.
+  Your real world is never started by the test. When an explicitly reviewed
+  batch produces a clear extension-loading error, only that batch can be moved
+  to Blockstead's disabled area. Java errors, timeouts, and unrelated crashes do
+  not cause automatic quarantine.
+- **Export loadout lockfile** records the exact active and disabled file names,
+  checksums, recognized metadata, loader, and Minecraft version. It is useful
+  for auditing or rebuilding a server, but it does not redistribute jars.
+- **Review player pack** shows which verified client-required Modrinth files can
+  be included, which files need manual download, which server-only files are
+  excluded, and any disclosures. Download is enabled only for that reviewed
+  loadout; changing a jar makes the review stale.
 
 The **Configure** area is for supported generated configuration files. Change
 one thing at a time, then start the server and check the early console messages
 if an add-on is new or updated.
 
-### A comfortable game-night routine
+### Recommended owner workflow
 
-1. Browse and compare while the server is up, if you like.
-2. Let players know, then stop the server from Blockstead.
-3. Make the extension change and read any version, loader, or dependency note.
-4. Start the server again and check the first startup messages.
+1. Stop the source server and make a fresh verified backup.
+2. Use **Maintenance → Create a modded copy**, read the review, and create the
+   separate target.
+3. Review the migration checklist. Reinstall compatible extensions from the
+   filtered catalogs or use **Install downloaded files** without extracting jars.
+4. Resolve every required dependency and apply the reviewed batch.
+5. Accept the Minecraft EULA, then run **Test private startup**.
+6. For modded clients, review and download the player pack; give players its
+   manual requirements too.
+7. Start the real target only after the private test passes. Watch the first
+   console startup for dependency, registry, map-port, or configuration errors.
+8. If the result is not right, stop the target. Disable the new batch, use its
+   lockfile to compare changes, or return to the untouched source and backup.
 
-If a new add-on makes the server unhappy, stop it and use **Disable** (or the
-vanilla switch) to get back to a known-good loadout.
+Never delete the old profile or its backup until the modded copy has survived a
+few normal starts and you have confirmed player inventories, builds, Nether,
+End, and any map plugin behavior.
 
 ## The Backup Center
 
@@ -150,6 +233,6 @@ Small question-mark buttons explain project filtering, stopped-server
 locks, live backups, verification, retention, and approved mirror folders.
 
 The top-level **Help** page also links directly to these workspaces. Search for
-`mods`, `plugins`, `backup`, `restore`, `retention`, `mirror`, or `CurseForge`
-to bring up the relevant guide. None of the guides changes your server on its
-own.
+`migration`, `mods`, `plugins`, `backup`, `restore`, `retention`, `mirror`, or
+`CurseForge` to bring up the relevant guide. None of the guides changes your
+server on its own.

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -9,7 +10,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, cast
 
@@ -84,6 +85,7 @@ from .extension_ops import (
     SUPPORTED_CHECKSUMS,
     ExtensionOpsError,
     checksum_matches,
+    create_manual_staging_directory,
     create_staging_directory,
     disabled_directory,
     ensure_managed_directory,
@@ -91,9 +93,18 @@ from .extension_ops import (
     promote_staged_files,
     set_all_enabled,
     set_enabled,
+    stage_uploaded_jar,
 )
 from .extension_ops import (
     remove as remove_extension,
+)
+from .extension_origins import (
+    OriginRegistryError,
+    forget_origin,
+    load_origin_map,
+    record_catalog_files,
+    record_existing_origin,
+    record_local_files,
 )
 from .extension_updates import (
     ExtensionRecoveryError,
@@ -114,7 +125,7 @@ from .extension_updates import (
 from .extension_updates import (
     rollback_update as rollback_extension_update,
 )
-from .extensions import ExtensionEntry, read_extensions
+from .extensions import ExtensionEntry, ExtensionsView, inspect_extension_jar, read_extensions
 from .file_paths import CATEGORIES as FILE_CATEGORIES
 from .file_paths import FileCategory, FilePathError
 from .hangar import (
@@ -141,7 +152,24 @@ from .import_scan import (
     scan_server,
 )
 from .java_runtime import discover_java_runtimes, find_java
+from .loader_migration import (
+    MigrationApplyRequest,
+    MigrationReviewRequest,
+    classify_extensions,
+    copy_worlds,
+    review_fingerprint,
+    safe_level_name,
+    world_roots,
+)
+from .loadout_lockfiles import (
+    MAX_LOCKFILE_BYTES,
+    OriginMap,
+    build_loadout_lockfile,
+    review_loadout_lockfile,
+    serialize_loadout_lockfile,
+)
 from .maintenance import (
+    BACKUP_OVERHEAD_BYTES,
     FRESH_PROTECTION_HOURS,
     BackupPoint,
     MaintenanceContext,
@@ -157,6 +185,13 @@ from .maintenance import (
 )
 from .maintenance import (
     catalog as maintenance_catalog,
+)
+from .manual_imports import (
+    MAX_IMPORT_FILES,
+    ManualImportApplyRequest,
+    cleanup_expired,
+    load_manifest,
+    save_manifest,
 )
 from .mod_configs import (
     ModConfigError,
@@ -205,6 +240,11 @@ from .overview import (
     strict_world_size,
     world_size,
 )
+from .player_pack_exports import (
+    PlayerPackExportError,
+    PlayerPackExportResult,
+    build_player_mrpack,
+)
 from .player_sessions import (
     JOIN_PATTERN,
     LEAVE_PATTERN,
@@ -222,6 +262,17 @@ from .provisioning import (
     resolve_plan,
 )
 from .retention import enforce_retention
+from .safe_start import (
+    SafeStartError,
+    cleanup_reviewed_batches,
+    cleanup_validation_workspaces,
+    delete_reviewed_batch,
+    identify_reviewed_batch,
+    load_reviewed_batch,
+    plan_safe_test_start,
+    run_safe_test_start,
+    save_reviewed_batch,
+)
 from .scheduler import Scheduler, automation_steps, next_executions, parse_weekdays
 from .schemas import (
     PROJECT_ID_PATTERN,
@@ -245,6 +296,7 @@ from .schemas import (
     ProfileCreate,
     ProvisionRequest,
     RawSettingsUpdateRequest,
+    SafeTestStartRequest,
     ScheduleRequest,
     ServerUpgradeRequest,
     SettingsUpdateRequest,
@@ -426,6 +478,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             safe_detail=marker,
                             created_at=helper_result.at,
                         )
+                    )
+            for profile in db.scalars(select(Profile)).all():
+                try:
+                    directory = canonical_child(
+                        Path(profile.server_directory), config.server_root
+                    )
+                    cleanup_validation_workspaces(directory)
+                    info = DISTRIBUTIONS.get(profile.distribution)
+                    if info is not None and info.extension_directory is not None:
+                        cleanup_reviewed_batches(
+                            directory / info.extension_directory
+                        )
+                except (OSError, ValueError, SafeStartError):
+                    log.warning(
+                        "Could not clean stale loadout validation data for profile %s.",
+                        profile.id,
                     )
             db.commit()
         metrics_task = asyncio.create_task(metrics_loop())
@@ -1812,6 +1880,286 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 409, "The profile folder is no longer inside the allowed server root."
             ) from exc
 
+    async def build_loader_migration_review(
+        profile: Profile, target_distribution: str, db: Session
+    ) -> dict[str, object]:
+        if profile.distribution not in DISTRIBUTIONS or profile.distribution == "unknown":
+            raise HTTPException(409, "Blockstead does not recognize this server's current loader.")
+        if not profile.minecraft_version:
+            raise HTTPException(
+                409, "Blockstead could not determine this server's Minecraft version."
+            )
+        source = profile_directory(profile.id, db)
+        try:
+            provision_plan = await resolve_plan(
+                http_client, target_distribution, profile.minecraft_version, None
+            )
+        except ProvisionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        properties = read_properties(source)
+        level_name = safe_level_name(properties.get("level-name"))
+        roots = world_roots(source, level_name)
+        view = read_extensions(source, profile.distribution)
+        extensions = classify_extensions(
+            view.entries, profile.distribution, target_distribution
+        )
+        required_java = required_java_major(profile.minecraft_version)
+        runtime = (
+            find_java(required_java, discover_java_runtimes())
+            if required_java is not None
+            else None
+        )
+
+        newest_backup = db.scalar(
+            select(BackupRecord)
+            .where(
+                BackupRecord.profile_id == profile.id,
+                BackupRecord.status == "completed",
+            )
+            .order_by(BackupRecord.created_at.desc())
+            .limit(1)
+        )
+        backup_id: str | None = None
+        backup_detail = "Create a verified backup before migrating this world."
+        backup_age_hours: float | None = None
+        backup_verified = False
+        if (
+            newest_backup is not None
+            and newest_backup.file_name
+            and newest_backup.manifest_name
+        ):
+            try:
+                await asyncio.to_thread(
+                    verify_backup_archive,
+                    config.data_dir,
+                    profile.id,
+                    newest_backup.file_name,
+                    newest_backup.manifest_name,
+                    newest_backup.sha256,
+                )
+                created = newest_backup.created_at
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)  # noqa: UP017
+                backup_age_hours = max(
+                    0.0,
+                    (datetime.now(timezone.utc) - created).total_seconds() / 3600,  # noqa: UP017
+                )
+                backup_verified = backup_age_hours <= FRESH_PROTECTION_HOURS
+                backup_id = newest_backup.id
+                backup_detail = (
+                    f"Verified backup {newest_backup.id} is "
+                    f"{backup_age_hours:.1f} hours old."
+                    if backup_verified
+                    else "The newest verified backup is older than 24 hours."
+                )
+            except RestoreError as exc:
+                backup_detail = str(exc)
+
+        measured_world = strict_world_size(source, properties)
+        disk_free = int(psutil.disk_usage(str(config.server_root)).free)
+        required_space = (
+            measured_world + BACKUP_OVERHEAD_BYTES if measured_world is not None else None
+        )
+        stopped = manager.state.value in {"STOPPED", "CRASHED"}
+        blockers: list[str] = []
+        if not stopped:
+            blockers.append("Stop the active Minecraft server before creating a modded copy.")
+        if not roots:
+            blockers.append("No supported world folders were found to copy.")
+        if not backup_verified:
+            blockers.append("Create a fresh verified backup before migrating.")
+        if required_java is not None and runtime is None:
+            blockers.append(
+                f"Install Java {required_java} before creating this {target_distribution} server."
+            )
+        if required_space is None:
+            blockers.append("Blockstead could not measure the world safely.")
+        elif disk_free < required_space:
+            blockers.append("The server disk does not have enough free space for a safe copy.")
+
+        review_id = review_fingerprint(
+            profile_id=profile.id,
+            source_distribution=profile.distribution,
+            minecraft_version=profile.minecraft_version,
+            target_distribution=target_distribution,
+            loader_version=provision_plan.loader_version,
+            level_name=level_name,
+            roots=roots,
+            entries=view.entries,
+            backup_id=backup_id,
+        )
+        return {
+            "review_id": review_id,
+            "profile_id": profile.id,
+            "source_distribution": profile.distribution,
+            "target_distribution": target_distribution,
+            "minecraft_version": profile.minecraft_version,
+            "loader_version": provision_plan.loader_version,
+            "level_name": level_name,
+            "worlds": [root.name for root in roots],
+            "world_size_bytes": measured_world,
+            "disk_free_bytes": disk_free,
+            "required_java_major": required_java,
+            "java_ready": required_java is None or runtime is not None,
+            "stopped": stopped,
+            "protection": {
+                "verified": backup_verified,
+                "backup_id": backup_id,
+                "age_hours": backup_age_hours,
+                "detail": backup_detail,
+            },
+            "extensions": [entry.model_dump() for entry in extensions],
+            "modded_world_warning": bool(view.entries) or profile.distribution != "vanilla",
+            "blockers": blockers,
+            "ready": not blockers,
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/loader-migration/review")
+    async def loader_migration_review(
+        profile_id: str,
+        payload: MigrationReviewRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        return await build_loader_migration_review(
+            profile, payload.target_distribution, db
+        )
+
+    @app.post("/api/v1/profiles/{profile_id}/loader-migration/apply", status_code=201)
+    async def loader_migration_apply(
+        profile_id: str,
+        payload: MigrationApplyRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        fresh = await build_loader_migration_review(
+            profile, payload.target_distribution, db
+        )
+        if fresh["review_id"] != payload.review_id:
+            raise HTTPException(
+                409, "This server changed after the migration review. Review it again."
+            )
+        if fresh["blockers"]:
+            raise HTTPException(409, str(fresh["blockers"][0]))
+        protection = cast(dict[str, object], fresh["protection"])
+        if protection.get("backup_id") != payload.backup_id:
+            raise HTTPException(409, "Choose the fresh verified backup from this review.")
+        if fresh["modded_world_warning"] and not payload.acknowledge_modded_world:
+            raise HTTPException(
+                422,
+                "Acknowledge that unavailable source mods may leave custom world content "
+                "unreadable in the new loader.",
+            )
+        if payload.loader_version != fresh["loader_version"]:
+            raise HTTPException(
+                409, "The recommended loader version changed. Review the migration again."
+            )
+
+        required_java = cast(int | None, fresh["required_java_major"])
+        runtime = (
+            find_java(required_java, discover_java_runtimes())
+            if required_java is not None
+            else None
+        )
+        java_executable = (
+            runtime.path
+            if runtime is not None
+            and payload.target_distribution in {"forge", "quilt", "neoforge"}
+            else None
+        )
+        try:
+            provisioned = await provision_profile(
+                http_client,
+                config.server_root,
+                payload.directory_name,
+                payload.target_distribution,
+                cast(str, fresh["minecraft_version"]),
+                payload.loader_version,
+                java_executable,
+            )
+        except ProvisionError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(409, "The new server folder could not be created.") from exc
+
+        target = Path(provisioned.directory)
+        source = profile_directory(profile.id, db)
+        roots = world_roots(source, cast(str, fresh["level_name"]))
+        try:
+            copied = await asyncio.to_thread(
+                copy_worlds,
+                roots,
+                target,
+                cast(str, fresh["level_name"]),
+                profile.distribution,
+                payload.target_distribution,
+            )
+        except (OSError, ValueError) as exc:
+            await asyncio.to_thread(shutil.rmtree, target, True)
+            raise HTTPException(
+                409,
+                "The world copy did not complete. The incomplete target was removed and "
+                "the source was not changed.",
+            ) from exc
+
+        created = Profile(
+            name=payload.name.strip(),
+            server_directory=provisioned.directory,
+            distribution=payload.target_distribution,
+            minecraft_version=cast(str, fresh["minecraft_version"]),
+            loader_version=provisioned.plan.loader_version,
+            is_fixture=False,
+        )
+        db.add(created)
+        db.flush()
+        db.add_all(
+            [
+                AuditEvent(
+                    admin_id=admin.id,
+                    profile_id=profile.id,
+                    category="loader_migration",
+                    result="source_retained",
+                    safe_detail=(
+                        f"Created protected {payload.target_distribution} copy "
+                        f"{created.name}; source profile retained"
+                    ),
+                ),
+                AuditEvent(
+                    admin_id=admin.id,
+                    profile_id=created.id,
+                    category="loader_migration",
+                    result="success",
+                    safe_detail=(
+                        f"Copied {', '.join(copied)} from {profile.name} using verified "
+                        f"backup {payload.backup_id}"
+                    ),
+                ),
+            ]
+        )
+        db.commit()
+        return {
+            "id": created.id,
+            "name": created.name,
+            "distribution": created.distribution,
+            "minecraft_version": created.minecraft_version,
+            "loader_version": created.loader_version,
+            "worlds_copied": copied,
+            "source_profile_id": profile.id,
+            "source_unchanged": True,
+            "extensions": fresh["extensions"],
+            "next_route": f"/servers/{created.id}/mods?migration=1",
+            "eula_accepted": False,
+        }
+
     @app.get("/api/v1/profiles/{profile_id}/settings")
     def profile_settings(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
@@ -1957,6 +2305,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
         directory = profile_directory(profile_id, db)
+        info = DISTRIBUTIONS.get(profile.distribution, DISTRIBUTIONS["unknown"])
+        if info.extension_directory is not None:
+            cleanup_expired(directory / info.extension_directory)
         return read_extensions(directory, profile.distribution).model_dump()
 
     @app.get("/api/v1/profiles/{profile_id}/shared-map")
@@ -2085,6 +2436,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ],
             skipped,
         )
+
+    def persist_reviewed_batch(
+        extension_dir: Path,
+        file_names: list[str],
+        *,
+        review_id: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Retain the exact newly promoted files for one later private test."""
+
+        if not file_names:
+            return None, None
+        if len(file_names) > 20:
+            return None, "This install is too large to quarantine as one reviewed batch."
+        identity = review_id or secrets.token_hex(8)
+        try:
+            entries = [inspect_extension_jar(extension_dir / name) for name in file_names]
+            batch = identify_reviewed_batch(extension_dir, identity, entries)
+            save_reviewed_batch(extension_dir, batch)
+        except SafeStartError as exc:
+            return None, str(exc)
+        return identity, None
 
     def missing_paper_dependencies(
         directory: Path, profile: Profile, planned: list[PlannedFile]
@@ -2306,6 +2678,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     f"safely resolve from Hangar: {', '.join(missing)}.",
                 )
         installed, skipped = await stage_extension_install(extension_dir, planned)
+        batch_id, batch_warning = persist_reviewed_batch(
+            extension_dir, [str(item["file_name"]) for item in installed]
+        )
+        origin_warning: str | None = None
+        try:
+            record_catalog_files(extension_dir, payload.source, planned)
+        except OriginRegistryError as exc:
+            origin_warning = str(exc)
         db.add(
             AuditEvent(
                 admin_id=admin.id,
@@ -2323,6 +2703,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "installed": installed,
             "skipped": skipped,
             "restart_required": True,
+            "batch_id": batch_id,
+            "warnings": [
+                warning for warning in (origin_warning, batch_warning) if warning is not None
+            ],
         }
 
     @app.post("/api/v1/profiles/{profile_id}/extensions/toggle")
@@ -2551,12 +2935,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         assert entry.sha512 is not None
         recovery: Path | None = None
         try:
+            previous_origin = load_origin_map(extension_dir).get(entry.file_name)
+        except OriginRegistryError:
+            previous_origin = None
+        try:
             recovery_id, recovery = prepare_extension_recovery(
                 recovery_root=config.data_dir,
                 profile_id=profile.id,
                 extension_directory=extension_dir,
                 review=review,
                 installed_sha512=entry.sha512,
+                old_origin=(
+                    previous_origin.model_dump(mode="json") if previous_origin else None
+                ),
             )
             changed_names = {
                 item.file_name for item in review.files if item.action != "already_present"
@@ -2597,6 +2988,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         if sha256 is None:
             raise HTTPException(409, "The updated extension file was not installed.")
+        batch_id, batch_warning = persist_reviewed_batch(
+            extension_dir, [str(item["file_name"]) for item in installed]
+        )
+        origin_warning: str | None = None
+        try:
+            forget_origin(extension_dir, entry.file_name)
+            record_catalog_files(extension_dir, "modrinth", update_plan)
+        except OriginRegistryError as exc:
+            origin_warning = str(exc)
         db.add(
             AuditEvent(
                 admin_id=admin.id,
@@ -2620,6 +3020,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "recovery_id": recovery_id,
             "rollback_detail": review.rollback_detail,
             "restart_required": True,
+            "batch_id": batch_id,
+            "warnings": [
+                warning for warning in (origin_warning, batch_warning) if warning is not None
+            ],
         }
 
     @app.post(
@@ -2644,6 +3048,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except (ExtensionRecoveryError, ExtensionOpsError) as exc:
             raise HTTPException(409, str(exc)) from exc
         old_name = str(recovery["old_file"])
+        origin_warning: str | None = None
+        try:
+            raw_new_files = recovery.get("new_files")
+            if isinstance(raw_new_files, list):
+                for item in raw_new_files:
+                    if isinstance(item, dict) and isinstance(item.get("file_name"), str):
+                        forget_origin(extension_dir, item["file_name"])
+            old_origin = recovery.get("old_origin")
+            if isinstance(old_origin, dict):
+                record_existing_origin(extension_dir, old_name, old_origin)
+        except OriginRegistryError as exc:
+            origin_warning = str(exc)
         db.add(
             AuditEvent(
                 admin_id=admin.id,
@@ -2664,6 +3080,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f"Restored {old_name}. Restart the server to load the recovered extension. "
                 "World data was not rolled back."
             ),
+            "warnings": [origin_warning] if origin_warning else [],
         }
 
     @app.post("/api/v1/profiles/{profile_id}/extensions/toggle-all")
@@ -2707,6 +3124,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             remove_extension(extension_dir, file_name, disabled)
         except ExtensionOpsError as exc:
             raise HTTPException(409, str(exc)) from exc
+        try:
+            forget_origin(extension_dir, file_name)
+        except OriginRegistryError:
+            pass
         db.add(
             AuditEvent(
                 admin_id=admin.id,
@@ -2731,6 +3152,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             target = place_upload(extension_dir, file.filename or "", content)
         except ExtensionOpsError as exc:
             raise HTTPException(400, str(exc)) from exc
+        origin_warning: str | None = None
+        try:
+            record_local_files(extension_dir, [target.name])
+        except OriginRegistryError as exc:
+            origin_warning = str(exc)
         view = read_extensions(profile_directory(profile_id, db), profile.distribution)
         entry = next((item for item in view.entries if item.file_name == target.name), None)
         db.add(
@@ -2746,9 +3172,573 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.commit()
         return {
             "entry": entry.model_dump() if entry else None,
-            "warnings": [warning.model_dump() for warning in view.warnings],
+            "warnings": [
+                *[warning.model_dump() for warning in view.warnings],
+                *([{"code": "origin_record", "message": origin_warning}] if origin_warning else []),
+            ],
             "restart_required": True,
         }
+
+    @app.post(
+        "/api/v1/profiles/{profile_id}/extensions/manual-import/review",
+        status_code=201,
+    )
+    async def manual_import_review(
+        profile_id: str,
+        files: list[UploadFile],
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        mutation(request, db)
+        require_server_stopped()
+        profile, extension_dir = extension_context(profile_id, db)
+        if not files or len(files) > MAX_IMPORT_FILES:
+            raise HTTPException(
+                422, f"Choose between 1 and {MAX_IMPORT_FILES} jar files."
+            )
+        cleanup_expired(extension_dir)
+        review_id = secrets.token_hex(8)
+        try:
+            staging = create_manual_staging_directory(extension_dir, review_id)
+        except ExtensionOpsError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        total = 0
+        staged_entries: list[ExtensionEntry] = []
+        try:
+            seen: set[str] = set()
+            for upload in files:
+                name = upload.filename or ""
+                if name in seen:
+                    raise ExtensionOpsError(f"The selected files contain duplicate name {name}.")
+                seen.add(name)
+                content = await upload.read(MAX_UPLOAD_BYTES + 1)
+                total += len(content)
+                if total > MAX_UPLOAD_BYTES * 2:
+                    raise ExtensionOpsError(
+                        "The selected jar files are too large to review as one batch."
+                    )
+                path = stage_uploaded_jar(staging, name, content)
+                staged_entries.append(inspect_extension_jar(path))
+
+            native = (
+                {"paper"}
+                if profile.distribution == "paper"
+                else {
+                    profile.distribution,
+                    *(["fabric"] if profile.distribution == "quilt" else []),
+                }
+            )
+            installed_view = read_extensions(
+                profile_directory(profile.id, db), profile.distribution
+            )
+            installed_ids = {
+                item.identifier.casefold()
+                for item in [*installed_view.entries, *installed_view.disabled_entries]
+                if item.identifier
+            }
+            staged_ids = {
+                item.identifier.casefold() for item in staged_entries if item.identifier
+            }
+            wrong_loader = [
+                item.file_name
+                for item in staged_entries
+                if item.loaders and not (set(item.loaders) & native)
+            ]
+            client_only = [
+                item.file_name
+                for item in staged_entries
+                if item.environment == "client"
+            ]
+            unknown = [
+                item.file_name
+                for item in staged_entries
+                if not item.loaders or not item.identifier
+            ]
+            missing = sorted(
+                {
+                    dependency
+                    for item in staged_entries
+                    for dependency in item.dependencies
+                    if dependency.casefold() not in installed_ids | staged_ids
+                },
+                key=str.casefold,
+            )
+            conflicts = sorted(
+                item.file_name
+                for item in staged_entries
+                if (extension_dir / item.file_name).exists()
+                or (disabled_directory(extension_dir) / item.file_name).exists()
+            )
+            blockers: list[str] = []
+            if wrong_loader:
+                blockers.append(
+                    f"These files target a different loader: {', '.join(wrong_loader)}."
+                )
+            if client_only:
+                blockers.append(
+                    f"These files are client-only: {', '.join(client_only)}."
+                )
+            if conflicts:
+                blockers.append(
+                    f"Files with these names are already installed: {', '.join(conflicts)}."
+                )
+            if missing:
+                blockers.append(
+                    "Add these required dependencies to this batch or install them from "
+                    f"the catalog first: {', '.join(missing)}."
+                )
+            manifest = {
+                "created_at": time.time(),
+                "review_id": review_id,
+                "profile_id": profile.id,
+                "distribution": profile.distribution,
+                "destination": extension_dir.name,
+                "files": [entry.model_dump() for entry in staged_entries],
+                "unknown_files": unknown,
+            }
+            save_manifest(staging, manifest)
+        except (ExtensionOpsError, OSError, ValueError) as exc:
+            shutil.rmtree(staging, ignore_errors=True)
+            if isinstance(exc, ExtensionOpsError):
+                raise HTTPException(400, str(exc)) from exc
+            raise HTTPException(409, "The manual import review could not be prepared.") from exc
+        return {
+            **manifest,
+            "blockers": blockers,
+            "missing_dependencies": missing,
+            "requires_acknowledgement": bool(unknown),
+            "expires_in_seconds": 60 * 60,
+        }
+
+    @app.post(
+        "/api/v1/profiles/{profile_id}/extensions/manual-import/apply",
+        status_code=201,
+    )
+    def manual_import_apply(
+        profile_id: str,
+        payload: ManualImportApplyRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        require_server_stopped()
+        profile, extension_dir = extension_context(profile_id, db)
+        staging = extension_dir / f".blockstead-manual-{payload.review_id}"
+        try:
+            manifest = load_manifest(staging)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if (
+            manifest.get("review_id") != payload.review_id
+            or manifest.get("profile_id") != profile.id
+            or manifest.get("distribution") != profile.distribution
+        ):
+            raise HTTPException(409, "That manual import review belongs to another loadout.")
+        raw_files = manifest.get("files")
+        if not isinstance(raw_files, list) or not raw_files:
+            raise HTTPException(409, "That manual import review contains no files.")
+        reviewed = {
+            str(item.get("file_name")): item
+            for item in raw_files
+            if isinstance(item, dict) and isinstance(item.get("file_name"), str)
+        }
+        entries = [inspect_extension_jar(staging / name) for name in reviewed]
+        if len(entries) != len(raw_files) or any(
+            entry.sha256 != reviewed[entry.file_name].get("sha256") for entry in entries
+        ):
+            raise HTTPException(
+                409, "A staged jar changed after review. Choose the files again."
+            )
+
+        native = (
+            {"paper"}
+            if profile.distribution == "paper"
+            else {
+                profile.distribution,
+                *(["fabric"] if profile.distribution == "quilt" else []),
+            }
+        )
+        installed = read_extensions(profile_directory(profile.id, db), profile.distribution)
+        installed_ids = {
+            item.identifier.casefold()
+            for item in [*installed.entries, *installed.disabled_entries]
+            if item.identifier
+        }
+        staged_ids = {item.identifier.casefold() for item in entries if item.identifier}
+        blockers: list[str] = []
+        if any(item.loaders and not (set(item.loaders) & native) for item in entries):
+            blockers.append("One or more reviewed files target a different loader.")
+        if any(item.environment == "client" for item in entries):
+            blockers.append("One or more reviewed files are client-only.")
+        if any(
+            (extension_dir / item.file_name).exists()
+            or (disabled_directory(extension_dir) / item.file_name).exists()
+            for item in entries
+        ):
+            blockers.append("A reviewed file name is already installed.")
+        missing = {
+            dependency
+            for item in entries
+            for dependency in item.dependencies
+            if dependency.casefold() not in installed_ids | staged_ids
+        }
+        if missing:
+            blockers.append(
+                "Required dependencies are still missing: "
+                + ", ".join(sorted(missing, key=str.casefold))
+                + "."
+            )
+        unknown = [item for item in entries if not item.loaders or not item.identifier]
+        if unknown and not payload.acknowledge_unknown:
+            raise HTTPException(
+                422,
+                "Acknowledge that Blockstead could not verify the compatibility or origin "
+                "of every selected jar.",
+            )
+        if blockers:
+            raise HTTPException(409, blockers[0])
+        try:
+            promote_staged_files(
+                extension_dir, staging, [entry.file_name for entry in entries]
+            )
+        except ExtensionOpsError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        warnings: list[str] = []
+        try:
+            record_local_files(extension_dir, [entry.file_name for entry in entries])
+        except OriginRegistryError as exc:
+            warnings.append(str(exc))
+        batch_id, batch_warning = persist_reviewed_batch(
+            extension_dir,
+            [entry.file_name for entry in entries],
+            review_id=payload.review_id,
+        )
+        if batch_warning:
+            warnings.append(
+                "The files were installed, but private batch validation is unavailable: "
+                f"{batch_warning}"
+            )
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="extension_upload",
+                result="success",
+                safe_detail=(
+                    "Installed reviewed local files: "
+                    + ", ".join(
+                        f"{entry.file_name} (sha256 {entry.sha256 or 'unknown'})"
+                        for entry in entries
+                    )
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "installed": [entry.model_dump() for entry in entries],
+            "destination": extension_dir.name,
+            "restart_required": True,
+            "source_verified": False,
+            "batch_id": batch_id,
+            "warnings": warnings,
+        }
+
+    @app.delete(
+        "/api/v1/profiles/{profile_id}/extensions/manual-import/{review_id}",
+        status_code=204,
+    )
+    def manual_import_cancel(
+        profile_id: str, review_id: str, request: Request, db: Db
+    ) -> None:
+        mutation(request, db)
+        _, extension_dir = extension_context(profile_id, db)
+        if not re.fullmatch(r"[0-9a-f]{16}", review_id):
+            raise HTTPException(404, "That manual import review was not found.")
+        shutil.rmtree(
+            extension_dir / f".blockstead-manual-{review_id}", ignore_errors=True
+        )
+
+    @app.post("/api/v1/profiles/{profile_id}/loadout/test-start")
+    async def loadout_test_start(
+        profile_id: str,
+        payload: SafeTestStartRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        require_server_stopped()
+        profile, extension_dir = extension_context(profile_id, db)
+        directory = profile_directory(profile_id, db)
+        cleanup_validation_workspaces(directory)
+        cleanup_reviewed_batches(extension_dir)
+        run_id = secrets.token_hex(8)
+        reviewed_batch = None
+        ignored_batches = 0
+        if payload.recent_batch_ids and payload.retry_of is None:
+            ignored_batches = max(0, len(payload.recent_batch_ids) - 1)
+            try:
+                reviewed_batch = load_reviewed_batch(
+                    extension_dir, payload.recent_batch_ids[-1]
+                )
+            except SafeStartError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        try:
+            if profile.is_fixture:
+                arguments = (
+                    sys.executable,
+                    str(Path(__file__).with_name("fake_server.py")),
+                    "--mode",
+                    "normal",
+                )
+                java_executable = sys.executable
+            else:
+                required = required_java_major(profile.minecraft_version)
+                runtime = find_java(required, discover_java_runtimes())
+                if runtime is None:
+                    needed = f"Java {required} or newer" if required else "a Java runtime"
+                    raise SafeStartError(
+                        f"Private validation needs {needed}, but none was found."
+                    )
+                arguments = None
+                java_executable = runtime.path
+            plan = plan_safe_test_start(
+                profile_id=profile.id,
+                distribution=profile.distribution,
+                server_directory=directory,
+                process_state=manager.state,
+                java_executable=java_executable,
+                reviewed_batch=reviewed_batch,
+                arguments=arguments,
+                validation_id=run_id,
+            )
+            result = await run_safe_test_start(manager, plan)
+        except SafeStartError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+        if reviewed_batch is not None and (
+            result.status == "passed" or result.quarantine.succeeded
+        ):
+            try:
+                delete_reviewed_batch(extension_dir, reviewed_batch.review_id)
+            except SafeStartError:
+                pass
+        quarantined = [
+            {
+                "file_name": file_name,
+                "reason": result.quarantine.detail
+                or "Disabled after the private startup test failed.",
+            }
+            for file_name in result.quarantine.files
+        ]
+        warnings = list(result.warnings)
+        if ignored_batches:
+            warnings.append(
+                "Only the most recent reviewed install batch was eligible for automatic "
+                "quarantine."
+            )
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="loadout_validation",
+                result="success" if result.status == "passed" else "failed",
+                safe_detail=(
+                    f"Private loadout validation {result.status}; "
+                    f"{len(quarantined)} file(s) quarantined"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "run_id": run_id,
+            "status": result.status,
+            "summary": result.detail,
+            "failure_kind": result.failure_kind,
+            "log_tail": [item.line for item in result.evidence],
+            "log_lines_truncated": result.evidence_truncated,
+            "quarantined": quarantined,
+            "retry_allowed": result.status == "failed" and bool(quarantined),
+            "warnings": warnings,
+            "duration_ms": result.duration_ms,
+            "live_world_untouched": True,
+            "validation_workspace_removed": result.validation_workspace_removed,
+        }
+
+    def loadout_view(
+        profile_id: str, db: Session
+    ) -> tuple[Profile, Path, ExtensionsView, OriginMap]:
+        profile, extension_dir = extension_context(profile_id, db)
+        view = read_extensions(profile_directory(profile_id, db), profile.distribution)
+        try:
+            origins = load_origin_map(extension_dir)
+        except OriginRegistryError:
+            origins = {}
+        return profile, extension_dir, view, origins
+
+    @app.get("/api/v1/profiles/{profile_id}/loadout/lockfile")
+    def loadout_lockfile(profile_id: str, request: Request, db: Db) -> Response:
+        current(request, db)
+        profile, _, view, origins = loadout_view(profile_id, db)
+        if not profile.minecraft_version:
+            raise HTTPException(409, "This profile has no recognized Minecraft version.")
+        lockfile = build_loadout_lockfile(
+            view,
+            minecraft_version=profile.minecraft_version,
+            distribution=profile.distribution,
+            loader_version=profile.loader_version,
+            generated_at=datetime.now(UTC),
+            origins=origins,
+        )
+        return Response(
+            content=serialize_loadout_lockfile(lockfile),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="blockstead-loadout-{profile.id}.lock.json"'
+                )
+            },
+        )
+
+    @app.post("/api/v1/profiles/{profile_id}/loadout/lockfile/review")
+    async def loadout_lockfile_review(
+        profile_id: str,
+        file: UploadFile,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        mutation(request, db)
+        profile, _, view, origins = loadout_view(profile_id, db)
+        if not profile.minecraft_version:
+            raise HTTPException(409, "This profile has no recognized Minecraft version.")
+        content = await file.read(MAX_LOCKFILE_BYTES + 1)
+        review = review_loadout_lockfile(
+            content,
+            view,
+            minecraft_version=profile.minecraft_version,
+            distribution=profile.distribution,
+            loader_version=profile.loader_version,
+            origins=origins,
+        )
+        action_by_code = {
+            "missing_extension": "install",
+            "extra_extension": "remove",
+            "extension_checksum_mismatch": "update",
+            "extension_state_mismatch": "keep",
+            "extension_metadata_mismatch": "keep",
+            "file_name_mismatch": "keep",
+        }
+        changes = [
+            {
+                "file_name": mismatch.file_name or "Server setup",
+                "action": action_by_code.get(mismatch.code, "unavailable"),
+                "detail": mismatch.message,
+            }
+            for mismatch in review.mismatches
+        ]
+        expected = review.lockfile
+        manual_requirements = (
+            [
+                item.file_name
+                for item in [*expected.installed, *expected.disabled]
+                if item.origin.source in {"unknown", "manual", "local"}
+            ]
+            if expected
+            else []
+        )
+        return {
+            "review_id": secrets.token_hex(8),
+            "minecraft_version": (
+                expected.minecraft_version if expected else profile.minecraft_version
+            ),
+            "distribution": expected.distribution if expected else profile.distribution,
+            "loader_version": expected.loader_version if expected else profile.loader_version,
+            "changes": changes,
+            "exclusions": [],
+            "manual_requirements": manual_requirements,
+            "warnings": [
+                "This comparison is review-only. Blockstead did not change this loadout."
+            ],
+            "blockers": review.blockers,
+            "expires_in_seconds": 15 * 60,
+            "compatible": review.compatible,
+            "mutation_performed": False,
+        }
+
+    def build_player_pack_export(
+        profile_id: str, db: Session
+    ) -> PlayerPackExportResult:
+        profile, _, view, origins = loadout_view(profile_id, db)
+        if profile.distribution == "paper":
+            raise HTTPException(
+                409,
+                "Paper plugins run on the server and do not belong in a player mod pack.",
+            )
+        if not profile.minecraft_version:
+            raise HTTPException(409, "This profile has no recognized Minecraft version.")
+        try:
+            return build_player_mrpack(
+                view,
+                minecraft_version=profile.minecraft_version,
+                distribution=profile.distribution,
+                loader_version=profile.loader_version,
+                pack_name=f"{profile.name} player pack",
+                version_id=f"minecraft-{profile.minecraft_version}",
+                summary=f"Client loadout exported from Blockstead profile {profile.name}.",
+                generated_at=datetime.now(UTC),
+                origins=origins,
+            )
+        except PlayerPackExportError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    def player_pack_review_id(exported: PlayerPackExportResult) -> str:
+        summary = exported.summary.model_dump(mode="json")
+        summary.pop("generated_at", None)
+        evidence = {"index": exported.index, "summary": summary}
+        return hashlib.sha256(
+            json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:16]
+
+    @app.get("/api/v1/profiles/{profile_id}/loadout/player-pack/review")
+    def loadout_player_pack_review(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        current(request, db)
+        exported = build_player_pack_export(profile_id, db)
+        return {
+            "review_id": player_pack_review_id(exported),
+            "dependencies": exported.index["dependencies"],
+            **exported.summary.model_dump(mode="json"),
+        }
+
+    @app.get("/api/v1/profiles/{profile_id}/loadout/player-pack")
+    def loadout_player_pack(
+        profile_id: str,
+        request: Request,
+        db: Db,
+        review_id: str | None = None,
+    ) -> Response:
+        current(request, db)
+        if review_id is not None and not re.fullmatch(r"[0-9a-f]{16}", review_id):
+            raise HTTPException(422, "That player-pack review id is invalid.")
+        exported = build_player_pack_export(profile_id, db)
+        current_review = player_pack_review_id(exported)
+        if review_id is not None and review_id != current_review:
+            raise HTTPException(
+                409,
+                "This loadout changed after the player-pack review. Review the pack again.",
+            )
+        return Response(
+            content=exported.archive,
+            media_type="application/x-modrinth-modpack+zip",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{exported.summary.file_name}"'
+                ),
+                "X-Blockstead-Included": str(len(exported.summary.included)),
+                "X-Blockstead-Manual": str(len(exported.summary.manual_requirements)),
+                "X-Blockstead-Excluded": str(len(exported.summary.excluded)),
+            },
+        )
 
     @app.get("/api/v1/profiles/{profile_id}/configs")
     def profile_configs(profile_id: str, request: Request, db: Db) -> dict[str, object]:

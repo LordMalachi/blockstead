@@ -33,6 +33,7 @@ export function ProvisionPanel({ stopped, onCreated }: { stopped: boolean; onCre
   return <section className="card onboarding-card" id="create-server">
     <div className="section-heading"><div><p className="eyebrow">New server</p><h2>Create a configured profile</h2></div><span>Official sources</span></div>
     <p>Choose a Minecraft server type. Blockstead downloads the matching server and loader, verifies published checksums when available, and keeps each profile in its own folder.</p>
+    <p className="muted-note">Already have a world? Open that server’s <strong>Maintenance</strong> workspace and choose <strong>Create a modded copy</strong> so Blockstead protects and transfers it. <a href="/servers">Choose an existing server</a>.</p>
     <form className="provision-form" onSubmit={submit}>
       <label>Server type<select value={distribution} onChange={event => { setDistribution(event.target.value); setVersion(""); setLoaderVersion(""); }} aria-label="Server type">{loaderOptions.map(option => <option key={option.value} value={option.value}>{option.label} — {option.detail}</option>)}</select></label>
       <label>Minecraft version<select value={version} onChange={event => setVersion(event.target.value)} disabled={versions.isLoading || !versions.data?.versions.length} aria-label="Minecraft version"><option value="">{versions.isLoading ? "Loading versions…" : "Choose a version"}</option>{versions.data?.versions.map(item => <option value={item} key={item}>{item}</option>)}</select></label>

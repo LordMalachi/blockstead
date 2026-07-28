@@ -122,7 +122,16 @@ def _parse_fabric(raw: bytes, found: _Metadata) -> None:
         found.fill("minecraft_constraint", _clean(depends.get("minecraft")))
         if not found.dependencies:
             found.dependencies = sorted(
-                str(key)[:100] for key in depends if key not in {"minecraft", "java"}
+                str(key)[:100]
+                for key in depends
+                if key not in {
+                    "minecraft",
+                    "java",
+                    "fabricloader",
+                    "quilt_loader",
+                    "forge",
+                    "neoforge",
+                }
             )
 
 
@@ -241,7 +250,7 @@ def _kind_of(loaders: list[str]) -> Kind:
     return "unknown"
 
 
-def _inspect_jar(path: Path) -> ExtensionEntry:
+def inspect_extension_jar(path: Path) -> ExtensionEntry:
     found = _Metadata()
     sha256: str | None = None
     sha512: str | None = None
@@ -376,7 +385,7 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
         )
     folder = server_directory / info.extension_directory
     disabled = server_directory / f"{info.extension_directory}-disabled"
-    disabled_entries = [_inspect_jar(jar) for jar in _list_jars(disabled)[:MAX_JARS]]
+    disabled_entries = [inspect_extension_jar(jar) for jar in _list_jars(disabled)[:MAX_JARS]]
     if not folder.is_dir():
         return ExtensionsView(
             directory=info.extension_directory,
@@ -387,7 +396,7 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
             truncated=False,
         )
     jars = _list_jars(folder)
-    entries = [_inspect_jar(jar) for jar in jars[:MAX_JARS]]
+    entries = [inspect_extension_jar(jar) for jar in jars[:MAX_JARS]]
     return ExtensionsView(
         directory=info.extension_directory,
         present=True,

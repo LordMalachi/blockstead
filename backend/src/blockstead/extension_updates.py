@@ -166,6 +166,7 @@ def prepare_recovery(
     extension_directory: Path,
     review: ExtensionUpdateReview,
     installed_sha512: str,
+    old_origin: dict[str, object] | None = None,
 ) -> tuple[str, Path]:
     directory = ensure_managed_directory(extension_directory)
     source = directory / review.file_name
@@ -186,6 +187,7 @@ def prepare_recovery(
                 "review_id": review.review_id,
                 "old_file": review.file_name,
                 "old_sha512": installed_sha512,
+                "old_origin": old_origin,
                 "new_files": [],
                 "created_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
                 "ready": False,

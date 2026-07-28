@@ -12,6 +12,7 @@ import {
   type UpgradeReview,
 } from "../../api/client";
 import { Button } from "../../components/Button";
+import { LoaderMigrationPanel } from "./LoaderMigrationPanel";
 
 const findingStatusLabels = {
   ready: "Ready",
@@ -55,6 +56,33 @@ function defaultRunAt() {
   when.setMinutes(0, 0, 0);
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}T${pad(when.getHours())}:${pad(when.getMinutes())}`;
+}
+
+function CatalogFailure({ error, retry }: { error: Error; retry: () => void }) {
+  const request = error instanceof ApiRequestError ? error : null;
+  const title = request?.status === 404
+    ? "Maintenance needs a matching Blockstead update"
+    : request?.status === 401
+      ? "Sign in again to open Maintenance"
+      : request?.status && request.status >= 500
+        ? "Blockstead hit an internal error"
+        : "Blockstead could not reach the maintenance service";
+  const detail = request?.status === 404
+    ? "The dashboard and backend appear to be different versions. Update Blockstead, restart its service, and try again. This is an application problem, not a Minecraft or mod error."
+    : request?.status === 401
+      ? "Your Blockstead session expired. The sign-in screen should open automatically."
+      : request?.status && request.status >= 500
+        ? `${error.message} Your Minecraft server and files were not changed.`
+        : `${error.message} Check that the Blockstead service is running, then retry.`;
+  return <div className="query-error maintenance-load-error" role="alert">
+    <strong>{title}</strong>
+    <p>{detail}</p>
+    <div className="maintenance-actions">
+      <Button className="button--secondary button--small" onClick={retry}>Try again</Button>
+      <Link className="button button--quiet button--small" to="/system#updates">Check for Blockstead updates</Link>
+      <Link className="button button--quiet button--small" to="/system#diagnostics">Open diagnostics</Link>
+    </div>
+  </div>;
 }
 
 export function MaintenancePanel({ profileId }: { profileId: string }) {
@@ -167,7 +195,9 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
     <p className="maintenance-intro">Blockstead reads the current evidence — who is connected, whether the server is stopped, whether a backup really verifies, free disk, a pending restart, and known compatibility limits — and turns it into one readable plan. The review changes nothing on its own, and every step below is still yours to run in the workspace that owns it.</p>
 
     {catalog.isPending && <p className="empty-note">Opening the reviewed change list…</p>}
-    {catalog.error && <p className="error" role="alert">{catalog.error.message}</p>}
+    {catalog.error && <CatalogFailure error={catalog.error} retry={() => void catalog.refetch()} />}
+
+    <LoaderMigrationPanel profileId={profileId} />
 
     {catalog.data && <fieldset className="maintenance-changes">
       <legend>What do you want to change?</legend>

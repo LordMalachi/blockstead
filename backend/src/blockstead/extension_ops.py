@@ -84,6 +84,50 @@ def create_staging_directory(extension_directory: Path) -> Path:
     return staging
 
 
+def create_manual_staging_directory(extension_directory: Path, review_id: str) -> Path:
+    directory = ensure_managed_directory(extension_directory, create=True)
+    staging = directory / f".blockstead-manual-{review_id}"
+    try:
+        staging.mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise ExtensionOpsError(
+            "A manual import review with that identity already exists."
+        ) from exc
+    except OSError as exc:
+        raise ExtensionOpsError("Blockstead could not prepare the manual import review.") from exc
+    return staging
+
+
+def stage_uploaded_jar(staging: Path, file_name: str, content: bytes) -> Path:
+    if not JAR_NAME_PATTERN.match(file_name):
+        raise ExtensionOpsError(
+            "Upload .jar files whose names use only letters, digits, dots, spaces, "
+            "hyphens, and underscores."
+        )
+    if not content:
+        raise ExtensionOpsError(f"{file_name} was empty.")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise ExtensionOpsError(f"{file_name} is larger than Blockstead accepts.")
+    if staging.is_symlink() or not staging.is_dir():
+        raise ExtensionOpsError("The manual import staging area is not safe to use.")
+    target = staging / file_name
+    if target.exists() or target.is_symlink():
+        raise ExtensionOpsError(f"The selected files contain duplicate name {file_name}.")
+    try:
+        with target.open("xb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if not zipfile.is_zipfile(target):
+            raise ExtensionOpsError(f"{file_name} is not a valid jar archive.")
+    except OSError as exc:
+        raise ExtensionOpsError("Blockstead could not safely stage the uploaded jars.") from exc
+    except ExtensionOpsError:
+        target.unlink(missing_ok=True)
+        raise
+    return target
+
+
 def _fsync_directory(directory: Path) -> None:
     """Persist directory entry changes where the platform supports it."""
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)

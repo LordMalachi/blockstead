@@ -93,6 +93,20 @@ class InstallRequest(BaseModel):
     source: Literal["modrinth", "hangar", "curseforge"] = "modrinth"
 
 
+class SafeTestStartRequest(BaseModel):
+    recent_batch_ids: list[str] = Field(default_factory=list, max_length=20)
+    retry_of: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
+
+    @field_validator("recent_batch_ids")
+    @classmethod
+    def valid_batch_ids(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)) or any(
+            not re.fullmatch(r"[0-9a-f]{16}", value) for value in values
+        ):
+            raise ValueError("recent batch ids must be unique reviewed identities")
+        return values
+
+
 class CurseForgeKeyRequest(BaseModel):
     """The owner's own CurseForge core API key; stored, never echoed back."""
 

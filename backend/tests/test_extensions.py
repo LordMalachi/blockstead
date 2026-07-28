@@ -85,7 +85,9 @@ def test_fabric_mods_are_inventoried(tmp_path: Path) -> None:
     assert entry.identifier == "cool-tech"
     assert entry.version == "2.1.0"
     assert entry.minecraft_constraint == "1.21.x"
-    assert entry.dependencies == ["fabric-api", "fabricloader"]
+    # The loader itself is satisfied by the profile and is not an installable
+    # extension dependency.
+    assert entry.dependencies == ["fabric-api"]
     assert entry.sha256 is not None and entry.readable is True
     assert view.warnings == []
 

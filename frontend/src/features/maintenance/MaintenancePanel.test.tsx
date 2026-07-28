@@ -183,6 +183,7 @@ function renderPanel({
   scheduleResponse?: () => Response;
 } = {}) {
   vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+    if (url.endsWith("/profiles")) return Promise.resolve(respond([{ id: "profile-1", name: "Homestead", server_directory: "/servers/home", distribution: "vanilla", minecraft_version: "1.21.1", loader_version: null, is_fixture: false }]));
     if (url.includes("/maintenance/preflight")) return Promise.resolve(respond(plan));
     if (url.includes("/maintenance/schedule")) return Promise.resolve(scheduleResponse());
     if (url.includes("/maintenance/upgrades/apply")) return Promise.resolve(respond(appliedUpgrade));
@@ -207,6 +208,27 @@ test("lists the reviewable changes and states which need a stopped server", asyn
   renderPanel();
   expect(await screen.findByText("Edit or replace world files")).toBeVisible();
   expect(screen.getAllByText(/Stopped server only/)).toHaveLength(2);
+});
+
+test("a missing maintenance API explains the version mismatch and offers recovery", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+    if (url.endsWith("/profiles")) return Promise.resolve(respond([]));
+    return Promise.resolve(respond(
+      { error: { code: "NOT_FOUND", message: "That API route was not found." } },
+      404,
+    ));
+  }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter><MaintenancePanel profileId="profile-1" /></MemoryRouter>
+    </QueryClientProvider>,
+  );
+
+  expect(await screen.findByText("Maintenance needs a matching Blockstead update")).toBeVisible();
+  expect(screen.getByText(/not a Minecraft or mod error/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Try again" })).toBeVisible();
+  expect(screen.getByRole("link", { name: "Open diagnostics" })).toHaveAttribute("href", "/system#diagnostics");
 });
 
 test("running the preflight does not change anything until the owner asks", async () => {
