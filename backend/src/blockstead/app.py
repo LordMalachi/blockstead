@@ -2048,8 +2048,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(
                 409, "This server changed after the migration review. Review it again."
             )
-        if fresh["blockers"]:
-            raise HTTPException(409, str(fresh["blockers"][0]))
+        blockers = cast(list[str], fresh["blockers"])
+        if blockers:
+            raise HTTPException(409, blockers[0])
         protection = cast(dict[str, object], fresh["protection"])
         if protection.get("backup_id") != payload.backup_id:
             raise HTTPException(409, "Choose the fresh verified backup from this review.")

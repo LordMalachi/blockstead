@@ -13,13 +13,14 @@ import os
 import secrets
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .catalog import PlannedFile
 from .extension_ops import ensure_managed_directory
 from .extensions import inspect_extension_jar
-from .loadout_lockfiles import ExtensionOrigin, OriginMap
+from .loadout_lockfiles import ExtensionOrigin
 from .modrinth import JAR_NAME_PATTERN
 
 ORIGIN_FILE_NAME = ".blockstead-extension-origins.json"
@@ -94,7 +95,7 @@ def _write(extension_directory: Path, registry: OriginRegistry) -> None:
         staging.unlink(missing_ok=True)
 
 
-def load_origin_map(extension_directory: Path) -> OriginMap:
+def load_origin_map(extension_directory: Path) -> dict[str, ExtensionOrigin]:
     """Return only records that still match the installed jar byte-for-byte."""
 
     if not extension_directory.exists():
@@ -131,14 +132,19 @@ def record_catalog_files(
         entry = inspect_extension_jar(path)
         if entry.sha256 is None or entry.sha512 is None:
             continue
-        checksum_algorithm = item.checksum_algorithm
         checksum = item.checksum.casefold() if item.checksum else None
-        actual = entry.sha256 if checksum_algorithm == "sha256" else entry.sha512
-        if (
-            checksum_algorithm not in {"sha256", "sha512"}
-            or checksum is None
-            or actual != checksum
-        ):
+        if checksum is None:
+            continue
+        checksum_algorithm: Literal["sha256", "sha512"]
+        if item.checksum_algorithm == "sha256":
+            checksum_algorithm = "sha256"
+            actual = entry.sha256
+        elif item.checksum_algorithm == "sha512":
+            checksum_algorithm = "sha512"
+            actual = entry.sha512
+        else:
+            continue
+        if actual != checksum:
             continue
         by_name[item.file_name] = OriginRecord(
             file_name=item.file_name,

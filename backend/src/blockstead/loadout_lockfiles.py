@@ -23,7 +23,7 @@ from pydantic import (
 
 from .extensions import ExtensionEntry, ExtensionsView
 
-LOCKFILE_SCHEMA_VERSION = 1
+LOCKFILE_SCHEMA_VERSION: Literal[1] = 1
 MAX_LOCKFILE_BYTES = 2 * 1024 * 1024
 
 class ExtensionOrigin(BaseModel):
