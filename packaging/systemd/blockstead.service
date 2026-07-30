@@ -8,7 +8,13 @@ User=blockstead
 Group=blockstead
 WorkingDirectory=/opt/blockstead
 EnvironmentFile=/etc/blockstead/blockstead.env
-ExecStart=/opt/blockstead/venv/bin/uvicorn blockstead.app:app --host ${BLOCKSTEAD_BIND_HOST} --port ${BLOCKSTEAD_PORT}
+# The interpreter is started directly. A virtual environment console script
+# such as venv/bin/uvicorn carries the absolute interpreter path it was built
+# with, and the installer builds the environment in a staging directory that is
+# swapped into place, so those scripts point at a path that no longer exists
+# once the swap is cleaned up. venv/bin/python is a symlink to the system
+# interpreter and stays correct wherever the tree is published.
+ExecStart=/opt/blockstead/venv/bin/python -m uvicorn blockstead.app:app --host ${BLOCKSTEAD_BIND_HOST} --port ${BLOCKSTEAD_PORT}
 Restart=on-failure
 KillMode=mixed
 TimeoutStopSec=30s

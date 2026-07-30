@@ -199,11 +199,96 @@ cmd_update_logs() {
   fi
 }
 
+wait_for_dashboard() {
+  # systemd reports a simple service as started the moment it is launched, so a
+  # program that dies immediately still looks like a successful start. Waiting
+  # for the dashboard to answer is what actually proves it came up.
+  for _ in {1..40}; do
+    if [[ -n $(health_json) ]]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+service_program() {
+  # The first word of the installed unit's ExecStart line.
+  local exec_line
+  [[ -f $UNIT_PATH ]] || return 1
+  exec_line=$(sed -n 's/^ExecStart=//p' "$UNIT_PATH" | head -n 1)
+  [[ -n $exec_line ]] || return 1
+  printf '%s\n' "${exec_line%% *}"
+}
+
+service_program_interpreter() {
+  # Prints the #! interpreter of a script, or nothing for a real binary.
+  local program=$1
+  [[ $(head -c 2 "$program" 2>/dev/null) == '#!' ]] || return 0
+  sed -n '1s|^#!\([^[:space:]]*\).*|\1|p' "$program" 2>/dev/null || true
+}
+
+explain_start_failure() {
+  # Refusals that come from systemd itself — a missing program, a namespace it
+  # could not set up, a crash loop that hit the restart limit — never reach the
+  # dashboard's own messages, so read what the unit recorded.
+  local result status program interpreter
+  result=$(systemctl show "$SERVICE" --property=Result --value 2>/dev/null || true)
+  status=$(systemctl show "$SERVICE" --property=ExecMainStatus --value 2>/dev/null || true)
+  program=$(service_program || true)
+  if [[ -n $program && ! -x $program ]]; then
+    echo "The program the service starts ($program) is missing."
+    echo "Repair the installation: sudo blockstead update"
+    return
+  fi
+  if [[ -n $program ]]; then
+    interpreter=$(service_program_interpreter "$program")
+    if [[ -n $interpreter && ! -x $interpreter ]]; then
+      echo "The service starts $program, but the Python it needs ($interpreter) no longer exists."
+      echo "Repair the installation: sudo blockstead update"
+      return
+    fi
+  fi
+  case $result in
+    start-limit-hit)
+      echo "The service failed repeatedly and systemd stopped retrying."
+      echo "Clear that, then start again: sudo systemctl reset-failed $SERVICE"
+      ;;
+    oom-kill)
+      echo "The service was stopped because this computer ran out of memory."
+      ;;
+    *)
+      if [[ $status == 203 ]]; then
+        echo "The service could not run its program (exit 203)."
+        echo "Repair the installation: sudo blockstead update"
+      else
+        echo "Recent messages may explain why:"
+        journalctl -u "$SERVICE" -n 20 --no-pager -q 2>/dev/null || true
+      fi
+      ;;
+  esac
+}
+
 cmd_start() {
   require_root start
-  systemctl start "$SERVICE"
+  if ! systemctl start "$SERVICE"; then
+    echo "The Blockstead dashboard did not start." >&2
+    explain_start_failure >&2
+    exit 1
+  fi
   echo "The Blockstead dashboard is starting."
-  echo "Open $(dashboard_url) in your browser."
+  if wait_for_dashboard; then
+    echo "Open $(dashboard_url) in your browser."
+    return
+  fi
+  if [[ $(systemctl is-active "$SERVICE" 2>/dev/null || true) == active ]]; then
+    echo "It is running but has not answered at $(dashboard_url) yet."
+    echo "Give it a moment, then check: sudo blockstead status"
+    return
+  fi
+  echo "The Blockstead dashboard stopped right after starting." >&2
+  explain_start_failure >&2
+  exit 1
 }
 
 cmd_stop() {
@@ -218,8 +303,23 @@ cmd_restart() {
   require_root restart
   echo "Restarting the Blockstead dashboard."
   echo "A running Minecraft server will be asked to stop safely first."
-  systemctl restart "$SERVICE"
-  echo "Restarted. Open $(dashboard_url) in your browser."
+  if ! systemctl restart "$SERVICE"; then
+    echo "The Blockstead dashboard did not come back." >&2
+    explain_start_failure >&2
+    exit 1
+  fi
+  if wait_for_dashboard; then
+    echo "Restarted. Open $(dashboard_url) in your browser."
+    return
+  fi
+  if [[ $(systemctl is-active "$SERVICE" 2>/dev/null || true) == active ]]; then
+    echo "Restarted, but it has not answered at $(dashboard_url) yet."
+    echo "Give it a moment, then check: sudo blockstead status"
+    return
+  fi
+  echo "The Blockstead dashboard stopped right after restarting." >&2
+  explain_start_failure >&2
+  exit 1
 }
 
 cmd_reset_password() {
@@ -317,6 +417,30 @@ check_free_space() {
   fi
 }
 
+check_service_program() {
+  # A broken start program is invisible in the dashboard's own messages: the
+  # application never runs, so it never logs. Check the file the unit actually
+  # starts, and the interpreter it asks for when it is a script.
+  local program interpreter
+  if ! program=$(service_program); then
+    problem "The service file does not say what program to start." \
+      "Run the installer again: sudo ./scripts/install-linux.sh"
+    return
+  fi
+  if [[ ! -x $program ]]; then
+    problem "The program the service starts ($program) is missing." \
+      "Repair the installation: sudo blockstead update"
+    return
+  fi
+  interpreter=$(service_program_interpreter "$program")
+  if [[ -n $interpreter && ! -x $interpreter ]]; then
+    problem "The service starts $program, but the Python it needs ($interpreter) no longer exists." \
+      "Repair the installation: sudo blockstead update"
+    return
+  fi
+  ok "The program the service starts is present and runnable."
+}
+
 cmd_doctor() {
   require_root doctor
   local version state enabled url health hversion ctype port busy java_line java_major count
@@ -344,6 +468,7 @@ cmd_doctor() {
 
   if [[ -f $UNIT_PATH ]]; then
     ok "The system service is installed."
+    check_service_program
   else
     problem "The system service file is missing." \
       "Run the installer again: sudo ./scripts/install-linux.sh"
@@ -411,6 +536,18 @@ PY
   else
     problem "The dashboard service is not running." \
       "Start it with: sudo blockstead start — then run doctor again."
+    local result
+    result=$(systemctl show "$SERVICE" --property=Result --value 2>/dev/null || true)
+    case $result in
+      start-limit-hit)
+        problem "It failed repeatedly, so systemd stopped retrying it." \
+          "Clear that first: sudo systemctl reset-failed $SERVICE"
+        ;;
+      oom-kill)
+        problem "It was stopped because this computer ran out of memory." \
+          "Close other programs, then start it again."
+        ;;
+    esac
     busy=$(ss -ltnpH "sport = :$port" 2>/dev/null || true)
     if [[ -n $busy ]]; then
       holder=$(printf '%s\n' "$busy" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | head -n 1)
@@ -451,8 +588,12 @@ PY
   if [[ -n $count && $count -gt 0 ]]; then
     note "$count recent log line(s) mention errors." \
       "Read them with: sudo blockstead logs"
-  else
+  elif [[ $state == active ]]; then
     ok "No errors in the recent dashboard messages."
+  else
+    # A dashboard that never ran had no chance to complain, so a clean log here
+    # is not evidence that anything is well.
+    ok "No errors in the recent dashboard messages (it has not been running to report any)."
   fi
 
   echo
@@ -467,7 +608,7 @@ PY
 }
 
 cmd_launch() {
-  local url state ready=false
+  local url state ready
   url=$(dashboard_url)
   state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
 
@@ -493,13 +634,8 @@ cmd_launch() {
     fi
   fi
 
-  for _ in {1..30}; do
-    if [[ -n $(health_json) ]]; then
-      ready=true
-      break
-    fi
-    sleep 0.5
-  done
+  ready=true
+  wait_for_dashboard || ready=false
 
   if [[ $ready != true ]]; then
     if command -v zenity >/dev/null && [[ -n ${DISPLAY:-}${WAYLAND_DISPLAY:-} ]]; then

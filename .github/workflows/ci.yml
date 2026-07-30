@@ -102,6 +102,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y shellcheck desktop-file-utils
       - run: shellcheck scripts/*.sh tests/integration/*.sh packaging/bin/blockstead packaging/blockstead-power packaging/blockstead-update
       - run: desktop-file-validate packaging/desktop/blockstead.desktop "Install Blockstead.desktop"
+      - run: tests/integration/service-start-program-test.sh
       - name: Test the native updater in a disposable Linux container
         run: tests/integration/run-native-update-tests.sh
 

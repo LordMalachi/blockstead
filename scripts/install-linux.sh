@@ -191,6 +191,22 @@ except (OSError, ValueError, TypeError):
 PY
 }
 
+service_program_is_runnable() {
+  # An installation whose start program cannot run is not complete, however
+  # current its commit is. A virtual environment console script carries the
+  # absolute interpreter path it was built with, so one built in a staging
+  # directory stops working once that directory is gone; reinstalling is the
+  # repair, and refusing this check is what lets an update perform it.
+  local exec_line program interpreter
+  [[ -f $UNIT_PATH ]] || return 1
+  exec_line=$(sed -n 's/^ExecStart=//p' "$UNIT_PATH" | head -n 1)
+  program=${exec_line%% *}
+  [[ -n $program && -x $program ]] || return 1
+  [[ $(head -c 2 "$program" 2>/dev/null) == '#!' ]] || return 0
+  interpreter=$(sed -n '1s|^#!\([^[:space:]]*\).*|\1|p' "$program" 2>/dev/null || true)
+  [[ -n $interpreter && -x $interpreter ]]
+}
+
 installation_is_complete() {
   local commit=$1
   [[ $(installed_commit) == "$commit" \
@@ -199,7 +215,8 @@ installation_is_complete() {
     && -x $UPDATE_HELPER \
     && -f $UPDATE_PATH_UNIT \
     && -f $UPDATE_SERVICE_UNIT \
-    && -x $CLI_PATH ]]
+    && -x $CLI_PATH ]] || return 1
+  service_program_is_runnable
 }
 
 compare_relation() {

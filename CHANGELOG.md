@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Fix a dashboard that could not start again after an update. The installer
+  builds the virtual environment in a staging directory and swaps it into
+  place, but a console script such as `venv/bin/uvicorn` keeps the absolute
+  interpreter path it was built with, so the service kept starting a Python
+  that was deleted with the superseded tree. The service now starts the
+  interpreter directly, `blockstead update` treats an unrunnable start program
+  as an incomplete installation and repairs it rather than reporting the
+  machine as already current, and `blockstead doctor` names a missing start
+  program or interpreter instead of reporting no errors — the dashboard never
+  ran, so it never logged any. `blockstead start` and `blockstead restart` now
+  wait for the dashboard to answer and explain a service that stopped
+  immediately, instead of announcing a start that did not happen.
+
 - Add a Maintenance workspace that answers "is this change safe to make
   tonight?" before a risky change. A read-only preflight reports connected
   players, server state, a re-verified protection point, free disk against the
