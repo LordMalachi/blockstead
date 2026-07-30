@@ -3,6 +3,7 @@ import { FilesPanel } from "../files/FilesPanel";
 import { MaintenancePanel } from "../maintenance/MaintenancePanel";
 import { PlayersPanel } from "../players/PlayersPanel";
 import { SchedulePanel } from "../schedule/SchedulePanel";
+import { MinecraftVersionCard } from "../settings/MinecraftVersionCard";
 import { SettingsPanel } from "../settings/SettingsPanel";
 import { useServerScope } from "./scope";
 
@@ -28,7 +29,12 @@ export function BackupsPage() {
 
 export function SettingsPage() {
   const scope = useServerScope();
-  return <SettingsPanel profileId={scope.profile.id} running={scope.running} />;
+  // The recorded Minecraft version belongs to the profile rather than to
+  // server.properties, so it stays visible even when that file cannot be read.
+  return <>
+    <MinecraftVersionCard profile={scope.profile} />
+    <SettingsPanel profileId={scope.profile.id} running={scope.running} />
+  </>;
 }
 
 export function MaintenancePage() {

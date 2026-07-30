@@ -1,4 +1,3 @@
-import json
 import shutil
 import time
 from pathlib import Path, PurePosixPath
@@ -6,6 +5,7 @@ from pathlib import Path, PurePosixPath
 from pydantic import BaseModel
 
 from .distributions import detect_distribution
+from .version_detect import detect_minecraft_version
 
 UPLOAD_PREFIX = ".upload-"
 STALE_UPLOAD_SECONDS = 24 * 60 * 60
@@ -75,16 +75,11 @@ def scan_server(path: Path, allowed_root: Path) -> ImportScan:
     folder = canonical_child(path, allowed_root)
     names = {entry.name for entry in folder.iterdir()}
     distribution = detect_distribution(folder)
-    version = None
+    # Read out of the server's own files. An import used to record no version at
+    # all, which left every version-aware feature refusing to act on a folder
+    # that had been running happily for months.
+    version = detect_minecraft_version(folder)
     marker = folder / "fake-server.json"
-    if marker.is_file():
-        try:
-            value = json.loads(marker.read_text(encoding="utf-8"))
-            version = (
-                str(value.get("minecraft_version")) if value.get("minecraft_version") else None
-            )
-        except (OSError, json.JSONDecodeError):
-            pass
     detected = sorted(
         name
         for name in names

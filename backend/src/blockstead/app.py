@@ -289,6 +289,7 @@ from .schemas import (
     ImportUploadFinish,
     ImportUploadStart,
     InstallRequest,
+    MinecraftVersionRequest,
     ModConfigUpdateRequest,
     ModpackInstallRequest,
     NotificationPreferencesRequest,
@@ -366,6 +367,7 @@ from .upgrade_ops import (
     promote_launch_upgrade,
     rollback_launch_upgrade,
 )
+from .version_detect import detect_minecraft_version
 
 log = logging.getLogger("blockstead.api")
 
@@ -1336,9 +1338,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         mutation(request, db)
         abandon_upload(upload_staging(upload_id))
 
+    def identify_unversioned(profiles: list[Profile], db: Session) -> None:
+        """Fill in versions for servers imported before Blockstead read them.
+
+        Recording a version this way states what the folder already says about
+        itself, so it happens quietly on the next listing rather than waiting for
+        an owner to discover that version-aware features refuse to act.
+        """
+        healed = False
+        for profile in profiles:
+            if profile.minecraft_version:
+                continue
+            try:
+                folder = canonical_child(Path(profile.server_directory), config.server_root)
+            except (ValueError, OSError):
+                continue
+            detected = detect_minecraft_version(folder)
+            if detected:
+                profile.minecraft_version = detected
+                healed = True
+        if healed:
+            db.commit()
+
     @app.get("/api/v1/profiles")
     def list_profiles(request: Request, db: Db) -> list[dict[str, object]]:
         current(request, db)
+        identify_unversioned(
+            list(db.scalars(select(Profile).where(Profile.minecraft_version.is_(None))).all()), db
+        )
         return [
             {
                 "id": p.id,
@@ -1759,6 +1786,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "id": profile.id,
             "name": profile.name,
             "distribution": profile.distribution,
+            "minecraft_version": profile.minecraft_version,
             "is_fixture": profile.is_fixture,
         }
 
@@ -1868,6 +1896,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         db.commit()
         return {"profile_id": profile_id, "eula_accepted": True}
+
+    @app.put("/api/v1/profiles/{profile_id}/minecraft-version")
+    def set_minecraft_version(
+        profile_id: str, payload: MinecraftVersionRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        # Detection covers folders that identify themselves. This is the answer
+        # for the ones that do not, so an owner is never stuck with a server
+        # Blockstead refuses to act on.
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        previous = profile.minecraft_version
+        profile.minecraft_version = payload.minecraft_version
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile_id,
+                category="profile_version",
+                result="success",
+                safe_detail=(
+                    f"Recorded Minecraft version {payload.minecraft_version} "
+                    f"(was {previous or 'unknown'})"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            "distribution": profile.distribution,
+            "minecraft_version": profile.minecraft_version,
+        }
 
     def profile_directory(profile_id: str, db: Session) -> Path:
         profile = db.get(Profile, profile_id)

@@ -57,6 +57,12 @@ class ProvisionRequest(BaseModel):
     )
 
 
+class MinecraftVersionRequest(BaseModel):
+    """Correct the recorded version when a folder cannot identify itself."""
+
+    minecraft_version: str = Field(min_length=1, max_length=32, pattern=r"^[0-9][0-9A-Za-z._-]*$")
+
+
 class EulaRequest(BaseModel):
     accept: bool
 

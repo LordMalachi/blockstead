@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Recognize which Minecraft version an existing server folder is running. An
+  imported server previously recorded no version at all, which left every
+  version-aware feature — installing mods and plugins, upgrade checks, and
+  creating a modded copy — refusing to act on a server that had been running for
+  months. Blockstead now reads the version out of the files the server itself
+  wrote (the server jar, Paper's version history, and the startup log), fills it
+  in for servers imported before this existed, and answers "unknown" rather than
+  guessing when a folder cannot identify itself. A server's Settings page shows
+  the recorded version, says plainly what an unrecorded one blocks, and lets an
+  owner record it by hand for the folders detection cannot read.
+
 - Fix a dashboard that could not start again after an update. The installer
   builds the virtual environment in a staging directory and swaps it into
   place, but a console script such as `venv/bin/uvicorn` keeps the absolute
