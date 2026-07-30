@@ -642,6 +642,7 @@ bootstrap_approved_release() {
     status=0
   fi
   if [[ $status -eq 0 ]] && ! installation_is_complete "$commit"; then
+    echo "The approved installer finished, but the installed Blockstead service is incomplete or cannot start." >&2
     record_update_status failed "$commit" \
       "The approved installer exited without leaving a complete installation; no success was recorded." \
       false "" false

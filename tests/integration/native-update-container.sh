@@ -141,7 +141,8 @@ set -euo pipefail
 printf '%s\n' "$BLOCKSTEAD_INSTALL_COMMIT" >>"$FAKE_INSTALL_RECORD"
 printf '%s\n' "${BLOCKSTEAD_UPDATE_ATTEMPT:-}" >>"$FAKE_ATTEMPT_RECORD"
 stamp_build() {
-  mkdir -p /opt/blockstead/scripts /usr/lib/blockstead /etc/systemd/system /usr/local/bin
+  mkdir -p /opt/blockstead/scripts /opt/blockstead/venv/bin /usr/lib/blockstead \
+    /etc/systemd/system /usr/local/bin
   python3 - /opt/blockstead/BUILD "$BLOCKSTEAD_INSTALL_COMMIT" <<'PY'
 import json
 import sys
@@ -154,6 +155,13 @@ PY
   install -m 0644 /dev/null /etc/systemd/system/blockstead-update.path
   install -m 0644 /dev/null /etc/systemd/system/blockstead-update.service
   install -m 0755 /dev/null /usr/local/bin/blockstead
+  # A real installation is only complete when the dashboard unit can actually
+  # start something, so the fixture leaves a unit and a runnable start program
+  # rather than a footprint that would never boot.
+  install -m 0755 /dev/null /opt/blockstead/venv/bin/python
+  printf '%s\n' '[Service]' \
+    'ExecStart=/opt/blockstead/venv/bin/python -m uvicorn blockstead.app:app' \
+    >/etc/systemd/system/blockstead.service
 }
 case ${FAKE_INSTALL_MODE:-success} in
   success) stamp_build; exit 0 ;;
@@ -472,13 +480,18 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
         "source": "update",
     }, handle)
 PY
-mkdir -p /opt/blockstead/scripts /usr/lib/blockstead /etc/systemd/system /usr/local/bin
+mkdir -p /opt/blockstead/scripts /opt/blockstead/venv/bin /usr/lib/blockstead \
+  /etc/systemd/system /usr/local/bin
 install -m 0755 /dev/null /opt/blockstead/scripts/update-linux.sh
 install -m 0755 /dev/null /opt/blockstead/scripts/uninstall-linux.sh
 install -m 0755 /dev/null /usr/lib/blockstead/blockstead-update
 install -m 0644 /dev/null /etc/systemd/system/blockstead-update.path
 install -m 0644 /dev/null /etc/systemd/system/blockstead-update.service
 install -m 0755 /dev/null /usr/local/bin/blockstead
+install -m 0755 /dev/null /opt/blockstead/venv/bin/python
+printf '%s\n' '[Service]' \
+  'ExecStart=/opt/blockstead/venv/bin/python -m uvicorn blockstead.app:app' \
+  >/etc/systemd/system/blockstead.service
 : >"$FAKE_INSTALL_RECORD"
 export FAKE_INSTALL_MODE=success
 bash "$FIXTURE_ROOT/stale-zip/scripts/update-linux.sh" --yes
