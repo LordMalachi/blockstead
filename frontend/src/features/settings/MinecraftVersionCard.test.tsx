@@ -42,7 +42,9 @@ test("records a version the owner supplies", async () => {
   const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
   const request = calls.find(([url]) => url === "/api/v1/profiles/profile-1/minecraft-version");
   expect(request?.[1].method).toBe("PUT");
-  expect(JSON.parse(String(request?.[1].body))).toEqual({ minecraft_version: "1.21.4" });
+  const body = request?.[1].body;
+  const sent = JSON.parse(typeof body === "string" ? body : "{}") as Record<string, unknown>;
+  expect(sent).toEqual({ minecraft_version: "1.21.4" });
 });
 
 test("refuses something that is not a version before asking the server", () => {
