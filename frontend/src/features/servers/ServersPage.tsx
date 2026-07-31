@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, apiUpload, type ImportScan, type ImportUploadResult, type ImportUploadStartResult, type PlayersView, type ProcessState, type Profile, type Schedule } from "../../api/client";
+import { api, apiUpload, type ImportScan, type ImportUploadResult, type ImportUploadStartResult, type PlayersView, type ProcessState, type Profile, type ProfileDeleteResult, type Schedule } from "../../api/client";
 import { Button } from "../../components/Button";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatBytes } from "../../lib/format";
@@ -22,7 +22,7 @@ function nextScheduled(schedule: Schedule | undefined): string {
   return `${upcoming.label} ${at}`;
 }
 
-function ServerCard({ scope, allowlist, schedule, onAction }: { scope: ServerScope; allowlist: number | null; schedule: Schedule | undefined; onAction: (endpoint: string, body?: object) => void }) {
+function ServerCard({ scope, allowlist, schedule, onAction, onRemove }: { scope: ServerScope; allowlist: number | null; schedule: Schedule | undefined; onAction: (endpoint: string, body?: object) => void; onRemove: (profile: Profile) => void }) {
   const { profile } = scope;
   return <article className="server-card">
     <div className="server-card__head">
@@ -39,7 +39,9 @@ function ServerCard({ scope, allowlist, schedule, onAction }: { scope: ServerSco
         ? <Button className="button--secondary" onClick={() => onAction("/server/stop")}>Stop safely</Button>
         : <Button disabled={!scope.canStart} onClick={() => onAction("/server/start", { profile_id: profile.id, mode: "normal" })}>Start server</Button>}
       <Link className="button button--quiet" to={`/servers/${profile.id}/overview`}>Open workspace</Link>
+      <Button className="button--quiet button--small" disabled={scope.isActive} onClick={() => onRemove(profile)}>Remove server</Button>
     </div>
+    {profile.distribution === "unknown" && <small className="warning-note">Blockstead could not identify a launchable server in this folder. Re-import the complete server folder before starting or migrating it.</small>}
     {scope.occupant && <small className="muted-note">{scope.reason}</small>}
   </article>;
 }
@@ -54,6 +56,9 @@ export function ServersPage() {
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
+  const [removing, setRemoving] = useState<Profile | null>(null);
+  const [removeFiles, setRemoveFiles] = useState(false);
+  const [removeConfirmation, setRemoveConfirmation] = useState("");
   const state = useQuery({ queryKey: ["state"], queryFn: () => api<ProcessState>("/server/state"), refetchInterval: 1000 });
   const profiles = useQuery({ queryKey: ["profiles"], queryFn: () => api<Profile[]>("/profiles") });
   const schedules = useQuery({ queryKey: ["schedules"], queryFn: () => api<Schedule[]>("/schedules") });
@@ -64,6 +69,19 @@ export function ServersPage() {
     mutationFn: ({ endpoint, body }: { endpoint: string; body?: object }) => api<unknown>(endpoint, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
     onSuccess: () => { setNotice(""); void client.invalidateQueries(); },
     onError: error => setNotice(error.message),
+  });
+  const remove = useMutation({
+    mutationFn: ({ profile, deleteFiles }: { profile: Profile; deleteFiles: boolean }) => api<ProfileDeleteResult>(`/profiles/${profile.id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ confirm_name: profile.name, delete_files: deleteFiles }),
+    }),
+    onSuccess: async result => {
+      setRemoving(null);
+      setRemoveConfirmation("");
+      setRemoveFiles(false);
+      setNotice(result.detail);
+      await client.invalidateQueries();
+    },
   });
 
   async function doScan(event: FormEvent) {
@@ -129,13 +147,13 @@ export function ServersPage() {
       <div><p className="eyebrow">Your servers</p><h1>Servers</h1><p>Every Minecraft world Blockstead looks after on this computer. Open one to reach its console, players, schedule, and settings.</p></div>
     </section>
     {notice && <div className="error page-notice" role="alert">{notice}</div>}
-    {list.length > 0 && <div className="server-grid">{list.map((profile, index) => <ServerCard key={profile.id} scope={scopeFor(profile, snapshot, list)} allowlist={rosters[index]?.data?.allowlist.readable ? rosters[index].data.allowlist.players.length : null} schedule={schedules.data?.find(entry => entry.profile_id === profile.id)} onAction={(endpoint, body) => action.mutate({ endpoint, body })} />)}</div>}
+    {list.length > 0 && <div className="server-grid">{list.map((profile, index) => <ServerCard key={profile.id} scope={scopeFor(profile, snapshot, list)} allowlist={rosters[index]?.data?.allowlist.readable ? rosters[index].data.allowlist.players.length : null} schedule={schedules.data?.find(entry => entry.profile_id === profile.id)} onAction={(endpoint, body) => action.mutate({ endpoint, body })} onRemove={profileToRemove => { setRemoving(profileToRemove); setRemoveFiles(false); setRemoveConfirmation(""); }} />)}</div>}
     {list.length === 0 && <FirstServerChooser value={firstServerPath} onChange={setFirstServerPath} />}
     {(list.length > 0 || firstServerPath === "create") && <ProvisionPanel stopped={hostFree} onCreated={id => { void navigate(`/servers/${id}/overview`); }} />}
     {(list.length > 0 || firstServerPath === "import") && <section className="card" id="import-server">
       <p className="eyebrow">{list.length ? "Add a server" : "First safe workflow"}</p>
       <h2>Import a server folder</h2>
-      <p>Choose your Minecraft server folder — on your Desktop, in Downloads, or anywhere else on this computer. Blockstead copies it into its managed home and never changes the original, so you can delete the original once the imported server runs.</p>
+      <p>Choose your complete Minecraft server folder — on your Desktop, in Downloads, or anywhere else on this computer. Blockstead copies it into its managed home, identifies the server type and version, and never changes the original.</p>
       <form className="inline-form" onSubmit={event => { void uploadFolder(event); }}>
         <label>Profile name<input value={importName} onChange={event => setImportName(event.target.value)} required maxLength={80} /></label>
         <label>Server folder<input type="file" multiple onChange={event => setUploadFiles(Array.from(event.target.files ?? []))} {...folderInputProps} /></label>
@@ -151,5 +169,23 @@ export function ServersPage() {
       </details>
     </section>}
     {(list.length > 0 || firstServerPath === "modpack") && <ModpacksPanel stopped={hostFree} onCreated={id => { void navigate(`/servers/${id}/overview`); }} />}
+    {removing && <div className="troubleshooting-confirmation server-removal" role="dialog" aria-modal="true" aria-labelledby="remove-server-heading">
+      <div>
+        <p className="eyebrow">Remove server</p>
+        <h2 id="remove-server-heading">Review removal of “{removing.name}”</h2>
+        <p>Nothing has changed yet. This server must stay stopped while it is removed.</p>
+        <dl>
+          <div><dt>Remove from Blockstead</dt><dd>Deletes this server’s profile and schedule. Its server folder and Blockstead backups stay on this computer and can be imported again.</dd></div>
+          <div><dt>Delete server files</dt><dd>Permanently deletes the server folder and Blockstead’s local backups for this server. Copies stored in any separate backup destination are not deleted.</dd></div>
+        </dl>
+        <label className="maintenance-booking-toggle"><input type="checkbox" checked={removeFiles} onChange={event => setRemoveFiles(event.target.checked)} /><span>Also permanently delete this server’s files and local backups.</span></label>
+        <label>Type <strong>{removing.name}</strong> to confirm<input value={removeConfirmation} onChange={event => setRemoveConfirmation(event.target.value)} autoComplete="off" /></label>
+        {remove.error && <p className="error" role="alert">{remove.error.message}</p>}
+        <div className="troubleshooting-actions">
+          <Button className="button--secondary" disabled={remove.isPending} onClick={() => setRemoving(null)}>Cancel</Button>
+          <Button className="button--danger" disabled={remove.isPending || removeConfirmation !== removing.name} onClick={() => remove.mutate({ profile: removing, deleteFiles: removeFiles })}>{remove.isPending ? "Removing…" : removeFiles ? "Permanently delete server" : "Remove from Blockstead"}</Button>
+        </div>
+      </div>
+    </div>}
   </>;
 }

@@ -175,6 +175,7 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
 .server-card__actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: auto; }
 .server-card__actions .button { flex: 1 1 auto; display: inline-flex; align-items: center; justify-content: center; text-decoration: none; white-space: nowrap; }
 .server-card .muted-note { margin-top: 0; }
+.warning-note { margin: .75rem 0 0; color: var(--warning); font-size: .72rem; line-height: 1.45; }
 
 /* Server workspace */
 .hero { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(340px, .82fr); align-items: center; gap: clamp(1.5rem, 4vw, 4rem); overflow: hidden; min-height: 245px; margin-bottom: var(--space-4); padding: clamp(1.5rem, 4vw, 2.7rem); border-radius: var(--radius-lg); color: #eef6f0; background: linear-gradient(120deg, var(--forest), var(--forest-2)); box-shadow: 0 24px 55px rgba(16,41,29,.14); }
@@ -1011,6 +1012,10 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
 .troubleshooting-confirmation dl > div { padding: .7rem; background: var(--surface-2); border-radius: 8px; }
 .troubleshooting-confirmation dt { color: var(--muted); font-size: .62rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .troubleshooting-confirmation dd { margin: .2rem 0 0; font-size: .8rem; }
+.server-removal > div { width: min(100%, 680px); }
+.server-removal label:not(.maintenance-booking-toggle) { display: grid; gap: .35rem; margin-top: .85rem; font-size: .76rem; font-weight: 800; }
+.server-removal input[type="text"], .server-removal input:not([type]) { width: 100%; }
+.server-removal .maintenance-booking-toggle { margin-top: .85rem; }
 .maintenance-panel { display: grid; gap: var(--space-4); }
 .maintenance-intro { max-width: 82ch; margin: 0; color: var(--muted); font-size: .82rem; line-height: 1.6; }
 .maintenance-changes { padding: 0; border: 0; }

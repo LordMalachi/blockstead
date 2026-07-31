@@ -98,6 +98,7 @@ export function LoaderMigrationPanel({ profileId }: { profileId: string }) {
       {plan.blockers.length > 0 && <div className="maintenance-blocked" role="alert">
         <strong>Resolve before creating the copy</strong>
         <ul>{plan.blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul>
+        {plan.worlds.length === 0 && <p>Start the source server once and let it finish creating its world, then stop it and create a verified backup. Blockstead will copy the world into a new server and leave the source untouched.</p>}
         {!plan.protection.verified && <Link className="button button--secondary button--small" to={`/servers/${profileId}/backups`}>Create a backup</Link>}
       </div>}
       {plan.extensions.length > 0 && <div>

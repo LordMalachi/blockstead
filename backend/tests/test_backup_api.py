@@ -230,6 +230,24 @@ def test_failed_backup_is_recorded(
     assert history[0]["result"] == "No world directory was found for this server."
 
 
+def test_first_start_server_stops_without_a_world_backup(owned_client: TestClient) -> None:
+    auth = owned_auth(owned_client)
+    profile_id, server = import_writable_copy(owned_client, auth)
+    shutil.rmtree(server / "world")
+
+    started = owned_client.post(
+        "/api/v1/server/start", headers=auth, json={"profile_id": profile_id}
+    )
+    assert started.status_code == 202
+    wait_for_state(owned_client, "RUNNING")
+
+    stopped = owned_client.post("/api/v1/server/stop", headers=auth)
+
+    assert stopped.status_code == 202, stopped.text
+    wait_for_state(owned_client, "STOPPED")
+    assert owned_client.get(f"/api/v1/profiles/{profile_id}/backups", headers=auth).json() == []
+
+
 def test_restore_preview_and_roundtrip_preserves_previous_world(
     owned_client: TestClient,
 ) -> None:

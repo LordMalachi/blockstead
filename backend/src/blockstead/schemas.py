@@ -27,6 +27,17 @@ class ProfileCreate(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
 
 
+class ProfileDeleteRequest(BaseModel):
+    """An owner must name the profile they intend to remove.
+
+    ``delete_files`` is deliberately opt-in: removing an entry from Blockstead
+    must not silently erase a Minecraft world or its local recovery archives.
+    """
+
+    confirm_name: str = Field(min_length=1, max_length=80)
+    delete_files: bool = False
+
+
 class ImportUploadStart(BaseModel):
     directory_name: str = Field(min_length=1, max_length=64)
 

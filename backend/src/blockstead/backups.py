@@ -132,7 +132,8 @@ def _configured_level_name(server_directory: Path) -> str | None:
 
 def world_roots(server_directory: Path) -> list[Path]:
     """World folders to protect: level-name based (Paper adds suffixed
-    dimension folders) plus the vanilla ``world*`` convention."""
+    dimension folders) plus safe live discovery when a server has changed its
+    level-name outside Blockstead."""
 
     prefixes = {"world"}
     level_name = _configured_level_name(server_directory)
@@ -144,6 +145,26 @@ def world_roots(server_directory: Path) -> list[Path]:
         for path in server_directory.glob(f"{prefix}*")
         if path.is_dir() and not path.is_symlink()
     }
+    # A server normally keeps level-name in server.properties, but imported
+    # servers can carry an old or incomplete copy while their actual generated
+    # world is intact. A top-level directory with Minecraft world evidence is
+    # safe to include; links and arbitrary folders remain excluded.
+    try:
+        candidates = server_directory.iterdir()
+        roots.update(
+            path
+            for path in candidates
+            if path.is_dir()
+            and not path.is_symlink()
+            and (
+                (path / "level.dat").is_file()
+                or (path / "region").is_dir()
+                or (path / "DIM-1").is_dir()
+                or (path / "DIM1").is_dir()
+            )
+        )
+    except OSError:
+        pass
     return sorted(roots, key=lambda path: path.name)
 
 

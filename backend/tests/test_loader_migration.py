@@ -4,6 +4,7 @@ from blockstead.extensions import ExtensionEntry
 from blockstead.loader_migration import (
     classify_extensions,
     copy_worlds,
+    discover_world_roots,
     review_fingerprint,
     safe_level_name,
     world_roots,
@@ -111,6 +112,19 @@ def test_unsafe_level_names_fall_back_to_world() -> None:
     assert safe_level_name("../outside") == "world"
     assert safe_level_name("") == "world"
     assert safe_level_name("family") == "family"
+
+
+def test_live_discovery_uses_an_unambiguous_world_when_properties_are_stale(
+    tmp_path: Path,
+) -> None:
+    legacy = tmp_path / "friends-world"
+    (legacy / "region").mkdir(parents=True)
+    (legacy / "level.dat").write_bytes(b"world")
+
+    level_name, roots = discover_world_roots(tmp_path, "world")
+
+    assert level_name == "friends-world"
+    assert [root.name for root in roots] == ["friends-world"]
 
 
 def test_review_fingerprint_changes_when_nested_world_data_changes(

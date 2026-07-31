@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from . import __version__
-from .backups import BackupError, create_backup_archive, mirror_backup_archive
+from .backups import BackupError, create_backup_archive, mirror_backup_archive, world_roots
 from .import_scan import canonical_child
 from .models import (
     Administrator,
@@ -344,8 +344,20 @@ class Scheduler:
 
     async def backup_before_manual_stop(
         self, db: Session, profile: Profile, now: datetime
-    ) -> BackupRecord:
+    ) -> BackupRecord | None:
         """Flush and protect a running world before an owner-requested stop."""
+
+        try:
+            directory = canonical_child(Path(profile.server_directory), self.server_root)
+        except (ValueError, OSError) as exc:
+            raise BackupError(
+                "The profile folder is no longer inside the allowed server root."
+            ) from exc
+        # A newly provisioned server has no world until Minecraft reaches its
+        # first successful start. There is nothing to protect yet, so treating
+        # this as a failed backup would strand a perfectly safe server running.
+        if not world_roots(directory):
+            return None
 
         saving_suspended = False
         try:

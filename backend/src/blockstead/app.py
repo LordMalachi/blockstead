@@ -157,6 +157,7 @@ from .loader_migration import (
     MigrationReviewRequest,
     classify_extensions,
     copy_worlds,
+    discover_world_roots,
     review_fingerprint,
     safe_level_name,
     world_roots,
@@ -295,6 +296,7 @@ from .schemas import (
     NotificationPreferencesRequest,
     PlayerActionRequest,
     ProfileCreate,
+    ProfileDeleteRequest,
     ProvisionRequest,
     RawSettingsUpdateRequest,
     SafeTestStartRequest,
@@ -367,7 +369,6 @@ from .upgrade_ops import (
     promote_launch_upgrade,
     rollback_launch_upgrade,
 )
-from .version_detect import detect_minecraft_version
 
 log = logging.getLogger("blockstead.api")
 
@@ -1338,34 +1339,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         mutation(request, db)
         abandon_upload(upload_staging(upload_id))
 
-    def identify_unversioned(profiles: list[Profile], db: Session) -> None:
-        """Fill in versions for servers imported before Blockstead read them.
+    def refresh_profile_facts(profiles: list[Profile], db: Session) -> None:
+        """Refresh safe, on-disk facts after a server has had a chance to run."""
 
-        Recording a version this way states what the folder already says about
-        itself, so it happens quietly on the next listing rather than waiting for
-        an owner to discover that version-aware features refuse to act.
-        """
-        healed = False
+        changed = False
         for profile in profiles:
-            if profile.minecraft_version:
-                continue
             try:
                 folder = canonical_child(Path(profile.server_directory), config.server_root)
+                detected = scan_server(folder, config.server_root)
             except (ValueError, OSError):
                 continue
-            detected = detect_minecraft_version(folder)
-            if detected:
-                profile.minecraft_version = detected
-                healed = True
-        if healed:
+            if detected.distribution != "unknown" and profile.distribution != detected.distribution:
+                profile.distribution = detected.distribution
+                changed = True
+            if (
+                detected.minecraft_version
+                and profile.minecraft_version != detected.minecraft_version
+            ):
+                profile.minecraft_version = detected.minecraft_version
+                changed = True
+            if profile.is_fixture != detected.is_fixture:
+                profile.is_fixture = detected.is_fixture
+                changed = True
+        if changed:
             db.commit()
 
     @app.get("/api/v1/profiles")
     def list_profiles(request: Request, db: Db) -> list[dict[str, object]]:
         current(request, db)
-        identify_unversioned(
-            list(db.scalars(select(Profile).where(Profile.minecraft_version.is_(None))).all()), db
-        )
+        refresh_profile_facts(list(db.scalars(select(Profile)).all()), db)
         return [
             {
                 "id": p.id,
@@ -1378,6 +1380,76 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
             for p in db.scalars(select(Profile).order_by(Profile.created_at)).all()
         ]
+
+    @app.delete("/api/v1/profiles/{profile_id}")
+    def remove_profile(
+        profile_id: str, payload: ProfileDeleteRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        """Remove one stopped profile, optionally including its local data.
+
+        The default only removes Blockstead's record. A folder uploaded or
+        provisioned through Blockstead may contain irreplaceable world data, so
+        permanent deletion requires both an explicit flag and a typed name.
+        """
+
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That server was not found.")
+        if payload.confirm_name.strip() != profile.name:
+            raise HTTPException(422, "Type this server's exact name to confirm removal.")
+        if app.state.active_profile_id == profile.id:
+            raise HTTPException(409, "Stop this server before removing it.")
+        pending_backup = db.scalar(
+            select(BackupRecord).where(
+                BackupRecord.profile_id == profile.id,
+                BackupRecord.status == "in_progress",
+            )
+        )
+        if pending_backup is not None:
+            raise HTTPException(409, "Wait for the current backup to finish before removing it.")
+
+        if payload.delete_files:
+            try:
+                directory = canonical_child(Path(profile.server_directory), config.server_root)
+            except (ValueError, OSError) as exc:
+                raise HTTPException(
+                    409, "The server folder is no longer inside the allowed server root."
+                ) from exc
+            try:
+                shutil.rmtree(directory)
+                shutil.rmtree(backup_directory(config.data_dir, profile.id), ignore_errors=True)
+            except OSError as exc:
+                raise HTTPException(
+                    409,
+                    "The server files could not be deleted. Nothing was removed from Blockstead.",
+                ) from exc
+
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="profile_remove",
+                result="success",
+                safe_detail=(
+                    f"Permanently removed {profile.name} and its local server files"
+                    if payload.delete_files
+                    else f"Removed {profile.name} from Blockstead while keeping its files"
+                ),
+            )
+        )
+        db.delete(profile)
+        db.commit()
+        return {
+            "id": profile_id,
+            "name": profile.name,
+            "files_deleted": payload.delete_files,
+            "detail": (
+                "The profile, server folder, and Blockstead's local backups were deleted."
+                if payload.delete_files
+                else "The profile was removed; its server folder and local backups were kept."
+            ),
+        }
 
     @app.get("/api/v1/profiles/{profile_id}/backups")
     def list_backups(profile_id: str, request: Request, db: Db) -> list[dict[str, object]]:
@@ -1944,13 +2016,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def build_loader_migration_review(
         profile: Profile, target_distribution: str, db: Session
     ) -> dict[str, object]:
+        source = profile_directory(profile.id, db)
+        refresh_profile_facts([profile], db)
         if profile.distribution not in DISTRIBUTIONS or profile.distribution == "unknown":
             raise HTTPException(409, "Blockstead does not recognize this server's current loader.")
         if not profile.minecraft_version:
             raise HTTPException(
                 409, "Blockstead could not determine this server's Minecraft version."
             )
-        source = profile_directory(profile.id, db)
         try:
             provision_plan = await resolve_plan(
                 http_client, target_distribution, profile.minecraft_version, None
@@ -1959,8 +2032,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
 
         properties = read_properties(source)
-        level_name = safe_level_name(properties.get("level-name"))
-        roots = world_roots(source, level_name)
+        level_name, roots = discover_world_roots(
+            source, safe_level_name(properties.get("level-name"))
+        )
         view = read_extensions(source, profile.distribution)
         extensions = classify_extensions(
             view.entries, profile.distribution, target_distribution
@@ -6300,6 +6374,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if graceful:
             log.info("Stopped the managed server")
             app.state.active_profile_id = None
+            if active_profile_id:
+                stopped_profile = db.get(Profile, active_profile_id)
+                if stopped_profile is not None:
+                    refresh_profile_facts([stopped_profile], db)
         else:
             log.warning("The managed server did not stop before the timeout")
         db.add(

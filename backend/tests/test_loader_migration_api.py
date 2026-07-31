@@ -240,3 +240,47 @@ def test_failed_world_copy_removes_partial_target_and_keeps_source(
     assert (root / "copy-failure-source" / "world" / "owner-build.dat").read_bytes() == b"overworld"
     profiles = client.get("/api/v1/profiles", headers=headers).json()
     assert not any(item["name"] == "Failed target" for item in profiles)
+
+
+def test_migration_discovers_a_live_world_after_stale_properties(
+    migration_api: tuple[TestClient, Path, dict[str, str]],
+) -> None:
+    client, root, headers = migration_api
+    folder = source_folder(root, "stale-properties", "vanilla")
+    (folder / "world").rename(folder / "friends-world")
+    (folder / "server.properties").write_text("motd=Old server\n", encoding="utf-8")
+    created = client.post(
+        "/api/v1/profiles", headers=headers, json={"name": "Friends", "path": str(folder)}
+    )
+    assert created.status_code == 201, created.text
+    profile_id = str(created.json()["id"])
+    backup = client.post(f"/api/v1/profiles/{profile_id}/backups", headers=headers)
+    assert backup.status_code == 201, backup.text
+
+    reviewed = client.post(
+        f"/api/v1/profiles/{profile_id}/loader-migration/review",
+        headers=headers,
+        json={"target_distribution": "paper"},
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    review = reviewed.json()
+    assert review["ready"] is True, review["blockers"]
+    assert review["level_name"] == "friends-world"
+    assert review["worlds"] == ["friends-world"]
+
+    applied = client.post(
+        f"/api/v1/profiles/{profile_id}/loader-migration/apply",
+        headers=headers,
+        json={
+            "target_distribution": "paper",
+            "review_id": review["review_id"],
+            "backup_id": backup.json()["id"],
+            "name": "Friends Paper",
+            "directory_name": "friends-paper",
+            "loader_version": review["loader_version"],
+            "acknowledge_modded_world": False,
+        },
+    )
+    assert applied.status_code == 201, applied.text
+    copied_world = root / "friends-paper" / "friends-world" / "owner-build.dat"
+    assert copied_world.read_bytes() == b"overworld"

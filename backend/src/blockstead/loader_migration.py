@@ -52,6 +52,15 @@ class WorldRoot:
     source: Path
 
 
+def _has_world_evidence(path: Path) -> bool:
+    return (
+        (path / "level.dat").is_file()
+        or (path / "region").is_dir()
+        or (path / "DIM-1").is_dir()
+        or (path / "DIM1").is_dir()
+    )
+
+
 def safe_level_name(value: str | None) -> str:
     name = (value or "world").strip()
     if (
@@ -72,6 +81,47 @@ def world_roots(directory: Path, level_name: str) -> tuple[WorldRoot, ...]:
         for name in names
         if (directory / name).is_dir() and not (directory / name).is_symlink()
     )
+
+
+def discover_world_roots(
+    directory: Path, configured_level_name: str
+) -> tuple[str, tuple[WorldRoot, ...]]:
+    """Locate a generated world even when server.properties is stale.
+
+    The configured name remains authoritative when it points to a directory
+    that looks like a Minecraft world. Otherwise, accept one unambiguous
+    top-level world-shaped directory. This is read-only and never follows
+    links, so a refresh cannot broaden the migration's file access.
+    """
+
+    configured = safe_level_name(configured_level_name)
+    configured_root = directory / configured
+    if (
+        configured_root.is_dir()
+        and not configured_root.is_symlink()
+        and _has_world_evidence(configured_root)
+    ):
+        return configured, world_roots(directory, configured)
+    try:
+        candidates = sorted(
+            (
+                entry
+                for entry in directory.iterdir()
+                if entry.is_dir()
+                and not entry.is_symlink()
+                and not entry.name.endswith(("_nether", "_the_end"))
+                and _has_world_evidence(entry)
+            ),
+            key=lambda entry: entry.name,
+        )
+    except OSError:
+        candidates = []
+    if len(candidates) == 1:
+        level_name = candidates[0].name
+        return level_name, world_roots(directory, level_name)
+    # Preserve the configured name and its ordinary roots when discovery is
+    # ambiguous. The review will block rather than guess which world to copy.
+    return configured, world_roots(directory, configured)
 
 
 def classify_extensions(
