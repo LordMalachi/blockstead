@@ -37,7 +37,7 @@ const overview: ProfileOverview = {
       detail: "Blockstead detected this network's public IP. It cannot verify the router-facing Minecraft port from inside the network.",
     },
   },
-  players: { online: 2, max: 20, sample: ["Alex", "Steve"], available: true },
+  players: { online: 2, max: 20, sample: ["Alex", "Steve"], available: true, status_outcome: "responded", status_detail: "Minecraft returned a valid local server-list status response." },
   metrics: {
     current: { at: "2026-07-19T15:00:00Z", cpu_percent: 18, memory_percent: 42, disk_percent: 35, process_memory_bytes: 800_000_000, world_size_bytes: 2_000_000_000, memory_used_bytes: 8_000_000_000, memory_total_bytes: 16_000_000_000, disk_used_bytes: 35_000_000_000, disk_total_bytes: 100_000_000_000 },
     history: [

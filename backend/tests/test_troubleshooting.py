@@ -31,6 +31,7 @@ def context(**changes: object) -> TroubleshootingContext:
             bans=PlayerFile(present=True, readable=True, players=[]),
         ),
         "local_status_responded": True,
+        "local_status_outcome": "responded",
         "join": {
             "address": "192.168.1.5:25565",
             "bind_address": None,
@@ -139,6 +140,36 @@ def test_public_connection_never_treats_local_public_ip_discovery_as_port_proof(
     assert external.status == "unknown"
     assert external.certainty == "none"
     assert "cannot prove" in external.detail
+
+
+def test_disabled_status_protocol_is_information_not_a_connection_failure() -> None:
+    result = assess(
+        TroubleshootingRequest(problem_id="public_connection"),
+        context(
+            properties={
+                "enable-status": "false",
+                "server-ip": "",
+                "server-port": "25565",
+            },
+            local_status_responded=False,
+        ),
+    )
+
+    local = next(check for check in result.checks if check.id == "local-status")
+    assert local.status == "info"
+    assert local.certainty == "none"
+    assert "players may still connect" in local.detail
+
+
+def test_early_status_close_is_information_not_a_connection_failure() -> None:
+    result = assess(
+        TroubleshootingRequest(problem_id="local_connection"),
+        context(local_status_responded=False, local_status_outcome="closed_early"),
+    )
+
+    local = next(check for check in result.checks if check.id == "local-status")
+    assert local.status == "info"
+    assert "accepted Blockstead's local TCP connection" in local.detail
 
 
 def test_readiness_reports_prerequisite_failures_without_offering_unsafe_repairs() -> None:

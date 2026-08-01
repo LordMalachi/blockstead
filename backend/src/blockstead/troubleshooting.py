@@ -117,6 +117,7 @@ class TroubleshootingContext:
     properties: dict[str, str]
     players: PlayersView
     local_status_responded: bool | None
+    local_status_outcome: str | None
     join: dict[str, object]
     eula_accepted: bool | None
     required_java_major: int | None
@@ -317,12 +318,33 @@ def _server_check(context: TroubleshootingContext) -> TroubleshootingCheck:
 
 
 def _local_status_check(context: TroubleshootingContext) -> TroubleshootingCheck:
+    if context.properties.get("enable-status", "true").strip().casefold() == "false":
+        return _check(
+            "local-status",
+            "Minecraft server-list status",
+            "info",
+            (
+                "server.properties has enable-status=false. Minecraft intentionally withholds "
+                "server-list and player-count data, but players may still connect directly."
+            ),
+            sources=["paper-properties"],
+        )
     if not (context.selected_server_active and context.state in _RUNNING_STATES):
         return _check(
             "local-status",
             "Minecraft responds locally",
             "unknown",
             "Blockstead can run this check after the selected server is running.",
+        )
+    if context.local_status_outcome == "closed_early":
+        return _check(
+            "local-status",
+            "Minecraft accepts local connections",
+            "info",
+            (
+                "Minecraft accepted Blockstead's local TCP connection but closed the optional "
+                "server-list request early. Direct player connections may still work."
+            ),
         )
     if context.local_status_responded:
         return _check(

@@ -127,13 +127,14 @@ def event_payload(
 ) -> dict[str, Any]:
     group = CATEGORY_GROUPS.get(event.category, "system")
     failed = event.result in {"failed", "error", "crashed"}
+    skipped = event.result in {"skipped", "partial", "warning"}
     return {
         "id": event.id,
         "category": event.category,
         "group": group,
         "title": CATEGORY_TITLES.get(event.category, event.category.replace("_", " ").title()),
         "result": event.result,
-        "severity": "danger" if failed else "success",
+        "severity": "danger" if failed else "warning" if skipped else "success",
         "detail": event.safe_detail,
         "actor": actor.username if actor else "Blockstead",
         "profile": {"id": profile.id, "name": profile.name} if profile else None,
@@ -183,6 +184,7 @@ def preferences_for(
             admin_id=admin_id,
             server_crashes=True,
             failed_backups=True,
+            failed_automations=True,
             low_disk_space=True,
             completed_updates=True,
             show_player_avatars=False,
@@ -197,6 +199,7 @@ def preferences_payload(row: NotificationPreference) -> dict[str, Any]:
     return {
         "server_crashes": row.server_crashes,
         "failed_backups": row.failed_backups,
+        "failed_automations": row.failed_automations,
         "low_disk_space": row.low_disk_space,
         "completed_updates": row.completed_updates,
         "show_player_avatars": row.show_player_avatars,

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Harden connection and incident diagnostics. Minecraft status requests now
+  distinguish a valid response, an intentionally disabled status protocol, an
+  early peer close, a timeout, and a genuinely unreachable local port instead
+  of turning an optional status reply into repeated dashboard 500 errors.
+  Support reports now include redacted network evidence, per-profile folder
+  safety, full schedule policy, failed automation context, bounded/deduplicated
+  logs, and broader credential redaction. Blockstead refuses root and
+  overlapping profile folders before any file-owning operation; failed
+  automations become local alerts; force-stop requests are serialized; host
+  power failures retain bounded helper output; and startup update checks retry
+  with backoff when networking is not ready yet. The frontend lockfile also
+  advances vulnerable transitive PostCSS and brace-expansion releases to their
+  patched compatible versions.
+
 - Recognize which Minecraft version an existing server folder is running. An
   imported server previously recorded no version at all, which left every
   version-aware feature — installing mods and plugins, upgrade checks, and

@@ -5,6 +5,7 @@ import logging
 import re
 import secrets
 import shutil
+import stat
 import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
@@ -146,6 +147,7 @@ from .hangar import (
 from .import_scan import (
     UPLOAD_PREFIX,
     canonical_child,
+    directory_overlap,
     promote_staging,
     purge_stale_uploads,
     safe_relative_path,
@@ -237,6 +239,7 @@ from .overview import (
     PublicIpDiscovery,
     join_details,
     minecraft_status,
+    minecraft_status_probe,
     read_properties,
     strict_world_size,
     world_size,
@@ -396,6 +399,23 @@ def resolve_static_dir(configured: Path | None = None) -> Path | None:
     return next((path for path in candidates if path.is_dir()), None)
 
 
+def remove_readonly(function: Callable[..., object], path: str, error: BaseException) -> None:
+    """Retry a tree removal after making a read-only entry writable.
+
+    Imported Minecraft folders can legitimately contain read-only files, especially
+    after being copied from Windows media. The target tree is validated separately
+    before this callback is ever used.
+    """
+
+    if not isinstance(error, PermissionError):
+        raise error
+    target = Path(path)
+    if sys.platform != "win32" or target.is_symlink():
+        raise error
+    target.chmod(target.stat().st_mode | stat.S_IWRITE)
+    function(path)
+
+
 class SpaStaticFiles(StaticFiles):
     """Serve the built frontend, letting the browser router own unknown page paths."""
 
@@ -545,8 +565,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.active_profile_id = None
     app.state.update_handoff_active = False
     app.state.update_waiting_for_critical_operation = False
+    app.state.update_check_failures = 0
     app.state.websocket_auth_recheck_seconds = 5.0
     app.state.public_ip_discovery = public_ip_discovery
+    app.state.minecraft_status_probes = {}
     # Profiles with a restore in flight; starting or backing up one is refused.
     restoring_profiles: set[str] = set()
     # Profiles with an archive extraction in flight; a second concurrent
@@ -556,6 +578,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # update to the root helper. Tokens make concurrent backups independently
     # visible without holding the update lock for their full duration.
     critical_update_operations: set[str] = set()
+
+    def remember_status_probe(profile_id: str, probe: dict[str, object]) -> None:
+        """Retain one privacy-safe probe result so a post-stop report keeps the evidence."""
+
+        app.state.minecraft_status_probes[profile_id] = {
+            "outcome": probe.get("outcome", "unknown"),
+            "detail": probe.get("detail", "No probe detail was recorded."),
+            "tcp_connected": probe.get("tcp_connected"),
+            "checked_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
+        }
 
     def collect_metric_sample(profile: Profile, *, include_process: bool) -> MetricSample:
         memory = psutil.virtual_memory()
@@ -875,6 +907,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 config.update_manifest_url,
             )
         except (httpx.HTTPError, ValueError) as exc:
+            app.state.update_check_failures += 1
             log.warning("Blockstead could not check for updates: %s", exc)
             updates.write_state(
                 config.data_dir,
@@ -886,6 +919,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             return update_status()
 
+        app.state.update_check_failures = 0
         app.state.latest_commit = latest
         # An installation that was never stamped with a commit cannot be
         # compared against anything, so the first successful check adopts what
@@ -970,6 +1004,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return config.update_wait_minutes * 60
         if app.state.update_decision is updates.Decision.WAITING_FOR_PLAYERS:
             return config.update_wait_minutes * 60
+        if app.state.update_check_failures:
+            # A host can start before DNS or Wi-Fi is ready. Retry promptly, then
+            # back off to the normal cadence if the network remains unavailable.
+            retry_number = min(int(app.state.update_check_failures) - 1, 6)
+            return min(
+                config.update_check_hours * 3600,
+                config.update_wait_minutes * 60 * (2**retry_number),
+            )
         status = helper_status()
         if (
             app.state.update_decision is updates.Decision.INSTALL
@@ -1364,6 +1406,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if changed:
             db.commit()
 
+    def overlapping_profiles(
+        directory: Path,
+        db: Session,
+        *,
+        exclude_profile_id: str | None = None,
+    ) -> list[tuple[Profile, Path]]:
+        """Find profile ownership boundaries that collide with ``directory``.
+
+        Older releases could record the server root itself as a profile. That
+        record is quarantined by ``canonical_child`` and deliberately ignored
+        here so valid child profiles remain usable until the owner removes the
+        bad record without deleting files.
+        """
+
+        root = config.server_root.resolve(strict=False)
+        matches: list[tuple[Profile, Path]] = []
+        for other in db.scalars(select(Profile)).all():
+            if other.id == exclude_profile_id:
+                continue
+            try:
+                other_directory = Path(other.server_directory).resolve(strict=False)
+            except OSError:
+                continue
+            if other_directory == root:
+                continue
+            if directory_overlap(directory, other_directory):
+                matches.append((other, other_directory))
+        return matches
+
+    def refuse_profile_overlap(directory: Path, db: Session) -> None:
+        conflicts = overlapping_profiles(directory, db)
+        if not conflicts:
+            return
+        conflict = conflicts[0][0]
+        raise HTTPException(
+            409,
+            (
+                f"That folder overlaps the managed server {conflict.name}. "
+                "Choose a separate folder so one profile cannot change another server's files."
+            ),
+        )
+
     @app.get("/api/v1/profiles")
     def list_profiles(request: Request, db: Db) -> list[dict[str, object]]:
         current(request, db)
@@ -1416,13 +1500,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(
                     409, "The server folder is no longer inside the allowed server root."
                 ) from exc
+            if overlapping_profiles(directory, db, exclude_profile_id=profile.id):
+                raise HTTPException(
+                    409,
+                    (
+                        "The server files were not deleted because this profile folder overlaps "
+                        "another managed server. Remove only the Blockstead profile record and "
+                        "keep the files."
+                    ),
+                )
             try:
-                shutil.rmtree(directory)
+                shutil.rmtree(directory, onexc=remove_readonly)
                 shutil.rmtree(backup_directory(config.data_dir, profile.id), ignore_errors=True)
             except OSError as exc:
                 raise HTTPException(
                     409,
-                    "The server files could not be deleted. Nothing was removed from Blockstead.",
+                    "The server files could not be fully deleted. The profile record and local "
+                    "backups were kept; inspect the server folder before retrying.",
                 ) from exc
 
         db.add(
@@ -1834,6 +1928,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except (ValueError, OSError) as exc:
             raise scan_error(exc) from exc
+        refuse_profile_overlap(Path(result.canonical_path), db)
         profile = Profile(
             name=payload.name.strip(),
             server_directory=result.canonical_path,
@@ -2007,11 +2102,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
         try:
-            return canonical_child(Path(profile.server_directory), config.server_root)
+            directory = canonical_child(Path(profile.server_directory), config.server_root)
         except (ValueError, OSError) as exc:
             raise HTTPException(
-                409, "The profile folder is no longer inside the allowed server root."
+                409,
+                (
+                    "This profile does not point to an individual server folder inside the "
+                    "allowed server root. Remove the profile record without deleting files, "
+                    "then import the individual server folder."
+                ),
             ) from exc
+        conflicts = overlapping_profiles(directory, db, exclude_profile_id=profile.id)
+        if any(directory == other or directory in other.parents for _, other in conflicts):
+            raise HTTPException(
+                409,
+                (
+                    "This profile folder contains or duplicates another managed server folder. "
+                    "Remove the overlapping profile record without deleting files before "
+                    "continuing."
+                ),
+            )
+        return directory
 
     async def build_loader_migration_review(
         profile: Profile, target_distribution: str, db: Session
@@ -4484,7 +4595,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         public_ip = await app.state.public_ip_discovery.discover()
         join = join_details(properties, public_ip)
-        status = await minecraft_status(properties) if active and state == "RUNNING" else None
+        status_probe = (
+            await minecraft_status_probe(properties) if active and state == "RUNNING" else None
+        )
+        if status_probe is not None:
+            remember_status_probe(profile.id, cast(dict[str, object], status_probe))
+        status = status_probe["status"] if status_probe is not None else None
         configured_max = 20
         try:
             possible_max = int(properties.get("max-players", "20"))
@@ -4494,6 +4610,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             pass
         players = status or {"online": None, "max": configured_max, "sample": []}
         players["available"] = status is not None
+        players["status_outcome"] = (
+            status_probe["outcome"] if status_probe is not None else "not_running"
+        )
+        players["status_detail"] = (
+            status_probe["detail"]
+            if status_probe is not None
+            else "Player and server-list status is checked while this server is running."
+        )
 
         backup = db.scalar(
             select(BackupRecord)
@@ -4525,6 +4649,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "detail": str(snapshot["reason"]),
                     "to": f"/servers/{profile.id}/console",
                     "severity": "danger",
+                }
+            )
+        if status_probe is not None and status_probe["outcome"] in {
+            "timeout",
+            "unreachable",
+            "invalid_bind",
+            "invalid_response",
+        }:
+            warnings.append(
+                {
+                    "code": "local-status",
+                    "title": "Minecraft's local status check needs attention",
+                    "detail": status_probe["detail"],
+                    "to": f"/help?profile={profile.id}#server-troubleshooter",
+                    "severity": "warning",
                 }
             )
         if disk.percent >= 90:
@@ -5111,11 +5250,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             holder = db.get(Profile, str(holder_id)) if holder_id else None
             occupant = holder.name if holder else "Another server"
 
-        status = (
-            await minecraft_status(properties)
+        status_probe = (
+            await minecraft_status_probe(properties)
             if active and state in {"RUNNING", "DEGRADED"}
             else None
         )
+        if status_probe is not None:
+            remember_status_probe(profile.id, cast(dict[str, object], status_probe))
+        status = status_probe["status"] if status_probe is not None else None
         configured_max = 20
         try:
             possible_max = int(properties.get("max-players", "20"))
@@ -5422,11 +5564,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         state = str(snapshot["state"]) if active else "STOPPED"
         if state.startswith("ProcessState."):
             state = state.removeprefix("ProcessState.")
-        status = (
-            await minecraft_status(properties)
+        status_probe = (
+            await minecraft_status_probe(properties)
             if active and state in {"RUNNING", "DEGRADED"}
             else None
         )
+        if status_probe is not None:
+            remember_status_probe(profile.id, cast(dict[str, object], status_probe))
+        status = status_probe["status"] if status_probe is not None else None
         public_ip = (
             await app.state.public_ip_discovery.discover()
             if payload.problem_id == "public_connection"
@@ -5478,6 +5623,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 local_status_responded=(status is not None)
                 if active and state in {"RUNNING", "DEGRADED"}
                 else None,
+                local_status_outcome=(
+                    str(status_probe["outcome"]) if status_probe is not None else None
+                ),
                 join=cast(dict[str, object], join),
                 eula_accepted=eula,
                 required_java_major=required,
@@ -5667,13 +5815,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "process": process,
         }
 
-    def diagnostics_payload(db: Session) -> dict[str, object]:
+    async def diagnostics_payload(
+        db: Session, *, focus_event: AuditEvent | None = None
+    ) -> dict[str, object]:
+        public_ip = await app.state.public_ip_discovery.discover()
+        snapshot = manager.snapshot()
+        active_profile_id = app.state.active_profile_id
+        state = str(snapshot["state"])
+        if state.startswith("ProcessState."):
+            state = state.removeprefix("ProcessState.")
+        if isinstance(active_profile_id, str) and state in {"RUNNING", "DEGRADED"}:
+            active_profile = db.get(Profile, active_profile_id)
+            if active_profile is not None:
+                try:
+                    directory = canonical_child(
+                        Path(active_profile.server_directory), config.server_root
+                    )
+                except (OSError, ValueError):
+                    pass
+                else:
+                    probe = await minecraft_status_probe(read_properties(directory))
+                    remember_status_probe(active_profile_id, cast(dict[str, object], probe))
         return build_report(
             config=config,
             buffer=diagnostics,
-            server={**manager.snapshot(), "profile_id": app.state.active_profile_id},
+            server={**snapshot, "profile_id": active_profile_id},
             static_dir=resolve_static_dir(config.static_dir),
             db=db,
+            focus_event=focus_event,
+            public_ip=public_ip,
+            status_probes=dict(app.state.minecraft_status_probes),
         )
 
     @app.get("/api/v1/activity")
@@ -5701,20 +5872,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.get("/api/v1/activity/{event_id}/report")
-    def activity_report(event_id: str, request: Request, db: Db) -> Response:
+    async def activity_report(event_id: str, request: Request, db: Db) -> Response:
         current(request, db)
         event = db.get(AuditEvent, event_id)
         if event is None:
             raise HTTPException(404, "That activity event was not found.")
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")  # noqa: UP017
-        report = build_report(
-            config=config,
-            buffer=diagnostics,
-            server={**manager.snapshot(), "profile_id": app.state.active_profile_id},
-            static_dir=resolve_static_dir(config.static_dir),
-            db=db,
-            focus_event=event,
-        )
+        report = await diagnostics_payload(db, focus_event=event)
         return Response(
             content=json.dumps(report, indent=2),
             media_type="application/json",
@@ -5767,6 +5931,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 marker = marker.replace(tzinfo=timezone.utc)  # noqa: UP017
             return marker is None or candidate > marker
 
+        profiles = list(db.scalars(select(Profile)).all())
+        root = config.server_root.resolve(strict=False)
+        resolved_profiles: dict[str, Path] = {}
+        for profile in profiles:
+            try:
+                resolved_profiles[profile.id] = Path(profile.server_directory).resolve(strict=False)
+            except OSError:
+                continue
+        for profile in profiles:
+            directory = resolved_profiles.get(profile.id)
+            if directory is None:
+                unsafe_detail = "Its server folder could not be resolved safely."
+            elif directory == root:
+                unsafe_detail = (
+                    "It points at the entire server root. Remove only this Blockstead record "
+                    "and keep the files."
+                )
+            elif root not in directory.parents:
+                unsafe_detail = "Its server folder is outside the configured server root."
+            elif any(
+                other_id != profile.id
+                and other != root
+                and directory_overlap(directory, other)
+                for other_id, other in resolved_profiles.items()
+            ):
+                unsafe_detail = (
+                    "Its folder overlaps another managed server. Keep files when removing the "
+                    "duplicate or parent profile record."
+                )
+            else:
+                continue
+            alerts.append(
+                {
+                    "id": f"unsafe-profile-directory-{profile.id}",
+                    "kind": "unsafe_profile_directory",
+                    "title": f"{profile.name} has an unsafe profile folder",
+                    "detail": unsafe_detail,
+                    "severity": "danger",
+                    "created_at": profile.created_at.isoformat(),
+                    "recovery_to": "/servers",
+                }
+            )
+
         failed_backups = db.scalars(
             select(BackupRecord)
             .where(BackupRecord.status == "failed")
@@ -5777,7 +5984,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for record in failed_backups:
                 occurred_at = record.completed_at or record.created_at
                 if after_seen(occurred_at):
-                    profile = db.get(Profile, record.profile_id)
+                    failed_profile = db.get(Profile, record.profile_id)
                     alerts.append(
                         {
                             "id": f"failed-backup-{record.id}",
@@ -5788,11 +5995,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             "created_at": occurred_at.isoformat(),
                             "recovery_to": (
                                 f"/servers/{record.profile_id}/backups"
-                                if profile is not None
+                                if failed_profile is not None
                                 else "/servers"
                             ),
                         }
                     )
+
+        if prefs.failed_automations:
+            failed_runs = db.scalars(
+                select(AutomationRun)
+                .where(AutomationRun.status == "failed")
+                .order_by(AutomationRun.started_at.desc())
+                .limit(10)
+            ).all()
+            for run in failed_runs:
+                if not after_seen(run.started_at):
+                    continue
+                automation_profile = db.get(Profile, run.profile_id)
+                alerts.append(
+                    {
+                        "id": f"failed-automation-{run.id}",
+                        "kind": "failed_automation",
+                        "title": "A server automation failed",
+                        "detail": run.detail,
+                        "severity": "danger",
+                        "created_at": run.started_at.isoformat(),
+                        "recovery_to": (
+                            f"/servers/{run.profile_id}/schedule"
+                            if automation_profile is not None
+                            else "/servers"
+                        ),
+                    }
+                )
 
         snapshot = manager.snapshot()
         if (
@@ -5858,16 +6092,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.commit()
 
     @app.get("/api/v1/system/diagnostics")
-    def system_diagnostics(request: Request, db: Db) -> dict[str, object]:
+    async def system_diagnostics(request: Request, db: Db) -> dict[str, object]:
         current(request, db)
-        return diagnostics_payload(db)
+        return await diagnostics_payload(db)
 
     @app.get("/api/v1/system/diagnostics/report")
-    def system_diagnostics_report(request: Request, db: Db) -> Response:
+    async def system_diagnostics_report(request: Request, db: Db) -> Response:
         current(request, db)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")  # noqa: UP017
         return Response(
-            content=json.dumps(diagnostics_payload(db), indent=2),
+            content=json.dumps(await diagnostics_payload(db), indent=2),
             media_type="application/json",
             headers={
                 "Content-Disposition": f'attachment; filename="blockstead-report-{stamp}.json"'

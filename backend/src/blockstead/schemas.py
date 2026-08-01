@@ -219,6 +219,7 @@ class AutomationRunRequest(BaseModel):
 class NotificationPreferencesRequest(BaseModel):
     server_crashes: bool = True
     failed_backups: bool = True
+    failed_automations: bool = True
     low_disk_space: bool = True
     completed_updates: bool = True
     show_player_avatars: bool = False

@@ -90,6 +90,24 @@ async def test_stop_timeout_requires_explicit_force() -> None:
 
 
 @pytest.mark.asyncio
+async def test_concurrent_force_stop_signals_only_one_operation() -> None:
+    manager = ProcessManager(fixture_script())
+    await manager.start(mode="ignore-stop")
+    await wait_for(manager, ProcessState.RUNNING)
+    assert await manager.stop(timeout=0.05) is False
+
+    results = await asyncio.gather(
+        manager.force_stop(),
+        manager.force_stop(),
+        return_exceptions=True,
+    )
+
+    assert sum(result is None for result in results) == 1
+    assert sum(isinstance(result, InvalidTransition) for result in results) == 1
+    assert manager.state == ProcessState.STOPPED
+
+
+@pytest.mark.asyncio
 async def test_close_forces_process_only_after_graceful_timeout() -> None:
     manager = ProcessManager(fixture_script())
     await manager.start(mode="ignore-stop")

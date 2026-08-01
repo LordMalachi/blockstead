@@ -42,6 +42,42 @@ Router-facing port reachability remains **could not check**. Detecting a public
 IP from inside the host network does not prove that a router, firewall, Docker
 mapping, VPN, double NAT, or provider permits an inbound Minecraft connection.
 
+### Public connection decision tree
+
+When a Java player can join through the LAN address but a player on a genuinely
+different network cannot join through the public address, the Minecraft process
+and its LAN bind are already proven well enough to investigate the edge of the
+network first:
+
+1. Read the exact `server-port` and current LAN address from Blockstead. Reserve
+   that address in DHCP, then verify the router forwards that outside **TCP**
+   port to the same LAN address and Minecraft port. A host reboot can expose a
+   stale forward if its DHCP address changed.
+2. Test from cellular or another outside connection. A failed public-address
+   test from the same Wi-Fi can be only a router without NAT loopback; it is not
+   an adequate outside test.
+3. During the outside attempt, capture only connection metadata on the host,
+   substituting the actual port:
+
+   ```console
+   sudo tcpdump -ni any 'tcp port 25565'
+   ```
+
+   No incoming SYN points to the public address, router mapping, upstream NAT,
+   VPN, or provider. A SYN without a SYN-ACK points back to the host listener or
+   firewall. A completed TCP connection followed by a Minecraft disconnect
+   points instead to edition, version, authentication, or access rules.
+4. Compare the router's WAN IPv4 with the public IPv4 shown by Blockstead. A
+   private WAN address, an address in `100.64.0.0/10`, or a mismatch usually
+   means another NAT layer or carrier-grade NAT. Forward through both owned
+   routers or ask the provider for a reachable public address.
+
+Blockstead manages Java Edition. A Bedrock client needs a compatible bridge and
+normally a separate UDP mapping. Keep the Blockstead dashboard port private;
+only the Minecraft game port belongs in the router rule. An
+`enable-status=false` setting intentionally hides server-list/player-count data
+and does not, by itself, prevent direct joins.
+
 ## Repairs and safety
 
 The first catalog registers three repairs:

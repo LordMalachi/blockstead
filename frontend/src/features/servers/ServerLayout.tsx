@@ -36,11 +36,11 @@ export function ServerLayout() {
       </div>
       <div className="hero-actions">
         <label>Active server<select value={profile.id} onChange={event => { void navigate(`/servers/${event.target.value}/${section}`); }}>{profiles.data.map(entry => <option key={entry.id} value={entry.id}>{entry.name} · {entry.distribution}</option>)}</select></label>
-        <div className="control-actions">
-          <Button disabled={!scope.canStart} onClick={() => action.mutate({ endpoint: "/server/start", body: { profile_id: profile.id, mode: "normal" } })}>Start server</Button>
-          <Button className="button--secondary" disabled={!scope.isActive || !["RUNNING", "STARTING", "DEGRADED"].includes(scope.state)} onClick={() => action.mutate({ endpoint: "/server/stop" })}>Stop safely</Button>
-          <Button className="button--secondary" disabled={!scope.isActive || !scope.running} onClick={() => action.mutate({ endpoint: "/server/restart", body: { profile_id: profile.id, mode: "normal" } })}>Restart</Button>
-          {scope.isActive && scope.state === "STOPPING" && <Button className="button--danger" onClick={() => action.mutate({ endpoint: "/server/force-stop" })}>Force stop</Button>}
+        <div className="control-actions" aria-busy={action.isPending}>
+          <Button disabled={action.isPending || !scope.canStart} onClick={() => action.mutate({ endpoint: "/server/start", body: { profile_id: profile.id, mode: "normal" } })}>Start server</Button>
+          <Button className="button--secondary" disabled={action.isPending || !scope.isActive || !["RUNNING", "STARTING", "DEGRADED"].includes(scope.state)} onClick={() => action.mutate({ endpoint: "/server/stop" })}>Stop safely</Button>
+          <Button className="button--secondary" disabled={action.isPending || !scope.isActive || !scope.running} onClick={() => action.mutate({ endpoint: "/server/restart", body: { profile_id: profile.id, mode: "normal" } })}>Restart</Button>
+          {scope.isActive && scope.state === "STOPPING" && <Button className="button--danger" disabled={action.isPending} onClick={() => action.mutate({ endpoint: "/server/force-stop" })}>{action.isPending ? "Force stopping…" : "Force stop"}</Button>}
         </div>
       </div>
     </section>

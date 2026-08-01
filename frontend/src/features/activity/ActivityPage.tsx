@@ -39,6 +39,7 @@ export function ActivityPage() {
         body: JSON.stringify({
           server_crashes: data.has("server_crashes"),
           failed_backups: data.has("failed_backups"),
+          failed_automations: data.has("failed_automations"),
           low_disk_space: data.has("low_disk_space"),
           completed_updates: data.has("completed_updates"),
           show_player_avatars: data.has("show_player_avatars"),
@@ -81,6 +82,7 @@ export function ActivityPage() {
         {preferences.data && <form onSubmit={event => void savePreferences(event)} key={JSON.stringify(preferences.data)}>
           <label className="vanilla-switch"><span><strong>Server crashes</strong><small>Surface an unexpected Minecraft exit.</small></span><input name="server_crashes" type="checkbox" defaultChecked={preferences.data.server_crashes} /></label>
           <label className="vanilla-switch"><span><strong>Failed backups</strong><small>Keep failed world protection visible.</small></span><input name="failed_backups" type="checkbox" defaultChecked={preferences.data.failed_backups} /></label>
+          <label className="vanilla-switch"><span><strong>Failed automation</strong><small>Surface scheduled starts, maintenance, or host-power steps that need attention.</small></span><input name="failed_automations" type="checkbox" defaultChecked={preferences.data.failed_automations} /></label>
           <label className="vanilla-switch"><span><strong>Low disk space</strong><small>Warn when the data disk reaches 90%.</small></span><input name="low_disk_space" type="checkbox" defaultChecked={preferences.data.low_disk_space} /></label>
           <label className="vanilla-switch"><span><strong>Completed updates</strong><small>Confirm a Blockstead update finished.</small></span><input name="completed_updates" type="checkbox" defaultChecked={preferences.data.completed_updates} /></label>
           <label className="vanilla-switch"><span><strong>Player avatars</strong><small>Show skin images on the Players page. The browser fetches them from crafatar.com by player ID — the only outbound request Blockstead makes on your behalf.</small></span><input name="show_player_avatars" type="checkbox" defaultChecked={preferences.data.show_player_avatars} /></label>

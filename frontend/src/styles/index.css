@@ -293,6 +293,7 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
 .activity-event { position: relative; display: grid; grid-template-columns: 1rem minmax(0, 1fr); gap: .75rem; padding-bottom: var(--space-4); }
 .activity-event:not(:last-child)::before { content: ""; position: absolute; top: .8rem; bottom: 0; left: .34rem; width: 1px; background: var(--line); }
 .activity-event__marker { position: relative; z-index: 1; width: .72rem; height: .72rem; margin-top: .34rem; background: var(--ok); border: 2px solid var(--surface); border-radius: 3px; box-shadow: 0 0 0 1px var(--ok); }
+.activity-event--warning .activity-event__marker { background: var(--warning); box-shadow: 0 0 0 1px var(--warning); }
 .activity-event--danger .activity-event__marker { background: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
 .activity-event__body { min-width: 0; padding: 1rem; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
 .activity-event__heading { display: flex; align-items: start; justify-content: space-between; gap: var(--space-3); }
@@ -303,6 +304,7 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
 .activity-event__body .row-actions { margin-top: .8rem; }
 .activity-event__body .button { display: inline-flex; align-items: center; text-decoration: none; }
 .result { padding: .15rem .4rem; border-radius: 5px; color: var(--ok); background: color-mix(in srgb, var(--ok) 9%, var(--surface)); font-size: .6rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.result--warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 9%, var(--surface)); }
 .result--danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, var(--surface)); }
 .activity-empty { margin: var(--space-4) 0 0; padding: var(--space-5); color: var(--muted); border: 1px dashed var(--line-strong); border-radius: 12px; text-align: center; }
 .activity-preferences { position: sticky; top: 100px; }

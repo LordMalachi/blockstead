@@ -42,19 +42,23 @@ export interface CommandArgument {
 export interface GuidedCommand { id: string; label: string; root: string; category: string; description: string; safety: "normal" | "caution" | "danger"; arguments: CommandArgument[] }
 export interface CommandCatalog { schema_version: number; revision: string; source: "curated" | "runtime"; complete: boolean; commands: GuidedCommand[] }
 export interface SystemMetrics { cpu_percent: number; memory: { total_bytes: number; used_bytes: number; percent: number }; disk: { total_bytes: number; used_bytes: number; percent: number }; process: { uptime_seconds: number | null; memory_bytes: number | null } }
-export interface DiagnosticLogEntry { at: string; level: string; logger: string; message: string }
+export interface DiagnosticLogEntry { at: string; level: string; logger: string; message: string; occurrences?: number; first_at?: string; last_at?: string }
 export interface DiagnosticsReport {
   report_version: number;
   generated_at: string;
   application: { version: string; python: string; platform: string };
   settings: { bind_host: string; port: number; data_dir: string; server_root: string; secure_cookies: boolean; session_hours: number; allowed_origins: string[]; static_dir_present: boolean };
-  host: { cpu_percent: number; memory: { total_bytes: number; used_bytes: number; percent: number }; disk: { total_bytes: number; used_bytes: number; percent: number }; uptime_seconds: number };
+  host: { cpu_percent: number; memory: { total_bytes: number; used_bytes: number; percent: number }; disk: { total_bytes: number; used_bytes: number; percent: number }; uptime_seconds: number | null };
+  network: {
+    public_ip: { available: boolean; address_family: number | null; outcome: string; checked_at: string | null; address_redacted: boolean };
+    profiles: Array<{ profile_id: string; profile_name: string; directory_safety: { state: string; detail: string }; server_properties_present: boolean; configured_bind: string | null; server_port: number; enable_status: boolean; local_only: boolean; local_address: string | null; candidate_hosts: string[]; public_state: string; last_local_status_probe: Record<string, unknown> | null }>;
+  };
   java_runtimes: JavaRuntime[];
   server: ProcessState;
   profiles: Array<{ id: string; name: string; distribution: string; minecraft_version: string | null; loader_version: string | null; is_fixture: boolean; directory: string }>;
-  schedules: Array<{ profile_id: string; enabled: boolean; start_time: string | null; stop_time: string | null; weekdays: string }>;
-  recent_automation_runs: Array<{ trigger: string; action: string; status: string; detail: string; started_at: string }>;
-  recent_backups: Array<{ status: string; trigger: string; size_bytes: number | null; duration_ms: number | null; result: string; created_at: string }>;
+  schedules: Array<{ profile_id: string; enabled: boolean; start_time: string | null; stop_time: string | null; backup_before_stop: boolean; power_off_after_stop: boolean; wake_time: string | null; weekdays: string; only_when_empty: boolean }>;
+  recent_automation_runs: Array<{ profile_id: string; trigger: string; action: string; status: string; detail: string; steps: string; duration_ms: number; started_at: string }>;
+  recent_backups: Array<{ profile_id: string; status: string; trigger: string; size_bytes: number | null; duration_ms: number | null; result: string; created_at: string }>;
   audit_tail: Array<{ category: string; result: string; detail: string; created_at: string }>;
   recent_errors: DiagnosticLogEntry[];
   recent_log: DiagnosticLogEntry[];
@@ -253,9 +257,9 @@ export interface UpdateStatus {
 export interface OverviewMetricPoint { at: string; cpu_percent: number; memory_percent: number; disk_percent: number; process_memory_bytes: number | null; world_size_bytes: number | null }
 export interface OverviewWarning { code: string; title: string; detail: string; to: string; severity: "warning" | "danger" }
 export interface OverviewActivity { id: string; category: string; result: string; detail: string; created_at: string; to: string }
-export interface ActivityEvent { id: string; category: string; group: string; title: string; result: string; severity: "success" | "danger"; detail: string; actor: string; profile: { id: string; name: string } | null; created_at: string; recovery_to: string; report_url: string }
+export interface ActivityEvent { id: string; category: string; group: string; title: string; result: string; severity: "success" | "warning" | "danger"; detail: string; actor: string; profile: { id: string; name: string } | null; created_at: string; recovery_to: string; report_url: string }
 export interface ActivityFeed { events: ActivityEvent[]; total: number; limit: number; offset: number }
-export interface NotificationPreferences { server_crashes: boolean; failed_backups: boolean; low_disk_space: boolean; completed_updates: boolean; show_player_avatars: boolean; last_seen_at: string | null }
+export interface NotificationPreferences { server_crashes: boolean; failed_backups: boolean; failed_automations: boolean; low_disk_space: boolean; completed_updates: boolean; show_player_avatars: boolean; last_seen_at: string | null }
 export interface LocalAlert { id: string; kind?: string; title: string; detail: string; severity: "success" | "warning" | "danger"; created_at: string; recovery_to: string }
 export interface LocalNotifications { alerts: LocalAlert[]; unread_count: number }
 export interface ProfileOverview {
@@ -275,7 +279,14 @@ export interface ProfileOverview {
       detail: string;
     };
   };
-  players: { online: number | null; max: number; sample: string[]; available: boolean };
+  players: {
+    online: number | null;
+    max: number;
+    sample: string[];
+    available: boolean;
+    status_outcome: "responded" | "disabled" | "closed_early" | "timeout" | "unreachable" | "invalid_bind" | "invalid_response" | "not_running";
+    status_detail: string;
+  };
   metrics: { current: OverviewMetricPoint & { memory_used_bytes: number; memory_total_bytes: number; disk_used_bytes: number; disk_total_bytes: number }; history: OverviewMetricPoint[] };
   last_backup: BackupRecord | null;
   next_operation: { label: string; at: string } | null;

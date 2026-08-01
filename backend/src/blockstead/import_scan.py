@@ -23,13 +23,31 @@ class ImportScan(BaseModel):
 def canonical_child(path: Path, allowed_root: Path) -> Path:
     root = allowed_root.resolve(strict=True)
     candidate = path.resolve(strict=True)
-    if not candidate.is_dir() or (candidate != root and root not in candidate.parents):
+    if candidate == root:
+        raise ValueError(
+            f"Select an individual server folder inside {root}, not the server root itself. "
+            "Using the root as one profile could make that profile include every other server."
+        )
+    if not candidate.is_dir() or root not in candidate.parents:
         raise ValueError(
             f"Blockstead can only scan folders inside {root}. To bring in a folder "
             "from somewhere else on this computer, use the dashboard's Import "
             "section to upload it instead."
         )
     return candidate
+
+
+def directory_overlap(first: Path, second: Path) -> bool:
+    """Return whether two profile folders are equal or one contains the other.
+
+    Profile folders are ownership boundaries. Treating a parent and one of its
+    descendants as separate servers would let a file, restore, or removal
+    operation for one profile alter the other profile's data.
+    """
+
+    left = first.resolve(strict=False)
+    right = second.resolve(strict=False)
+    return left == right or left in right.parents or right in left.parents
 
 
 def safe_relative_path(name: str) -> PurePosixPath:

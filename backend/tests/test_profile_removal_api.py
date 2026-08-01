@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from blockstead.app import create_app
 from blockstead.config import Settings
+from blockstead.models import Profile
 
 FIXTURE = Path(__file__).parents[2] / "fixtures" / "servers" / "vanilla-fixture"
 
@@ -98,3 +99,85 @@ def test_permanent_removal_requires_the_exact_name_and_deletes_local_data(
     assert removed.json()["files_deleted"] is True
     assert not directory.exists()
     assert not (removal_client.app.state.settings.data_dir / "backups" / profile_id).exists()
+
+
+def test_server_root_profile_can_never_delete_managed_servers(
+    removal_client: TestClient,
+) -> None:
+    auth = headers(removal_client)
+    root = removal_client.app.state.settings.server_root
+    protected = root / "family"
+    protected.mkdir()
+    sentinel = protected / "level.dat"
+    sentinel.write_bytes(b"world")
+    with removal_client.app.state.session_factory() as db:
+        profile = Profile(
+            name="Unsafe root import",
+            server_directory=str(root),
+            distribution="unknown",
+            minecraft_version=None,
+        )
+        db.add(profile)
+        db.commit()
+        profile_id = profile.id
+
+    refused = removal_client.request(
+        "DELETE",
+        f"/api/v1/profiles/{profile_id}",
+        headers=auth,
+        json={"confirm_name": "Unsafe root import", "delete_files": True},
+    )
+
+    assert refused.status_code == 409
+    assert root.is_dir()
+    assert sentinel.read_bytes() == b"world"
+
+    record_only = removal_client.request(
+        "DELETE",
+        f"/api/v1/profiles/{profile_id}",
+        headers=auth,
+        json={"confirm_name": "Unsafe root import", "delete_files": False},
+    )
+    assert record_only.status_code == 200
+    assert root.is_dir()
+    assert sentinel.read_bytes() == b"world"
+
+
+def test_overlapping_profile_folders_block_file_deletion(
+    removal_client: TestClient,
+) -> None:
+    auth = headers(removal_client)
+    root = removal_client.app.state.settings.server_root
+    parent = root / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    sentinel = child / "level.dat"
+    sentinel.write_bytes(b"world")
+    with removal_client.app.state.session_factory() as db:
+        parent_profile = Profile(
+            name="Parent",
+            server_directory=str(parent),
+            distribution="unknown",
+            minecraft_version=None,
+        )
+        child_profile = Profile(
+            name="Child",
+            server_directory=str(child),
+            distribution="unknown",
+            minecraft_version=None,
+        )
+        db.add_all([parent_profile, child_profile])
+        db.commit()
+        parent_id = parent_profile.id
+        child_id = child_profile.id
+
+    for profile_id, name in ((parent_id, "Parent"), (child_id, "Child")):
+        refused = removal_client.request(
+            "DELETE",
+            f"/api/v1/profiles/{profile_id}",
+            headers=auth,
+            json={"confirm_name": name, "delete_files": True},
+        )
+        assert refused.status_code == 409
+        assert "overlaps" in refused.json()["error"]["message"]
+        assert sentinel.read_bytes() == b"world"

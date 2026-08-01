@@ -70,6 +70,7 @@ class NotificationPreference(Base):
     )
     server_crashes: Mapped[bool] = mapped_column(Boolean, default=True)
     failed_backups: Mapped[bool] = mapped_column(Boolean, default=True)
+    failed_automations: Mapped[bool] = mapped_column(Boolean, default=True)
     low_disk_space: Mapped[bool] = mapped_column(Boolean, default=True)
     completed_updates: Mapped[bool] = mapped_column(Boolean, default=True)
     # Off by default: turning this on has the browser fetch skin images from a

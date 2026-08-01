@@ -8,7 +8,7 @@ import socket
 import struct
 import time
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -43,6 +43,15 @@ class JoinDetails(TypedDict):
     candidate_hosts: list[str]
     local_only: bool
     public: PublicJoinDetails
+
+
+class MinecraftStatusProbe(TypedDict):
+    """Structured result for an optional Minecraft server-list status request."""
+
+    outcome: str
+    detail: str
+    tcp_connected: bool | None
+    status: dict[str, object] | None
 
 
 class PublicIpDiscovery:
@@ -87,16 +96,44 @@ class PublicIpDiscovery:
                 result: dict[str, object] = {
                     "available": True,
                     "ip": str(address),
+                    "outcome": "detected",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
                     "detail": (
                         "Blockstead detected this network's public IP. It cannot "
                         "verify the router-facing Minecraft port from inside the network."
                     ),
                 }
                 ttl = PUBLIC_IP_CACHE_SECONDS
-            except (httpx.HTTPError, ValueError, TypeError):
+            except httpx.TimeoutException:
                 result = {
                     "available": False,
                     "ip": None,
+                    "outcome": "timeout",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
+                    "detail": (
+                        "Blockstead's public-IP lookup timed out. No public Minecraft "
+                        "address is being shown."
+                    ),
+                }
+                ttl = PUBLIC_IP_FAILURE_CACHE_SECONDS
+            except httpx.HTTPError:
+                result = {
+                    "available": False,
+                    "ip": None,
+                    "outcome": "network_error",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
+                    "detail": (
+                        "Blockstead could not reach its public-IP service. No public "
+                        "Minecraft address is being shown."
+                    ),
+                }
+                ttl = PUBLIC_IP_FAILURE_CACHE_SECONDS
+            except (ValueError, TypeError):
+                result = {
+                    "available": False,
+                    "ip": None,
+                    "outcome": "invalid_response",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
                     "detail": (
                         "Blockstead could not detect this network's public IP. "
                         "No public Minecraft address is being shown."
@@ -274,8 +311,25 @@ async def _read_varint(reader: asyncio.StreamReader) -> int:
     raise ValueError("Minecraft status VarInt was too long")
 
 
-async def minecraft_status(values: dict[str, str]) -> dict[str, object] | None:
-    """Probe the local Java status protocol, returning only trusted fields."""
+def status_protocol_enabled(values: dict[str, str]) -> bool:
+    """Whether server.properties permits the optional server-list status reply."""
+
+    return values.get("enable-status", "true").strip().casefold() != "false"
+
+
+async def minecraft_status_probe(values: dict[str, str]) -> MinecraftStatusProbe:
+    """Probe local Java status without treating optional metadata as server health."""
+
+    if not status_protocol_enabled(values):
+        return {
+            "outcome": "disabled",
+            "detail": (
+                "server.properties has enable-status=false. Players may still connect, "
+                "but Minecraft intentionally withholds server-list and player-count data."
+            ),
+            "tcp_connected": None,
+            "status": None,
+        }
 
     bind = values.get("server-ip", "").strip()
     if bind in {"", "0.0.0.0"}:  # noqa: S104 -- probing a wildcard-bound MC server
@@ -288,54 +342,100 @@ async def minecraft_status(values: dict[str, str]) -> dict[str, object] | None:
         try:
             ipaddress.ip_address(bind)
         except ValueError:
-            return None
+            return {
+                "outcome": "invalid_bind",
+                "detail": "server-ip is not a valid local address, so Blockstead did not probe it.",
+                "tcp_connected": None,
+                "status": None,
+            }
         target = bind
     port = integer_property(values, "server-port", 25565, 1, 65535)
     writer: asyncio.StreamWriter | None = None
     try:
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(target, port), 1.0)
-        assert writer is not None
-        address = target.encode("utf-8")
-        handshake = _varint(0) + _varint(0) + _varint(len(address)) + address
-        handshake += struct.pack(">H", port) + _varint(1)
-        writer.write(_varint(len(handshake)) + handshake + b"\x01\x00")
-        await writer.drain()
-        packet_length = await asyncio.wait_for(_read_varint(reader), 1.0)
-        if packet_length < 1 or packet_length > MAX_STATUS_BYTES:
-            return None
-        packet_id = await _read_varint(reader)
-        if packet_id != 0:
-            return None
-        payload_length = await _read_varint(reader)
-        if payload_length < 2 or payload_length > MAX_STATUS_BYTES:
-            return None
-        raw = await reader.readexactly(payload_length)
-        payload: Any = json.loads(raw.decode("utf-8"))
-        players = payload.get("players") if isinstance(payload, dict) else None
-        if not isinstance(players, dict):
-            return None
-        online = players.get("online")
-        maximum = players.get("max")
-        if not isinstance(online, int) or not isinstance(maximum, int):
-            return None
-        sample = players.get("sample")
-        names = []
-        if isinstance(sample, list):
-            names = [
-                entry["name"][:64]
-                for entry in sample[:100]
-                if isinstance(entry, dict) and isinstance(entry.get("name"), str)
-            ]
-        return {"online": max(0, online), "max": max(0, maximum), "sample": names}
-    except (OSError, ValueError, json.JSONDecodeError, UnicodeDecodeError, TimeoutError):
-        return None
+        async with asyncio.timeout(2.0):
+            reader, writer = await asyncio.open_connection(target, port)
+            address = target.encode("utf-8")
+            handshake = _varint(0) + _varint(0) + _varint(len(address)) + address
+            handshake += struct.pack(">H", port) + _varint(1)
+            writer.write(_varint(len(handshake)) + handshake + b"\x01\x00")
+            await writer.drain()
+            packet_length = await _read_varint(reader)
+            if packet_length < 1 or packet_length > MAX_STATUS_BYTES:
+                raise ValueError("Minecraft status packet length was invalid")
+            packet_id = await _read_varint(reader)
+            if packet_id != 0:
+                raise ValueError("Minecraft status packet id was invalid")
+            payload_length = await _read_varint(reader)
+            if payload_length < 2 or payload_length > MAX_STATUS_BYTES:
+                raise ValueError("Minecraft status payload length was invalid")
+            raw = await reader.readexactly(payload_length)
+            payload: Any = json.loads(raw.decode("utf-8"))
+            players = payload.get("players") if isinstance(payload, dict) else None
+            if not isinstance(players, dict):
+                raise ValueError("Minecraft status response contained no player information")
+            online = players.get("online")
+            maximum = players.get("max")
+            if not isinstance(online, int) or not isinstance(maximum, int):
+                raise ValueError("Minecraft status player counts were invalid")
+            sample = players.get("sample")
+            names = []
+            if isinstance(sample, list):
+                names = [
+                    entry["name"][:64]
+                    for entry in sample[:100]
+                    if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+                ]
+            status = {"online": max(0, online), "max": max(0, maximum), "sample": names}
+            return {
+                "outcome": "responded",
+                "detail": "Minecraft returned a valid local server-list status response.",
+                "tcp_connected": True,
+                "status": status,
+            }
+    except asyncio.IncompleteReadError:
+        return {
+            "outcome": "closed_early",
+            "detail": (
+                "Minecraft accepted the local TCP connection but closed it before returning "
+                "server-list status data. This does not by itself mean players cannot join."
+            ),
+            "tcp_connected": True,
+            "status": None,
+        }
+    except TimeoutError:
+        return {
+            "outcome": "timeout",
+            "detail": "The bounded local Minecraft status request timed out.",
+            "tcp_connected": writer is not None,
+            "status": None,
+        }
+    except OSError:
+        return {
+            "outcome": "unreachable",
+            "detail": "Blockstead could not open the configured local Minecraft TCP port.",
+            "tcp_connected": False,
+            "status": None,
+        }
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return {
+            "outcome": "invalid_response",
+            "detail": "Minecraft returned an incomplete or invalid local status response.",
+            "tcp_connected": True,
+            "status": None,
+        }
     finally:
         if writer is not None:
             writer.close()
             try:
-                await writer.wait_closed()
-            except OSError:
+                await asyncio.wait_for(writer.wait_closed(), 0.25)
+            except (OSError, TimeoutError):
                 pass
+
+
+async def minecraft_status(values: dict[str, str]) -> dict[str, object] | None:
+    """Compatibility wrapper returning only trusted player fields when available."""
+
+    return (await minecraft_status_probe(values))["status"]
 
 
 def next_schedule_operation(

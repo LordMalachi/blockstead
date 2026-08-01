@@ -130,3 +130,30 @@ def test_scan_outside_root_names_the_root(
     response = client.post("/api/v1/imports/scan", headers=auth, json={"path": str(outside)})
     assert response.status_code == 400
     assert "can only scan folders inside" in response.json()["error"]["message"]
+
+
+def test_profile_import_rejects_server_root_and_overlapping_folders(
+    client: TestClient, auth: dict[str, str], tmp_path: Path
+) -> None:
+    root = tmp_path / "servers"
+    parent = root / "family"
+    child = parent / "nested"
+    child.mkdir(parents=True)
+    (parent / "server.properties").write_text("server-port=25565\n", encoding="utf-8")
+    (child / "server.properties").write_text("server-port=25566\n", encoding="utf-8")
+
+    root_result = client.post(
+        "/api/v1/profiles", headers=auth, json={"name": "Everything", "path": str(root)}
+    )
+    assert root_result.status_code == 400
+    assert "not the server root itself" in root_result.json()["error"]["message"]
+
+    created = client.post(
+        "/api/v1/profiles", headers=auth, json={"name": "Family", "path": str(parent)}
+    )
+    assert created.status_code == 201
+    overlap = client.post(
+        "/api/v1/profiles", headers=auth, json={"name": "Nested", "path": str(child)}
+    )
+    assert overlap.status_code == 409
+    assert "overlaps" in overlap.json()["error"]["message"]

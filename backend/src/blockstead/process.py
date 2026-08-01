@@ -20,6 +20,16 @@ class ProcessState(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+def signal_process_group(pid: int, signal_name: str) -> None:
+    """Signal a POSIX process group without exposing POSIX-only names to Windows typing."""
+
+    killpg = getattr(os, "killpg", None)
+    requested_signal = getattr(signal, signal_name, None)
+    if not callable(killpg) or requested_signal is None:
+        raise RuntimeError("Process-group signaling is unavailable on this host.")
+    killpg(pid, requested_signal)
+
+
 TRANSITIONS: dict[ProcessState, frozenset[ProcessState]] = {
     ProcessState.STOPPED: frozenset({ProcessState.STARTING}),
     ProcessState.STARTING: frozenset(
@@ -31,7 +41,12 @@ TRANSITIONS: dict[ProcessState, frozenset[ProcessState]] = {
     ProcessState.STOPPING: frozenset({ProcessState.STOPPED, ProcessState.CRASHED}),
     ProcessState.CRASHED: frozenset({ProcessState.STARTING, ProcessState.STOPPED}),
     ProcessState.DEGRADED: frozenset(
-        {ProcessState.STOPPING, ProcessState.CRASHED, ProcessState.STARTING}
+        {
+            ProcessState.RUNNING,
+            ProcessState.STOPPING,
+            ProcessState.CRASHED,
+            ProcessState.STARTING,
+        }
     ),
     ProcessState.UNKNOWN: frozenset({ProcessState.STOPPED, ProcessState.CRASHED}),
 }
@@ -208,27 +223,37 @@ class ProcessManager:
             return False
 
     async def force_stop(self) -> None:
-        if (
-            self.state != ProcessState.STOPPING
-            or self._process is None
-            or self._process.returncode is not None
-        ):
-            raise InvalidTransition("Force stop is only available after a graceful stop timeout.")
-        self._force_requested = True
-        if os.name == "posix":
-            os.killpg(self._process.pid, signal.SIGTERM)
-        else:
-            self._process.terminate()
-        try:
-            await asyncio.wait_for(self._process.wait(), 2.0)
-        except asyncio.TimeoutError:  # noqa: UP041
-            if os.name == "posix":
-                os.killpg(self._process.pid, signal.SIGKILL)
-            else:
-                self._process.kill()
-            await self._process.wait()
-        if self.state == ProcessState.STOPPING:
-            self.transition(ProcessState.STOPPED, "Force stopped after graceful timeout")
+        async with self._lock:
+            if (
+                self.state != ProcessState.STOPPING
+                or self._process is None
+                or self._process.returncode is not None
+            ):
+                raise InvalidTransition(
+                    "Force stop is only available after a graceful stop timeout."
+                )
+            process = self._process
+            self._force_requested = True
+            try:
+                if os.name == "posix":
+                    signal_process_group(process.pid, "SIGTERM")
+                else:
+                    process.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), 2.0)
+            except TimeoutError:
+                try:
+                    if os.name == "posix":
+                        signal_process_group(process.pid, "SIGKILL")
+                    else:
+                        process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+            if self.state == ProcessState.STOPPING:
+                self.transition(ProcessState.STOPPED, "Force stopped after graceful timeout")
 
     async def subscribe(self, callback: Callable[[LogEvent], Awaitable[None]]) -> None:
         queue: asyncio.Queue[LogEvent] = asyncio.Queue(maxsize=100)

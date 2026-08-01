@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 WEEKDAY_LABELS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 POWER_HELPER = Path("/usr/lib/blockstead/blockstead-power")
+POWER_HELPER_TIMEOUT_SECONDS = 20.0
+POWER_HELPER_DETAIL_CHARS = 500
 
 
 def parse_weekdays(value: str) -> list[int]:
@@ -393,9 +395,29 @@ class Scheduler:
                         wake_date = candidate
                         break
             command += ["--wake", f"{wake_date.isoformat()}T{wake_time}:00"]
-        process = await asyncio.create_subprocess_exec(*command)
-        if await process.wait() != 0:
-            raise RuntimeError("the Linux host power helper failed")
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), POWER_HELPER_TIMEOUT_SECONDS
+            )
+        except TimeoutError as exc:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            await process.wait()
+            raise RuntimeError("the Linux host power helper timed out after 20 seconds") from exc
+        if process.returncode != 0:
+            output = (stderr or stdout).decode("utf-8", errors="replace")
+            detail = " ".join(output.split())[:POWER_HELPER_DETAIL_CHARS]
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(
+                f"the Linux host power helper failed with exit code {process.returncode}{suffix}"
+            )
 
     def _record_run(
         self,

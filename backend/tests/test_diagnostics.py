@@ -26,6 +26,28 @@ def test_redact_leaves_other_text_alone() -> None:
     )
 
 
+def test_redact_masks_common_credentials() -> None:
+    cleaned = redact(
+        "Authorization: Bearer abc123 token=xyz password=hunter2 api_key=key-value"
+    )
+
+    assert "abc123" not in cleaned
+    assert "xyz" not in cleaned
+    assert "hunter2" not in cleaned
+    assert "key-value" not in cleaned
+    assert cleaned.count("[redacted]") == 4
+
+
+def test_redact_masks_quoted_json_secrets_and_basic_authorization() -> None:
+    cleaned = redact(
+        '\"token\": \"json-secret\", Authorization: Basic dXNlcjpwYXNzd29yZA=='
+    )
+
+    assert "json-secret" not in cleaned
+    assert "dXNlcjpwYXNzd29yZA==" not in cleaned
+    assert cleaned.count("[redacted]") == 2
+
+
 def test_buffer_keeps_only_the_most_recent_records() -> None:
     buffer = DiagnosticLogBuffer(limit=3)
     logger = logging.getLogger("blockstead.test_buffer_limit")
@@ -60,6 +82,25 @@ def test_buffer_tail_filters_by_level_and_captures_tracebacks() -> None:
     assert "/home/[account]" in message
     assert "/home/alice" not in message
     assert len(buffer.tail(10, logging.INFO)) == 2
+
+
+def test_buffer_summary_collapses_repeated_errors_without_hiding_other_problems() -> None:
+    buffer = DiagnosticLogBuffer()
+    logger = logging.getLogger("blockstead.test_buffer_summary")
+    logger.addHandler(buffer)
+    try:
+        for _ in range(20):
+            logger.error("status peer closed early")
+        logger.warning("power helper failed")
+    finally:
+        logger.removeHandler(buffer)
+
+    summary = buffer.summary(10, logging.WARNING)
+    assert len(summary) == 2
+    assert summary[0]["message"] == "status peer closed early"
+    assert summary[0]["occurrences"] == 20
+    assert summary[0]["first_at"] <= summary[0]["last_at"]
+    assert summary[1]["message"] == "power helper failed"
 
 
 def test_attach_logging_replaces_handlers_and_writes_the_log_file(tmp_path: Path) -> None:

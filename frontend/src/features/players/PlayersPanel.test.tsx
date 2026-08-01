@@ -51,6 +51,7 @@ const roster: RosterView = {
 const preferences: NotificationPreferences = {
   server_crashes: true,
   failed_backups: true,
+  failed_automations: true,
   low_disk_space: true,
   completed_updates: true,
   show_player_avatars: false,

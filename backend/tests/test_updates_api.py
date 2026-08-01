@@ -168,6 +168,12 @@ def test_github_being_unreachable_is_reported_gently(
 
     assert "could not reach GitHub" in str(body["error"])
     assert body["installing"] is False
+    assert client.app.state.update_check_failures == 1
+
+    with patch("blockstead.updates.fetch_latest", new=AsyncMock(return_value=remote())):
+        client.post("/api/v1/updates/check", headers=auth)
+
+    assert client.app.state.update_check_failures == 0
 
 
 def test_a_behind_installation_asks_for_the_install(

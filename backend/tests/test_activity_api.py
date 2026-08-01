@@ -1,9 +1,25 @@
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from blockstead.activity import event_payload
+from blockstead.models import AuditEvent, AutomationRun, Profile
+
 FIXTURE = Path(__file__).parents[2] / "fixtures" / "servers" / "vanilla-fixture"
+
+
+def test_skipped_activity_is_a_warning_instead_of_success() -> None:
+    event = AuditEvent(
+        admin_id="admin-1",
+        category="automation_start",
+        result="skipped",
+        safe_detail="Another server is already running on this host.",
+        created_at=datetime.now(UTC),
+    )
+
+    assert event_payload(event)["severity"] == "warning"
 
 
 def import_fixture(client: TestClient, auth: dict[str, str]) -> str:
@@ -51,6 +67,7 @@ def test_local_notification_preferences_can_be_changed_and_acknowledged(
     assert defaults == {
         "server_crashes": True,
         "failed_backups": True,
+        "failed_automations": True,
         "low_disk_space": True,
         "completed_updates": True,
         "show_player_avatars": False,
@@ -63,6 +80,7 @@ def test_local_notification_preferences_can_be_changed_and_acknowledged(
         json={
             "server_crashes": False,
             "failed_backups": True,
+            "failed_automations": False,
             "low_disk_space": False,
             "completed_updates": True,
             "show_player_avatars": True,
@@ -70,6 +88,7 @@ def test_local_notification_preferences_can_be_changed_and_acknowledged(
     )
     assert changed.status_code == 200
     assert changed.json()["server_crashes"] is False
+    assert changed.json()["failed_automations"] is False
     assert changed.json()["low_disk_space"] is False
     assert changed.json()["show_player_avatars"] is True
 
@@ -81,3 +100,36 @@ def test_activity_endpoints_require_authentication(client: TestClient) -> None:
     assert client.get("/api/v1/activity").status_code == 401
     assert client.get("/api/v1/notification-preferences").status_code == 401
     assert client.get("/api/v1/notifications").status_code == 401
+
+
+def test_failed_automation_and_unsafe_profile_directory_raise_local_alerts(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    root = client.app.state.settings.server_root
+    with client.app.state.session_factory() as db:
+        unsafe = Profile(
+            name="Legacy root import",
+            server_directory=str(root),
+            distribution="unknown",
+            minecraft_version=None,
+        )
+        db.add(unsafe)
+        db.flush()
+        db.add(
+            AutomationRun(
+                profile_id=unsafe.id,
+                trigger="scheduled",
+                action="maintenance",
+                status="failed",
+                steps="[]",
+                detail="Linux host power helper failed with exit code 7",
+                duration_ms=10,
+                started_at=datetime.now(UTC),
+            )
+        )
+        db.commit()
+
+    alerts = client.get("/api/v1/notifications", headers=auth).json()["alerts"]
+    kinds = {alert["kind"] for alert in alerts}
+    assert "failed_automation" in kinds
+    assert "unsafe_profile_directory" in kinds

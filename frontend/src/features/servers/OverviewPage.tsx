@@ -85,7 +85,7 @@ export function OverviewPage() {
 
   return <>
     <section className="overview-summary" aria-label="Server summary">
-      <article><span>Players online</span><strong>{playerValue}</strong><small>{data.players.available ? data.players.sample.length ? data.players.sample.join(", ") : "Server responded; nobody is online" : scope.running ? "Live status is not responding" : "Available when the server is running"}</small></article>
+      <article><span>Players online</span><strong>{playerValue}</strong><small>{data.players.available ? data.players.sample.length ? data.players.sample.join(", ") : "Server responded; nobody is online" : data.players.status_outcome === "disabled" ? "Player count is intentionally hidden by enable-status=false" : data.players.status_outcome === "closed_early" ? "Minecraft accepted the local connection but withheld status data" : scope.running ? "Live status is not responding" : "Available when the server is running"}</small></article>
       <article><span>Uptime</span><strong>{data.state.uptime_seconds != null ? formatUptime(data.state.uptime_seconds) : "—"}</strong><small>{scope.running ? "Since this server started" : "Server is not running"}</small></article>
       <article><span>Last backup</span><strong>{data.last_backup ? relativeDate(data.last_backup.created_at) : "Never"}</strong><small className={!data.last_backup?.archive_available ? "metric-warning" : undefined}>{backupNote}</small></article>
       <article><span>Next operation</span><strong>{data.next_operation?.label ?? "None"}</strong><small>{data.next_operation ? operationTime(data.next_operation.at) : "No daily schedule is enabled"}</small></article>

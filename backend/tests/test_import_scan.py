@@ -5,6 +5,7 @@ import pytest
 
 from blockstead.import_scan import (
     canonical_child,
+    directory_overlap,
     promote_staging,
     purge_stale_uploads,
     safe_relative_path,
@@ -28,6 +29,25 @@ def test_paths_cannot_escape_allowed_root(tmp_path: Path) -> None:
     outside.mkdir()
     with pytest.raises(ValueError, match="can only scan folders inside"):
         canonical_child(outside, allowed)
+
+
+def test_server_root_cannot_be_used_as_a_profile(tmp_path: Path) -> None:
+    root = tmp_path / "servers"
+    root.mkdir()
+
+    with pytest.raises(ValueError, match="not the server root itself"):
+        canonical_child(root, root)
+
+
+def test_profile_directory_overlap_detects_equal_parent_and_child_paths(tmp_path: Path) -> None:
+    parent = tmp_path / "servers" / "family"
+    child = parent / "nested"
+    sibling = tmp_path / "servers" / "friends"
+
+    assert directory_overlap(parent, parent)
+    assert directory_overlap(parent, child)
+    assert directory_overlap(child, parent)
+    assert not directory_overlap(parent, sibling)
 
 
 def test_symlink_escape_is_rejected(tmp_path: Path) -> None:

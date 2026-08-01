@@ -23,9 +23,9 @@ export function DiagnosticsPanel() {
       </dl>
       <h3 className="diagnostic-log-heading">Recent problems</h3>
       {problems.length === 0 ? <p className="empty-note">No warnings or errors have been recorded recently.</p>
-        : <ul className="diagnostic-log" aria-label="Recent warnings and errors">{problems.slice(0, SHOWN_PROBLEMS).map(entry => <li key={`${entry.at}-${entry.message}`} className={entry.level === "WARNING" ? "" : "diagnostic-log--error"}><strong>{entry.level.toLowerCase()} · {new Date(entry.at).toLocaleString()}</strong><p>{entry.message}</p></li>)}</ul>}
+        : <ul className="diagnostic-log" aria-label="Recent warnings and errors">{problems.slice(0, SHOWN_PROBLEMS).map(entry => <li key={`${entry.at}-${entry.message}`} className={entry.level === "WARNING" ? "" : "diagnostic-log--error"}><strong>{entry.level.toLowerCase()} · {new Date(entry.at).toLocaleString()}{entry.occurrences && entry.occurrences > 1 ? ` · ${entry.occurrences} occurrences` : ""}</strong><p>{entry.message}</p></li>)}</ul>}
       {problems.length > SHOWN_PROBLEMS && <p className="muted-note">Showing the {SHOWN_PROBLEMS} most recent of {problems.length} recorded problems. The downloaded report contains all of them.</p>}
     </>}
-    <small className="muted-note">The report includes software settings, host health, profile names, recent actions, and application logs. Account names inside home-folder paths are masked, but server and player names may remain. Review it before sharing; Blockstead never uploads it.</small>
+    <small className="muted-note">The report includes software settings, host health, profile names, private-network connection details, recent actions, and deduplicated application logs. Account names and common credential values are masked, and the detected public IP is not written to the report, but server and player names may remain. Review it before sharing; Blockstead never uploads it.</small>
   </section>;
 }

@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, call
 
+import pytest
 from sqlalchemy import select
 
 from blockstead.db import Base, create_session_factory
@@ -161,3 +162,26 @@ def test_only_when_empty_skips_when_status_is_unavailable(tmp_path: Path) -> Non
         assert run is not None
         assert run.status == "skipped"
         assert "unavailable" in run.detail
+
+
+async def test_power_helper_failure_keeps_bounded_actionable_stderr(
+    tmp_path: Path, monkeypatch
+) -> None:
+    factory = create_session_factory(tmp_path / "blockstead.db")
+    manager = Mock()
+    scheduler = Scheduler(factory, manager, AsyncMock(), tmp_path / "data", tmp_path)
+
+    class FailedProcess:
+        returncode = 7
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"", b"rtcwake: /dev/rtc0 is unavailable\n"
+
+    async def failed_helper(*args: object, **kwargs: object) -> FailedProcess:
+        return FailedProcess()
+
+    monkeypatch.setattr(Scheduler, "power_capable", property(lambda _: True))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", failed_helper)
+
+    with pytest.raises(RuntimeError, match=r"exit code 7: rtcwake.*unavailable"):
+        await scheduler._power_off(datetime.now(UTC), None, None)

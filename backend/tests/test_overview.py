@@ -12,7 +12,9 @@ from blockstead.overview import (
     PublicIpDiscovery,
     join_details,
     minecraft_status,
+    minecraft_status_probe,
     read_properties,
+    status_protocol_enabled,
     strict_world_size,
     world_size,
 )
@@ -56,6 +58,8 @@ def test_overview_reports_join_address_health_and_protection(
         "max": 20,
         "sample": [],
         "available": False,
+        "status_outcome": "not_running",
+        "status_detail": "Player and server-list status is checked while this server is running.",
     }
     assert body["metrics"]["current"]["world_size_bytes"] > 0
     assert len(body["metrics"]["history"]) == 1
@@ -147,17 +151,14 @@ async def test_public_ip_discovery_accepts_only_global_addresses_and_caches() ->
         first = await discovery.discover()
         second = await discovery.discover()
 
-    assert (
-        first
-        == second
-        == {
-            "available": True,
-            "ip": "8.8.8.8",
-            "detail": (
-                "Blockstead detected this network's public IP. It cannot verify the "
-                "router-facing Minecraft port from inside the network."
-            ),
-        }
+    assert first == second
+    assert first["available"] is True
+    assert first["ip"] == "8.8.8.8"
+    assert first["outcome"] == "detected"
+    assert isinstance(first["checked_at"], str)
+    assert first["detail"] == (
+        "Blockstead detected this network's public IP. It cannot verify the "
+        "router-facing Minecraft port from inside the network."
     )
     assert requests == 1
 
@@ -171,6 +172,7 @@ async def test_public_ip_discovery_refuses_private_or_invalid_results() -> None:
 
     assert result["available"] is False
     assert result["ip"] is None
+    assert result["outcome"] == "invalid_response"
 
 
 def test_public_ip_refresh_uses_an_explicit_retry(client: TestClient, auth: dict[str, str]) -> None:
@@ -267,3 +269,50 @@ async def test_minecraft_status_reads_player_capacity_and_sample(monkeypatch: An
     result = await minecraft_status({"server-ip": "127.0.0.1", "server-port": "25565"})
 
     assert result == {"online": 2, "max": 20, "sample": ["Alex"]}
+
+
+async def test_minecraft_status_treats_early_eof_as_optional_status_unavailable(
+    monkeypatch: Any,
+) -> None:
+    reader = asyncio.StreamReader()
+    reader.feed_eof()
+
+    class Writer:
+        def write(self, _: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            pass
+
+    async def connect(_: str, __: int) -> tuple[asyncio.StreamReader, Any]:
+        return reader, Writer()
+
+    monkeypatch.setattr(asyncio, "open_connection", connect)
+    probe = await minecraft_status_probe({"server-ip": "", "server-port": "25565"})
+
+    assert probe["outcome"] == "closed_early"
+    assert probe["tcp_connected"] is True
+    assert probe["status"] is None
+    assert await minecraft_status({"server-ip": "", "server-port": "25565"}) is None
+
+
+async def test_minecraft_status_does_not_probe_when_status_is_disabled(
+    monkeypatch: Any,
+) -> None:
+    async def unexpected_connect(_: str, __: int) -> tuple[asyncio.StreamReader, Any]:
+        raise AssertionError("status-disabled servers must not be probed")
+
+    monkeypatch.setattr(asyncio, "open_connection", unexpected_connect)
+    values = {"server-ip": "", "server-port": "25565", "enable-status": "false"}
+    probe = await minecraft_status_probe(values)
+
+    assert status_protocol_enabled(values) is False
+    assert probe["outcome"] == "disabled"
+    assert probe["tcp_connected"] is None
+    assert probe["status"] is None

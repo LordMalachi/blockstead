@@ -5,11 +5,12 @@ import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import type { DiagnosticsReport } from "../../api/client";
 
 const report: DiagnosticsReport = {
-  report_version: 1,
+  report_version: 2,
   generated_at: "2026-07-19T12:00:00+00:00",
   application: { version: "0.1.0", python: "3.12.4", platform: "Linux-6.8" },
   settings: { bind_host: "127.0.0.1", port: 8765, data_dir: "/var/lib/blockstead", server_root: "/srv/minecraft", secure_cookies: false, session_hours: 12, allowed_origins: ["http://127.0.0.1:8765"], static_dir_present: true },
   host: { cpu_percent: 12, memory: { total_bytes: 8e9, used_bytes: 4e9, percent: 50 }, disk: { total_bytes: 5e10, used_bytes: 4e10, percent: 80 }, uptime_seconds: 3600 },
+  network: { public_ip: { available: false, address_family: null, outcome: "not_checked", checked_at: null, address_redacted: false }, profiles: [] },
   java_runtimes: [{ path: "/usr/bin/java", version: "21.0.2", major: 21 }],
   server: { state: "STOPPED", pid: null, exit_code: null, reason: "Not started" },
   profiles: [{ id: "p1", name: "Family world", distribution: "vanilla", minecraft_version: "1.21.1", loader_version: null, is_fixture: false, directory: "/srv/minecraft/family" }],
