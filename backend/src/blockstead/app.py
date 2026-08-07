@@ -5444,8 +5444,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "That profile was not found.")
         directory = profile_directory(profile_id, db)
         now = datetime.now(UTC)
-        for plan_id, plan in tuple(reviewed_cleanup_plans.items()):
-            if plan.expires_at <= now:
+        for plan_id, expired_plan in tuple(reviewed_cleanup_plans.items()):
+            if expired_plan.expires_at <= now:
                 reviewed_cleanup_plans.pop(plan_id, None)
         expired = db.scalars(
             select(BackupRecord).where(

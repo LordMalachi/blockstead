@@ -199,12 +199,12 @@ def cleanup_candidates(
             (file_name, "Expired backup archive"),
             (manifest_name, "Expired backup manifest"),
         ):
-            path = _stored_name(backup_root, name)
-            if path is None:
+            stored_path = _stored_name(backup_root, name)
+            if stored_path is None:
                 continue
             target = _cleanup_target(
                 data_directory,
-                path,
+                stored_path,
                 label=label,
                 reason="This record is already expired by the retention policy.",
                 recovery_effect="It is not an available recovery point.",

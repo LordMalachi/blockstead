@@ -263,7 +263,8 @@ test("an installed provider pack appears after restart and disappears when disab
 
   await signInAsOwner(page);
 
-  await page.getByRole("button", { name: /Use an existing server/ }).click();
+  // The first test already imported a profile, so the add-server form is
+  // available directly instead of behind the first-server chooser.
   await page.getByLabel("Profile name").fill("Paper command pack fixture");
   await page.getByText("The folder is already inside /srv/minecraft").click();
   await page.getByLabel("Full path").fill("fixtures/servers/e2e-command-paper");
