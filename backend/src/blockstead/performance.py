@@ -6,7 +6,7 @@ shape, so an unrelated plugin log line can never be presented as a reading.
 """
 
 import re
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 PAPER_PERFORMANCE_DISTRIBUTIONS = frozenset({"paper"})
 PERFORMANCE_SOURCE = "Paper console /tps and /mspt commands"
@@ -55,7 +55,7 @@ def parse_paper_tps(line: str) -> TpsValues | None:
     values = _numbers(match.group(2))
     result = empty_tps()
     mapped = False
-    names = {
+    names: dict[str, Literal["one_minute", "five_minutes", "fifteen_minutes"]] = {
         "1m": "one_minute",
         "60s": "one_minute",
         "5m": "five_minutes",
@@ -79,7 +79,7 @@ def parse_paper_mspt(line: str) -> MsptValues | None:
     values = _numbers(match.group(2))
     result = empty_mspt()
     mapped = False
-    names = {
+    names: dict[str, Literal["five_seconds", "ten_seconds", "sixty_seconds"]] = {
         "5s": "five_seconds",
         "10s": "ten_seconds",
         "60s": "sixty_seconds",

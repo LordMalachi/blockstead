@@ -123,6 +123,7 @@ def _cleanup_target(data_directory: Path, path: Path, *, label: str, reason: str
         resolved.relative_to(root)
         if path.is_symlink() or resolved.is_symlink():
             return None
+        size: int | None
         if resolved.is_file():
             kind = "file"
             size = resolved.stat().st_size

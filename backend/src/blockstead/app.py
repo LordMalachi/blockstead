@@ -55,7 +55,9 @@ from .backups import (
     perform_restore,
     plan_restore,
     verify_backup_archive,
-    world_roots,
+)
+from .backups import (
+    world_roots as backup_world_roots,
 )
 from .catalog import CatalogError, PlannedFile
 from .command_catalog import GuidedCommandRequest, catalog_payload, render_guided_command
@@ -174,6 +176,9 @@ from .loader_migration import (
     discover_world_roots,
     review_fingerprint,
     safe_level_name,
+)
+from .loader_migration import (
+    world_roots as migration_world_roots,
 )
 from .loadout_lockfiles import (
     MAX_LOCKFILE_BYTES,
@@ -2419,7 +2424,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except RestoreError as exc:
                 backup_detail = str(exc)
 
-        measured_world = strict_world_size(source, properties)
+        measured_roots = [tree_size(root.source) for root in roots]
+        measured_world = (
+            sum(size for size in measured_roots if size is not None)
+            if roots and all(size is not None for size in measured_roots)
+            else None
+        )
         disk_free = int(psutil.disk_usage(str(config.server_root)).free)
         required_space = (
             measured_world + BACKUP_OVERHEAD_BYTES if measured_world is not None else None
@@ -2552,7 +2562,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         target = Path(provisioned.directory)
         source = profile_directory(profile.id, db)
-        roots = world_roots(source, cast(str, fresh["level_name"]))
+        roots = migration_world_roots(source, cast(str, fresh["level_name"]))
         try:
             copied = await asyncio.to_thread(
                 copy_worlds,
@@ -5466,7 +5476,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         verified = verified_cleanup_backup(profile, db)
         if verified is None:
             blockers.append("Create a locally verified backup before removing any artifact.")
-        plan = None
+        plan: ReviewedCleanupPlan | None = None
         if candidates and not blockers and verified is not None:
             plan = ReviewedCleanupPlan(
                 id=secrets.token_hex(16),
@@ -5598,6 +5608,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         checked_at = datetime.now(UTC)
         payloads: list[dict[str, object]] = []
+        destination_available: list[bool] = []
         for (label, configured_path, _, _), result in zip(destinations, results, strict=True):
             db.execute(
                 delete(BackupDestinationCheck).where(
@@ -5616,6 +5627,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 checked_at=checked_at,
             )
             db.add(record)
+            destination_available.append(result["state"] == "available")
             payloads.append(
                 {
                     "label": label,
@@ -5633,7 +5645,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 category="backup_destination_check",
                 result=(
                     "success"
-                    if all(item["last_check"]["state"] == "available" for item in payloads)
+                    if all(destination_available)
                     else "warning"
                 ),
                 safe_detail=(
@@ -5896,7 +5908,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "That profile was not found.")
         directory = profile_directory(profile_id, db)
         properties = read_properties(directory)
-        roots = world_roots(directory)
+        roots = backup_world_roots(directory)
         world_entries = [{"name": root.name, "size_bytes": tree_size(root)} for root in roots]
         world_bytes = strict_world_size(directory, properties)
         try:
@@ -5961,9 +5973,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "recovery": {
                 "entries": recovery,
                 "total_bytes": sum(
-                    entry["size_bytes"]
+                    size
                     for entry in recovery
-                    if isinstance(entry.get("size_bytes"), int)
+                    if isinstance((size := entry.get("size_bytes")), int)
                 ),
             },
             "cleanup": {

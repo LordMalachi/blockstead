@@ -65,6 +65,17 @@ function buildStoredZip(entries: { name: string; data: Buffer }[]): Buffer {
 const commandPackFixture = resolve(process.cwd(), "../fixtures/servers/e2e-command-paper");
 test.afterEach(() => rmSync(commandPackFixture, { recursive: true, force: true }));
 
+async function signInAsOwner(page: import("@playwright/test").Page) {
+  await page.goto("/");
+  const signIn = page.getByRole("button", { name: "Sign in" });
+  if (await signIn.isVisible().catch(() => false)) {
+    await page.getByLabel("Username").fill("owner");
+    await page.getByLabel("Password").fill("correct horse battery staple");
+    await signIn.click();
+  }
+  await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
+}
+
 test("first admin imports and controls the owned fixture", async ({ page }) => {
   test.setTimeout(60_000);
   // The fixture is imported in place (not copied), so a previously interrupted
@@ -173,9 +184,13 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
   await expect(page.getByText(/Recovery snapshot/)).toBeVisible();
   await expect(page.locator(".file-row", { hasText: "renamed-note.txt" })).toHaveCount(0);
 
+  const metricsResponse = page.waitForResponse(response =>
+    response.url().includes("/api/v1/system/metrics") && response.ok(),
+  );
   await page.getByRole("link", { name: "System" }).click();
   await expect(page.getByRole("heading", { name: "System health" })).toBeVisible();
-  await expect(page.getByText("Host CPU")).toBeVisible();
+  await metricsResponse;
+  await expect(page.getByText("Host CPU")).toBeVisible({ timeout: 15_000 });
 
   await page.getByRole("link", { name: "Help" }).click();
   await expect(page.getByRole("heading", { name: "How can we help?" })).toBeVisible();
@@ -246,12 +261,7 @@ test("an installed provider pack appears after restart and disappears when disab
   writeFileSync(join(folder, "fake-server.json"), '{"minecraft_version":"1.21.1"}\n');
   writeFileSync(join(folder, "eula.txt"), "eula=true\n");
 
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
-  await page.getByLabel("Username").fill("owner");
-  await page.getByLabel("Password").fill("correct horse battery staple");
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
+  await signInAsOwner(page);
 
   await page.getByRole("button", { name: /Use an existing server/ }).click();
   await page.getByLabel("Profile name").fill("Paper command pack fixture");
@@ -316,13 +326,9 @@ test("a server folder from anywhere on the computer imports through the browser"
   writeFileSync(join(world, "world", "level.dat"), "level");
 
   try {
-    await page.goto("/");
-    // The milestone test above already created the administrator; sign back in.
-    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
-    await page.getByLabel("Username").fill("owner");
-    await page.getByLabel("Password").fill("correct horse battery staple");
-    await page.getByRole("button", { name: "Sign in" }).click();
-    await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
+    // The milestone test above created the administrator. A reused browser may
+    // already be authenticated, while a fresh one needs to sign in.
+    await signInAsOwner(page);
 
     const importCard = page.locator("#import-server");
     await importCard.getByLabel("Profile name").fill("E2E Upload World");
