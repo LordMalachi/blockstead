@@ -111,3 +111,20 @@ test("offers nearby recovery help when public IP discovery fails", async () => {
   expect(screen.getByRole("link", { name: "Open full help guide" })).toHaveAttribute("href", "/help#connection-troubleshooting");
   expect(screen.getByRole("button", { name: "Check public IP again" })).toBeVisible();
 });
+
+test("offers a bounded local Spark profile capture for supported Paper servers", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const payload = url.endsWith("/diagnostic-captures")
+      ? []
+      : { ...overview, capabilities: { tps: true, mspt: true, distribution_label: "Paper" } };
+    return Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(<MemoryRouter><QueryClientProvider client={client}><OverviewPage /></QueryClientProvider></MemoryRouter>);
+
+  expect(await screen.findByRole("button", { name: "Capture local profile" })).toBeVisible();
+  expect(screen.getByText(/no viewer link is requested or uploaded/i)).toBeVisible();
+});

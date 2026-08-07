@@ -43,6 +43,14 @@ def main() -> None:
             info("TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0")
         elif command == "mspt":
             info("MSPT from last 5s, 10s, 60s: 2.0, 2.0, 2.0")
+        elif command == "spark profiler info":
+            info("No Spark profiler is active.")
+        elif command == "spark profiler start":
+            info("Spark profiler started.")
+        elif command == "spark profiler stop --save-to-file":
+            info("Spark profiler stopped and saved its output locally.")
+        elif command == "spark profiler cancel":
+            info("Spark profiler cancelled without uploading results.")
         elif words[:2] == ["whitelist", "list"]:
             info(
                 f"There are {len(whitelist)} whitelisted player(s): " + ", ".join(sorted(whitelist))

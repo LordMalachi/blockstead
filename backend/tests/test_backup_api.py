@@ -507,3 +507,69 @@ def test_interrupted_backup_is_marked_failed_after_restart(tmp_path: Path) -> No
         ]
         assert len(interrupted) == 1
         assert interrupted[0]["result"] == "Blockstead stopped before this backup completed."
+
+
+def test_world_care_cleanup_requires_a_verified_backup_and_removes_only_reviewed_artifacts(
+    owned_client: TestClient,
+) -> None:
+    auth = owned_auth(owned_client)
+    profile_id, server = import_writable_copy(owned_client, auth)
+    backup = owned_client.post(f"/api/v1/profiles/{profile_id}/backups", headers=auth).json()
+    backup_path = (
+        owned_client.app.state.settings.data_dir / "backups" / profile_id / backup["file_name"]
+    )
+    partial = backup_path.parent / ".interrupted-world.tar.gz.partial"
+    partial.write_bytes(b"incomplete")
+    stale_at = time.time() - 7200
+    os.utime(partial, (stale_at, stale_at))
+    protected = owned_client.app.state.settings.data_dir / "settings-snapshots" / profile_id
+    protected.mkdir(parents=True)
+    (protected / "server.properties.before-change").write_text("level-name=world\n")
+
+    reviewed = owned_client.get(
+        f"/api/v1/profiles/{profile_id}/world-care/cleanup-plan", headers=auth
+    )
+
+    assert reviewed.status_code == 200, reviewed.text
+    plan = reviewed.json()
+    assert plan["can_apply"] is True
+    assert {target["path"] for target in plan["targets"]} == {
+        f"backups/{profile_id}/{partial.name}"
+    }
+    assert "Settings snapshots" in {item["label"] for item in plan["protected"]}
+
+    applied = owned_client.post(
+        f"/api/v1/profiles/{profile_id}/world-care/cleanup-plan/{plan['plan_id']}/apply",
+        headers=auth,
+        json={"confirm": True},
+    )
+
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["removed"] == 1
+    assert not partial.exists()
+    assert backup_path.is_file()
+    assert (server / "world").is_dir()
+    assert (protected / "server.properties.before-change").is_file()
+
+
+def test_backup_destination_resilience_check_leaves_no_probe_file(
+    owned_client: TestClient,
+) -> None:
+    auth = owned_auth(owned_client)
+    profile_id, _ = import_writable_copy(owned_client, auth)
+
+    checked = owned_client.post(
+        f"/api/v1/profiles/{profile_id}/backup-destinations/check", headers=auth
+    )
+
+    assert checked.status_code == 200, checked.text
+    destination = checked.json()["destinations"][0]
+    assert destination["last_check"]["state"] == "available"
+    assert destination["last_check"]["write_verified"] is True
+    assert destination["last_check"]["read_verified"] is True
+    primary = owned_client.app.state.settings.data_dir / "backups" / profile_id
+    assert not list(primary.glob(".blockstead-storage-check-*"))
+    world_care = owned_client.get(
+        f"/api/v1/profiles/{profile_id}/world-care", headers=auth
+    ).json()
+    assert world_care["backup_destinations"][0]["last_check"]["state"] == "available"

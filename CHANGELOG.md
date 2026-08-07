@@ -2,12 +2,17 @@
 
 ## Unreleased
 
-- Start Milestone 10 with capability-gated Paper TPS/MSPT evidence and a read-only
-  World Care workspace. Paper samples are sourced from labelled `/tps` and `/mspt`
+- Complete Milestone 10 with capability-gated Paper TPS/MSPT evidence and World
+  Care safeguards. Paper samples are sourced from labelled `/tps` and `/mspt`
   console responses at a bounded cadence and expose their source, sampling period,
-  and unavailable states. World Care reports recognized world size, filesystem
-  capacity, backup destination health, and known recovery-copy storage without
-  offering cleanup until a reviewed reclaim plan and recovery drill exist.
+  and unavailable states. Owners can also request a 30-second to two-minute Spark
+  profile that stops with a local save request; Blockstead retains a downloadable
+  private transcript and never requests a viewer link. World Care shows world,
+  storage, backup-destination, and recovery facts; a short-lived reviewed cleanup
+  plan can remove only revalidated incomplete or expired private artifacts after a
+  locally verified backup. Backup destinations have an explicit temporary
+  write/read/remove resilience check. squaremap now reports safe local web-service
+  health and can apply a backed-up one-thread normal/background render profile.
 
 - Add an explicit recovery drill to Backup Center. A completed archive is
   checksum-verified, unpacked into private temporary staging, and checked for

@@ -56,9 +56,12 @@ generates squaremap's version-appropriate configuration. For a small host:
 5. Watch process CPU, memory, and free disk space in Blockstead after enabling
    the map.
 
-The thread changes are intentionally not written before first startup. The
-plugin owns its configuration schema, and Blockstead should edit the generated
-file only through a version-aware, backed-up settings workflow.
+The thread changes are intentionally not written before first startup. Once
+squaremap generates `config.yml`, Blockstead's **Use low-resource profile**
+action validates the bounded YAML, preserves its formatting and comments where
+possible, copies the original to the server's private `.blockstead-config-backups`
+folder, then atomically caps both render pools at one thread. It is available only
+while the Minecraft server is stopped.
 
 ## Integration status
 
@@ -68,6 +71,9 @@ disabled installations, and shows the default browser address while the server
 is running.
 
 Blockstead reads squaremap's bounded generated configuration for Paper and mod
-loaders and shows the configured bind address and port. The remaining
-map-specific work is a backed-up one-click low-resource profile and a web
-endpoint reachability check before labeling the map available.
+loaders, shows the configured bind address, port, and render-thread settings, and
+can apply the backed-up low-resource profile described above. While the matching
+server is running, it probes only wildcard or loopback listeners through local
+loopback and reports whether the web service answered; a specific LAN bind is
+shown as configured but deliberately not probed. This is a local service-health
+signal, not a firewall or internet-reachability claim.

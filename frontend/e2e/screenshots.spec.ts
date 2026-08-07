@@ -63,7 +63,13 @@ test("captures documentation screenshots @docs", async ({ page }) => {
   await page.screenshot({ path: out("11-backups") });
   await page.setViewportSize({ width: 1360, height: 850 });
 
-  await page.getByRole("link", { name: "Files" }).click();
+  await page.getByRole("link", { name: "World Care" }).click();
+  await expect(page.getByRole("heading", { name: "Protect the world before you change it" })).toBeVisible();
+  await page.getByRole("button", { name: "Test resilience" }).click();
+  await expect(page.getByText(/Read\/write verified/)).toBeVisible();
+  await page.screenshot({ path: out("17-world-care"), fullPage: true });
+
+  await page.getByRole("link", { name: "Files", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Files" })).toBeVisible();
   await expect(page.getByRole("button", { name: /server\.properties/ })).toBeVisible();
   await page.setViewportSize({ width: 1360, height: 1080 });

@@ -100,6 +100,18 @@ class BackupPolicyRequest(BaseModel):
         return cleaned
 
 
+class DiagnosticCaptureRequest(BaseModel):
+    """A short owner-requested profiler capture; the raw transcript stays local."""
+
+    duration_seconds: int = Field(default=30, ge=1, le=300)
+
+
+class CleanupApplyRequest(BaseModel):
+    """Explicit acknowledgement for a previously reviewed cleanup plan."""
+
+    confirm: Literal[True]
+
+
 class InstallRequest(BaseModel):
     """Catalog installs; the API re-validates project_id per source."""
 

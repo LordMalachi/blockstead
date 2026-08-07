@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api, type OverviewMetricPoint, type ProfileOverview } from "../../api/client";
+import { api, type DiagnosticCapture, type OverviewMetricPoint, type ProfileOverview } from "../../api/client";
 import { Button } from "../../components/Button";
 import { formatBytes, formatUptime } from "../../lib/format";
 import { PrerequisitesPanel } from "../extensions/PrerequisitesPanel";
@@ -59,6 +59,7 @@ export function OverviewPage() {
   const scope = useServerScope();
   const [copied, setCopied] = useState(false);
   const [connectionHelpOpen, setConnectionHelpOpen] = useState(false);
+  const [captureDuration, setCaptureDuration] = useState(30);
   const overview = useQuery({
     queryKey: ["overview", scope.profile.id],
     queryFn: () => api<ProfileOverview>(`/profiles/${scope.profile.id}/overview`),
@@ -72,6 +73,18 @@ export function OverviewPage() {
   const enableLan = useMutation({
     mutationFn: () => api<{ detail: string }>(`/profiles/${scope.profile.id}/connection/enable-lan`, { method: "POST" }),
     onSuccess: () => void overview.refetch(),
+  });
+  const diagnosticCaptures = useQuery({
+    queryKey: ["diagnostic-captures", scope.profile.id],
+    queryFn: () => api<DiagnosticCapture[]>(`/profiles/${scope.profile.id}/diagnostic-captures`),
+    enabled: overview.data?.capabilities.tps === true,
+  });
+  const captureDiagnostic = useMutation({
+    mutationFn: () => api<DiagnosticCapture>(`/profiles/${scope.profile.id}/diagnostic-captures`, {
+      method: "POST",
+      body: JSON.stringify({ duration_seconds: captureDuration }),
+    }),
+    onSuccess: () => void diagnosticCaptures.refetch(),
   });
 
   async function copyAddress() {
@@ -150,6 +163,19 @@ export function OverviewPage() {
             <small className="muted-note">Source: {data.performance.source}. Sampled every {data.performance.sampling_period_seconds} seconds; last response {sampledTime(data.performance.sampled_at)}. {data.performance.detail}</small>
           </>
           : <div className="warning performance-unavailable"><strong>Tick evidence is not available yet</strong><span>{data.performance.detail}</span></div>}
+      {data.capabilities.tps && <div className="performance-capture">
+        <div>
+          <strong>Capture a bounded Spark profile</strong>
+          <p>Runs only while this Paper server is live, stops automatically, and keeps the owner’s raw transcript local until you download it. No viewer link is requested or uploaded.</p>
+        </div>
+        <div className="performance-capture__actions">
+          <label>Duration<select aria-label="Diagnostic capture duration" value={captureDuration} onChange={event => setCaptureDuration(Number(event.target.value))}><option value={30}>30 seconds</option><option value={60}>1 minute</option><option value={120}>2 minutes</option></select></label>
+          <Button className="button--secondary button--small" disabled={!scope.running || captureDiagnostic.isPending} onClick={() => captureDiagnostic.mutate()}>{captureDiagnostic.isPending ? "Capturing…" : "Capture local profile"}</Button>
+        </div>
+        {captureDiagnostic.error && <p className="error" role="alert">{captureDiagnostic.error.message}</p>}
+        {captureDiagnostic.data && <p className="success" role="status">{captureDiagnostic.data.detail}</p>}
+        {diagnosticCaptures.data?.length ? <ul className="performance-capture__history" aria-label="Local diagnostic captures">{diagnosticCaptures.data.slice(0, 3).map(capture => <li key={capture.id}><div><strong>{capture.status === "completed" ? "Local profile ready" : capture.status === "in_progress" ? "Capture in progress" : "Profile unavailable"}</strong><small>{new Date(capture.created_at).toLocaleString()} · {capture.duration_seconds} seconds · {capture.size_bytes == null ? "no transcript" : formatBytes(capture.size_bytes)}</small></div>{capture.download_url ? <a className="button button--quiet button--small" href={capture.download_url}>Download transcript</a> : <small>{capture.detail}</small>}</li>)}</ul> : null}
+      </div>}
     </section>
 
     <div className="overview-columns">

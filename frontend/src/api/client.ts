@@ -306,7 +306,10 @@ export interface ProfileOverview {
   capabilities: { tps: boolean; mspt: boolean; distribution_label: string };
 }
 export interface WorldCareStorageDisk { state: "available" | "missing" | "unavailable"; path: string; total_bytes: number | null; free_bytes: number | null; used_bytes: number | null; used_percent: number | null }
-export interface WorldCareDestination { label: string; configured_path: string; stored_bytes: number | null; disk: WorldCareStorageDisk }
+export interface BackupDestinationCheck { state: "available" | "missing" | "unavailable"; write_verified: boolean; read_verified: boolean; detail: string; checked_at: string }
+export interface WorldCareDestination { label: string; configured_path: string; stored_bytes: number | null; disk: WorldCareStorageDisk; last_check: BackupDestinationCheck | null }
+export interface WorldCleanupTarget { path: string; label: string; size_bytes: number | null; reason: string; recovery_effect: string }
+export interface WorldCleanupPlan { plan_id: string | null; created_at: string | null; expires_at: string | null; can_apply: boolean; blockers: string[]; targets: WorldCleanupTarget[]; protected: Array<{ label: string; detail: string }> }
 export interface WorldCareView {
   worlds: Array<{ name: string; size_bytes: number | null }>;
   world_size_bytes: number | null;
@@ -314,8 +317,9 @@ export interface WorldCareView {
   last_verified_backup: BackupRecord | null;
   backup_destinations: WorldCareDestination[];
   recovery: { entries: Array<{ label: string; size_bytes: number | null; state: "available" | "unknown" }>; total_bytes: number };
-  cleanup: { available: false; detail: string };
+  cleanup: { available: boolean; detail: string };
 }
+export interface DiagnosticCapture { id: string; profile_id: string; source: string; kind: "spark_profiler"; duration_seconds: number; status: "in_progress" | "completed" | "failed" | "expired"; size_bytes: number | null; detail: string; created_at: string; completed_at: string | null; output_available: boolean; download_url: string | null }
 export interface AutomationExecution { kind: "recurring" | "one_time"; action: "start" | "maintenance"; label: string; at: string; steps: string[] }
 export interface AutomationEvent { id: string; run_at: string; backup_before_stop: boolean; power_off_after_stop: boolean; wake_time: string | null; only_when_empty: boolean }
 export interface AutomationRun { id: string; trigger: "scheduled" | "one_time" | "manual"; action: "start" | "maintenance"; status: "success" | "failed" | "skipped"; steps: string[]; detail: string; duration_ms: number; started_at: string; completed_at: string }
@@ -419,7 +423,8 @@ export interface ExtensionRecommendation {
   project_url: string;
 }
 export interface ExtensionRecommendations { distribution: string; minecraft_version: string | null; recommendations: ExtensionRecommendation[] }
-export interface SharedMapView { config_present: boolean; config_path: string | null; internal_webserver_enabled: boolean; bind: string; port: number; problem: string | null }
+export interface SharedMapView { config_present: boolean; config_path: string | null; internal_webserver_enabled: boolean; bind: string; port: number; normal_render_threads?: number | null; background_render_threads?: number | null; problem: string | null; health?: { state: "not_running" | "available" | "unavailable" | "unreachable" | "unhealthy"; detail: string; checked_at: string | null } }
+export interface SharedMapLowResourceResult { config_path: string; backup_path: string; normal_render_threads: number; background_render_threads: number; detail: string }
 export interface CatalogProject { project_id: string; slug: string | null; title: string | null; description: string | null; downloads: number | null; icon_url?: string | null; author?: string | null; project_type?: string | null; source?: string; page_url?: string | null; installable?: boolean }
 export interface CatalogSearch { minecraft_version?: string | null; source?: string; projects: CatalogProject[]; total?: number; offset?: number; limit?: number }
 export interface CatalogVersion { version_id: string; version_number: string | null; version_type: string | null; date_published: string | null; game_versions: string[]; loaders: string[]; external_url?: string | null; required_plugins?: string[] }

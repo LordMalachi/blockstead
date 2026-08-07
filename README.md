@@ -29,8 +29,8 @@ Blockstead manages the process around them.
 | System health | Every server on this computer |
 | ![Weekly automation plan](docs/screenshots/09-automation.png) | ![Searchable Help workspace](docs/screenshots/12-help.png) |
 | Weekly automation plan | Searchable Help workspace |
-| ![Safe file workspace with recovery snapshots](docs/screenshots/16-files.png) | |
-| Safe file workspace with recovery snapshots | |
+| ![Safe file workspace with recovery snapshots](docs/screenshots/16-files.png) | ![World Care with verified backup destination](docs/screenshots/17-world-care.png) |
+| Safe file workspace with recovery snapshots | World Care with verified backup destination |
 
 ## What it does today
 
@@ -46,9 +46,13 @@ Blockstead manages the process around them.
 - shows host CPU, memory, disk use, and server uptime
 - shows labelled Paper TPS/MSPT evidence when the running profile supports the
   bounded console source, and otherwise explains why those values are unavailable
-- includes a read-only World Care workspace for recognized world size, disk room,
-  backup destinations, and retained recovery copies; cleanup is not offered without
-  a reviewed reclaim plan
+- lets an owner capture a bounded local Spark performance transcript for a running
+  supported Paper server; no viewer link is requested and export remains explicit
+- includes a World Care workspace for recognized world size, disk room, backup
+  destinations, and retained recovery copies; cleanup requires an exact,
+  short-lived review backed by a verified local archive
+- tests backup destinations with a private write/read/remove check, without
+  changing any archive
 - lets an owner run a recovery test against a completed backup: Blockstead
   verifies and stages the archive privately, removes the staging copy, and
   reports that the live world was left unchanged

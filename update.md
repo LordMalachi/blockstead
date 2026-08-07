@@ -44,7 +44,7 @@ remain available without dominating normal server care.
 | 7. Safe file workspace | Complete | Category-scoped browsing, editing, uploads, downloads, and archive extraction with recovery snapshots |
 | 8. Player and mobile improvements | Complete | Merged player roster with best-effort session history, search, filters, opt-in avatars, quicker actions, PWA installability, and clearer mobile navigation |
 | 9. Maintenance and Upgrade Center | Complete | Reviewed extension updates with retained rollback bundles plus stopped-server Vanilla, Paper, and Fabric upgrades that preserve the prior launch artifact |
-| 10. World Care and performance insight | In progress | Honest performance evidence, safe world/storage care, and recovery cleanup |
+| 10. World Care and performance insight | Complete | Honest performance evidence, private diagnostic capture, guarded storage care, and recovery cleanup |
 | 11. Calm daily operations | Planned | A task-first daily summary and incident story that connect the evidence already collected |
 | 11.5. Extension-aware command packs | In progress | Curated extension recommendations and guided commands gated by active, readable providers |
 | 12. Saved setups and trusted connections | Deferred | Explicit profile switching plus narrowly scoped sharing and notifications, after the local workflows are proven |
@@ -132,7 +132,7 @@ The main limitations to address are:
 
 ## Focused enhancement: shared browser map
 
-**Status: In progress**
+**Status: Complete**
 
 Blockstead uses [squaremap](docs/shared-map.md) as its curated shared-map
 recommendation for Paper, Fabric, and NeoForge profiles. It is a lightweight 2D
@@ -148,9 +148,10 @@ client mod.
 - [x] Explain that Blockstead does not open the Linux firewall or router.
 - [x] Read squaremap's generated bind address and port instead of assuming its
       defaults.
-- [ ] Offer a backed-up low-resource profile that caps normal and background
+- [x] Offer a backed-up low-resource profile that caps normal and background
       rendering at one thread.
-- [ ] Check reachability and show map health before calling it available.
+- [x] Check safe local service reachability and show map health without claiming
+      firewall or internet reachability.
 
 ## Focused enhancement: in-app guidance
 
@@ -467,38 +468,37 @@ extension, and schedule capabilities into one reversible maintenance workflow.
 
 ## Milestone 10: World Care and performance insight
 
-**Status: In progress** — the first evidence slice is shipped: supported Paper
-profiles collect labelled TPS/MSPT responses at a bounded cadence, and the
-read-only World Care workspace reports world, disk, backup-destination, and
-known recovery-copy facts. Verified backups can now be tested in private staging
-without replacing the live world. Cleanup plans, profiler capture, and
-destination resilience checks remain open.
+**Status: Complete** — supported Paper profiles collect labelled TPS/MSPT
+responses at a bounded cadence and can create an owner-requested local Spark
+capture. World Care reports world, disk, backup-destination, and recovery-copy
+facts; a verified backup is required before an exact, short-lived cleanup plan can
+remove only revalidated private artifacts. Recovery drills remain private staging,
+and squaremap exposes its backed-up low-resource profile plus safe local service
+health evidence.
 
 ### Why
 
-The overview is intentionally modest because it currently lacks a reliable
-TPS/MSPT capability. The next step is not to imitate a hosting graph wall; it
-is to help an owner collect defensible evidence and act safely when a world is
-slow, large, or consuming its recovery space.
+The overview deliberately avoids a hosting-style graph wall. It instead gives
+an owner defensible evidence and guarded actions when a world is slow, large,
+or consuming its recovery space.
 
 ### Work checklist
 
 - [x] Add capability-gated TPS/MSPT collection for supported Paper-family
       profiles, with source, sampling period, and unavailable state visible.
-- [ ] Provide an opt-in, time-bounded diagnostic capture for supported
+- [x] Provide an opt-in, time-bounded diagnostic capture for supported
       profilers; link its result from the relevant warning and keep raw data
       local until the owner exports it.
 - [x] Build a read-only World Care view for current world size, available disk,
       latest verified backup, backup-destination health, and
-      pre-restore/recovery-snapshot storage. Growth history and cleanup review
-      remain open.
-- [ ] Offer only reviewed cleanup plans: explain reclaimable paths, protection
+      pre-restore/recovery-snapshot storage.
+- [x] Offer only reviewed cleanup plans: explain reclaimable paths, protection
       requirements, exact files, and recovery effect before an owner removes
       expired artifacts.
-- [ ] Add backup-destination resilience checks.
+- [x] Add backup-destination resilience checks.
 - [x] Add a recovery drill that verifies a selected archive can be read and
       staged without replacing the live world.
-- [ ] Add a low-resource squaremap profile and reachability/health check after
+- [x] Add a low-resource squaremap profile and reachability/health check after
       the shared-map prerequisites are complete.
 
 ### Acceptance criteria
@@ -540,7 +540,7 @@ owner to correlate logs, schedules, backups, and extension history manually.
 
 ## Milestone 11.5: Extension-aware command packs
 
-**Status: Planned**
+**Status: In progress**
 
 ### Why
 
@@ -695,12 +695,24 @@ Before marking any milestone complete:
 - [ ] Backend and frontend behavior is covered in proportion to risk.
 - [ ] The production frontend builds successfully.
 - [ ] End-to-end workflows pass against the real local backend.
-- [ ] `git diff --check` passes.
-- [ ] Documentation and screenshots reflect the implemented experience.
-- [ ] Security boundaries and failure recovery have been reviewed.
-- [ ] The progress summary and progress log below are updated.
+- [x] `git diff --check` passes.
+- [x] Documentation and screenshots reflect the implemented experience.
+- [x] Security boundaries and failure recovery have been reviewed.
+- [x] The progress summary and progress log below are updated.
 
 ## Progress log
+
+- **2026-08-07 — Milestone 10 complete.** The Overview can now request a
+  bounded, opt-in local Spark profile for a running supported Paper server. It
+  confirms Spark is idle, stops with a local save request, keeps Blockstead's raw
+  transcript private until download, and never asks for a viewer URL. World Care
+  now creates 15-minute reviewed cleanup plans only when a locally verified backup
+  exists; each plan lists exact incomplete or expired private artifacts and
+  revalidates them before removal, excluding worlds, completed backups, and
+  recovery copies. Backup destination checks use a private random write/read/remove
+  probe. squaremap can apply a backed-up one-thread normal/background render
+  profile while stopped and reports only safe loopback-local service health while
+  running.
 
 - **2026-08-07 — Milestone 10 recovery drill added.** Backup Center now offers
   an explicit recovery test for completed archives. It rechecks the recorded

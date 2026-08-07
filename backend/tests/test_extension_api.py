@@ -881,3 +881,39 @@ def test_failed_dependency_download_does_not_change_the_live_loadout(
     plugins = root / "paper-server" / "plugins"
     assert not (plugins / "one.jar").exists()
     assert not (plugins / "two.jar").exists()
+
+
+def test_squaremap_low_resource_profile_is_backed_up_and_health_is_explicit(
+    api: tuple[TestClient, Path], headers: dict[str, str], paper_profile: str
+) -> None:
+    client, root = api
+    config = root / "paper-server" / "plugins" / "squaremap" / "config.yml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        "settings:\n"
+        "  internal-webserver:\n"
+        "    enabled: true\n"
+        "    bind: 0.0.0.0\n"
+        "    port: 8123\n"
+        "world-settings:\n"
+        "  default:\n"
+        "    map:\n"
+        "      max-render-threads: 4\n"
+        "      background-render:\n"
+        "        max-render-threads: 2\n",
+        encoding="utf-8",
+    )
+
+    before = client.get(f"/api/v1/profiles/{paper_profile}/shared-map", headers=headers)
+    assert before.status_code == 200
+    assert before.json()["health"]["state"] == "not_running"
+
+    applied = client.post(
+        f"/api/v1/profiles/{paper_profile}/shared-map/low-resource", headers=headers
+    )
+
+    assert applied.status_code == 200, applied.text
+    body = applied.json()
+    assert body["normal_render_threads"] == body["background_render_threads"] == 1
+    assert (root / "paper-server" / body["backup_path"]).is_file()
+    assert "max-render-threads: 1" in config.read_text(encoding="utf-8")

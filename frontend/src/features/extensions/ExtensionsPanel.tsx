@@ -16,6 +16,7 @@ import {
   type LoaderMigrationResult,
   type ManualImportResult,
   type ManualImportReview,
+  type SharedMapLowResourceResult,
   type SharedMapView,
 } from "../../api/client";
 import { Button } from "../../components/Button";
@@ -355,6 +356,18 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
       showNotice("success", request.success);
       request.afterSuccess?.(result);
       refresh();
+    },
+    onError: error => showNotice("error", error.message),
+  });
+  const applySharedMapLowResource = useMutation({
+    mutationFn: () => api<SharedMapLowResourceResult>(
+      `/profiles/${profileId}/shared-map/low-resource`,
+      { method: "POST" },
+    ),
+    onSuccess: result => {
+      showNotice("success", result.detail);
+      void client.invalidateQueries({ queryKey: ["shared-map", profileId] });
+      void client.invalidateQueries({ queryKey: ["activity"] });
     },
     onError: error => showNotice("error", error.message),
   });
@@ -875,6 +888,10 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
         map={sharedMap.data}
         stopped={stopped}
         busy={action.isPending}
+        lowResourceBusy={applySharedMapLowResource.isPending}
+        applyLowResource={() => applySharedMapLowResource.mutate()}
+        lowResourceResult={applySharedMapLowResource.data}
+        lowResourceError={applySharedMapLowResource.error?.message ?? null}
         install={() => action.mutate({
           endpoint: `/profiles/${profileId}/extensions/install`,
           init: { method: "POST", body: JSON.stringify({ project_id: SHARED_MAP_PROJECT_ID }) },

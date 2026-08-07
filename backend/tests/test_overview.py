@@ -120,6 +120,46 @@ def test_paper_overview_collects_bounded_console_evidence(
     assert body["performance"]["mspt"]["five_seconds"] == 2.0
 
 
+def test_paper_diagnostic_capture_is_bounded_private_and_downloadable(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    profile_id = import_fixture(client, auth)
+    with client.app.state.session_factory() as db:
+        profile = db.get(Profile, profile_id)
+        assert profile is not None
+        profile.distribution = "paper"
+        db.commit()
+
+    started = client.post("/api/v1/server/start", headers=auth, json={"profile_id": profile_id})
+    assert started.status_code == 202
+    for _ in range(100):
+        if client.get("/api/v1/server/state").json()["state"] == "RUNNING":
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("Fixture did not reach RUNNING")
+
+    captured = client.post(
+        f"/api/v1/profiles/{profile_id}/diagnostic-captures",
+        headers=auth,
+        json={"duration_seconds": 1},
+    )
+
+    assert captured.status_code == 201, captured.text
+    body = captured.json()
+    assert body["status"] == "completed"
+    assert body["output_available"] is True
+    assert body["download_url"] is not None
+    downloaded = client.get(body["download_url"])
+    assert downloaded.status_code == 200
+    assert "no viewer upload was requested" in downloaded.text
+    history = client.get(f"/api/v1/profiles/{profile_id}/diagnostic-captures").json()
+    assert history[0]["id"] == body["id"]
+    commands = [event["line"] for event in client.get("/api/v1/server/logs").json()]
+    assert any("spark profiler start" in line for line in commands)
+    assert any("spark profiler stop --save-to-file" in line for line in commands)
+
+
 def test_world_care_reports_storage_and_recovery_evidence(
     client: TestClient, auth: dict[str, str]
 ) -> None:
@@ -140,7 +180,7 @@ def test_world_care_reports_storage_and_recovery_evidence(
     assert body["last_verified_backup"]["status"] == "completed"
     assert body["backup_destinations"][0]["stored_bytes"] > 0
     assert body["recovery"]["total_bytes"] > 0
-    assert body["cleanup"]["available"] is False
+    assert body["cleanup"]["available"] is True
 
 
 def test_overview_includes_backup_schedule_and_recent_profile_activity(

@@ -208,6 +208,44 @@ class PerformanceSample(Base):
     )
 
 
+class DiagnosticCapture(Base):
+    """An owner-requested local performance capture and its private transcript."""
+
+    __tablename__ = "diagnostic_captures"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), index=True
+    )
+    source: Mapped[str] = mapped_column(String(120))
+    kind: Mapped[str] = mapped_column(String(32))
+    duration_seconds: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24), default="in_progress")
+    output_file: Mapped[str | None] = mapped_column(Text, nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    detail: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BackupDestinationCheck(Base):
+    """Latest read/write evidence for one owner-approved backup destination."""
+
+    __tablename__ = "backup_destination_checks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), index=True
+    )
+    destination_path: Mapped[str] = mapped_column(Text)
+    label: Mapped[str] = mapped_column(String(120))
+    state: Mapped[str] = mapped_column(String(24))
+    write_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    read_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    detail: Mapped[str] = mapped_column(Text)
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
 class AppSecret(Base):
     """Small owner-provided secrets (external API keys), never exported."""
 

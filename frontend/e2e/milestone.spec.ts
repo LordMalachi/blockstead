@@ -62,6 +62,9 @@ function buildStoredZip(entries: { name: string; data: Buffer }[]): Buffer {
   return Buffer.concat([...localParts, centralBuffer, end]);
 }
 
+const commandPackFixture = resolve(process.cwd(), "../fixtures/servers/e2e-command-paper");
+test.afterEach(() => rmSync(commandPackFixture, { recursive: true, force: true }));
+
 test("first admin imports and controls the owned fixture", async ({ page }) => {
   test.setTimeout(60_000);
   // The fixture is imported in place (not copied), so a previously interrupted
@@ -235,7 +238,7 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
 
 test("an installed provider pack appears after restart and disappears when disabled", async ({ page }) => {
   test.setTimeout(60_000);
-  const folder = resolve(process.cwd(), "../fixtures/servers/e2e-command-paper");
+  const folder = commandPackFixture;
   rmSync(folder, { recursive: true, force: true });
   mkdirSync(join(folder, "world"), { recursive: true });
   writeFileSync(join(folder, "server.properties"), "motd=Command pack test\n");

@@ -36,11 +36,23 @@ test("locks installation while the server is active", () => {
 });
 
 test("shows squaremap's configured browser map link once installed", () => {
-  render(<SharedMapCard entries={[squaremap]} disabledEntries={[]} map={{ config_present: true, config_path: "plugins/squaremap/config.yml", internal_webserver_enabled: true, bind: "0.0.0.0", port: 8123, problem: null }} stopped={false} busy={false} install={vi.fn()} />);
+  render(<SharedMapCard entries={[squaremap]} disabledEntries={[]} map={{ config_present: true, config_path: "plugins/squaremap/config.yml", internal_webserver_enabled: true, bind: "0.0.0.0", port: 8123, normal_render_threads: 1, background_render_threads: 1, problem: null, health: { state: "available", detail: "The local squaremap web service responded with HTTP 200.", checked_at: "2026-08-07T00:00:00Z" } }} stopped={false} busy={false} install={vi.fn()} />);
 
   expect(screen.getByText("Installed")).toBeVisible();
   expect(screen.getByRole("link", { name: "Open map address" })).toHaveAttribute("href", "http://localhost:8123");
   expect(screen.queryByRole("button", { name: "Install shared map" })).not.toBeInTheDocument();
+  expect(screen.getByText(/local web service responded/i)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Use low-resource profile" })).toBeDisabled();
+});
+
+test("applies squaremap's backed-up low-resource profile only while stopped", () => {
+  const applyLowResource = vi.fn();
+  render(<SharedMapCard entries={[squaremap]} disabledEntries={[]} map={{ config_present: true, config_path: "plugins/squaremap/config.yml", internal_webserver_enabled: true, bind: "0.0.0.0", port: 8123, normal_render_threads: 4, background_render_threads: 2, problem: null }} stopped busy={false} install={vi.fn()} applyLowResource={applyLowResource} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Use low-resource profile" }));
+
+  expect(applyLowResource).toHaveBeenCalledOnce();
+  expect(screen.getByText(/caps both squaremap render pools/i)).toBeVisible();
 });
 
 test("does not offer to reinstall a disabled squaremap jar", () => {

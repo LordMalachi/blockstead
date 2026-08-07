@@ -10,7 +10,7 @@ import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, cast
@@ -76,6 +76,11 @@ from .curseforge import (
     search as curseforge_search,
 )
 from .db import Base, create_session_factory
+from .diagnostic_captures import (
+    DiagnosticCaptureError,
+    resolve_capture_path,
+    write_transcript,
+)
 from .diagnostics import attach_logging, build_report
 from .distributions import (
     DISTRIBUTIONS,
@@ -214,7 +219,9 @@ from .models import (
     AuditEvent,
     AutomationEvent,
     AutomationRun,
+    BackupDestinationCheck,
     BackupRecord,
+    DiagnosticCapture,
     LoginSession,
     MetricSample,
     PerformanceSample,
@@ -298,9 +305,11 @@ from .schemas import (
     AutomationEventRequest,
     AutomationRunRequest,
     BackupPolicyRequest,
+    CleanupApplyRequest,
     CommandRequest,
     Credentials,
     CurseForgeKeyRequest,
+    DiagnosticCaptureRequest,
     EulaRequest,
     FileEditRequest,
     FileRenameRequest,
@@ -368,7 +377,12 @@ from .server_upgrades import UpgradeContext, UpgradeReview
 from .server_upgrades import (
     review as review_upgrades,
 )
-from .shared_map import read_shared_map
+from .shared_map import (
+    SharedMapError,
+    apply_low_resource_profile,
+    local_health_url,
+    read_shared_map,
+)
 from .troubleshooting import (
     TroubleshootingContext,
     TroubleshootingRepairRequest,
@@ -387,7 +401,15 @@ from .upgrade_ops import (
     promote_launch_upgrade,
     rollback_launch_upgrade,
 )
-from .world_care import disk_payload, recovery_snapshot_entries, tree_size
+from .world_care import (
+    CleanupTarget,
+    check_backup_destination,
+    cleanup_candidates,
+    disk_payload,
+    recovery_snapshot_entries,
+    remove_cleanup_targets,
+    tree_size,
+)
 
 log = logging.getLogger("blockstead.api")
 
@@ -397,6 +419,18 @@ def error(status_code: int, code: str, message: str, recovery: str | None = None
     if recovery:
         body["error"]["recovery"] = recovery  # type: ignore[index]
     return JSONResponse(status_code=status_code, content=body)
+
+
+@dataclass(frozen=True)
+class ReviewedCleanupPlan:
+    """A short-lived exact cleanup contract retained only in this process."""
+
+    id: str
+    profile_id: str
+    created_at: datetime
+    expires_at: datetime
+    targets: tuple[CleanupTarget, ...]
+    verified_backup_id: str
 
 
 def resolve_static_dir(configured: Path | None = None) -> Path | None:
@@ -590,6 +624,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Profiles with a recovery drill in flight; drills use private staging and
     # never mutate the live server folder.
     recovery_drill_profiles: set[str] = set()
+    # One Spark profile at a time per server avoids stopping a capture the
+    # owner started elsewhere through the console.
+    diagnostic_capture_profiles: set[str] = set()
+    # Cleanup plans expire quickly and contain exact private-data fingerprints.
+    reviewed_cleanup_plans: dict[str, ReviewedCleanupPlan] = {}
     # Long-running world mutations must finish before the service can hand an
     # update to the root helper. Tokens make concurrent backups independently
     # visible without holding the update lock for their full duration.
@@ -2734,13 +2773,104 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return read_extensions(directory, profile.distribution).model_dump()
 
     @app.get("/api/v1/profiles/{profile_id}/shared-map")
-    def profile_shared_map(profile_id: str, request: Request, db: Db) -> dict[str, object]:
+    async def profile_shared_map(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
         current(request, db)
         profile = db.get(Profile, profile_id)
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
         directory = profile_directory(profile_id, db)
-        return read_shared_map(directory, profile.distribution).model_dump()
+        view = read_shared_map(directory, profile.distribution)
+        snapshot = manager.snapshot()
+        running = (
+            app.state.active_profile_id == profile.id and snapshot["state"] == "RUNNING"
+        )
+        if not running:
+            health = {
+                "state": "not_running",
+                "detail": "Start this server before checking its map web service.",
+                "checked_at": None,
+            }
+        else:
+            url, unavailable = local_health_url(view)
+            if url is None:
+                health = {
+                    "state": "unavailable",
+                    "detail": unavailable or "Map health is unavailable.",
+                    "checked_at": datetime.now(UTC).isoformat(),
+                }
+            else:
+                try:
+                    response = await http_client.get(
+                        url,
+                        headers={"Range": "bytes=0-1024"},
+                        timeout=httpx.Timeout(2.0),
+                        follow_redirects=False,
+                    )
+                    health = {
+                        "state": "available" if response.status_code < 500 else "unhealthy",
+                        "detail": (
+                            "The local squaremap web service responded with HTTP "
+                            f"{response.status_code}."
+                        ),
+                        "checked_at": datetime.now(UTC).isoformat(),
+                    }
+                except httpx.HTTPError:
+                    health = {
+                        "state": "unreachable",
+                        "detail": (
+                            "The local squaremap web service did not respond on its "
+                            "configured port."
+                        ),
+                        "checked_at": datetime.now(UTC).isoformat(),
+                    }
+        return {**view.model_dump(), "health": health}
+
+    @app.post("/api/v1/profiles/{profile_id}/shared-map/low-resource")
+    async def apply_shared_map_low_resource_profile(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        snapshot = manager.snapshot()
+        if app.state.active_profile_id == profile.id and snapshot["state"] not in {
+            "STOPPED",
+            "CRASHED",
+        }:
+            raise HTTPException(
+                409, "Stop this server before changing squaremap's render profile."
+            )
+        try:
+            result = await asyncio.to_thread(
+                apply_low_resource_profile,
+                profile_directory(profile_id, db),
+                profile.distribution,
+            )
+        except SharedMapError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="shared_map_profile",
+                result="success",
+                safe_detail=(
+                    "Applied squaremap's low-resource profile; both render pools are capped at "
+                    f"one thread, with backup {result.backup_path}"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            **result.model_dump(),
+            "detail": (
+                "Capped squaremap's normal and background render pools at one thread. "
+                "The previous config was kept in Blockstead's server configuration backups."
+            ),
+        }
 
     def extension_context(profile_id: str, db: Session) -> tuple[Profile, Path]:
         profile = db.get(Profile, profile_id)
@@ -3112,7 +3242,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 availability = "unknown"
                 detail = "Could not check compatible releases right now."
 
-        if active_state and not missing_dependencies:
+        if availability == "bundled" and active_state:
+            state = "bundled"
+        elif active_state and not missing_dependencies:
             state = "active"
         elif disabled_state:
             state = "disabled"
@@ -4932,6 +5064,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
         warnings: list[dict[str, str]] = []
+        if state == "RUNNING" and latest_performance is not None:
+            low_tps = (
+                latest_performance.tps_one_minute is not None
+                and latest_performance.tps_one_minute < 19.0
+            )
+            high_mspt = (
+                latest_performance.mspt_five_seconds is not None
+                and latest_performance.mspt_five_seconds > 50.0
+            )
+            if low_tps or high_mspt:
+                warnings.append(
+                    {
+                        "code": "performance-evidence",
+                        "title": "Tick performance needs a closer look",
+                        "detail": (
+                            "Recent Paper tick evidence crossed the normal 20 TPS / 50 MSPT "
+                            "threshold. Capture a bounded local Spark profile before "
+                            "changing settings."
+                        ),
+                        "to": f"/servers/{profile.id}/overview#performance-heading",
+                        "severity": "warning",
+                    }
+                )
         if state in {"CRASHED", "DEGRADED"}:
             warnings.append(
                 {
@@ -5060,6 +5215,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "manual_backup": "backups",
             "backup_restore": "backups",
             "backup_recovery_drill": "backups",
+            "backup_destination_check": "world-care",
+            "world_cleanup": "world-care",
+            "diagnostic_capture": "overview",
             "backup_policy": "backups",
             "server_start": "console",
             "server_restart": "console",
@@ -5072,6 +5230,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "extension_toggle": "mods",
             "extension_delete": "mods",
             "extension_upload": "mods",
+            "shared_map_profile": "mods",
             "mod_config_update": "mods",
         }
         activity: list[dict[str, str]] = []
@@ -5191,6 +5350,542 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         }
 
+    def destination_check_payload(record: BackupDestinationCheck) -> dict[str, object]:
+        checked_at = record.checked_at
+        if checked_at.tzinfo is None:
+            checked_at = checked_at.replace(tzinfo=UTC)
+        return {
+            "state": record.state,
+            "write_verified": record.write_verified,
+            "read_verified": record.read_verified,
+            "detail": record.detail,
+            "checked_at": checked_at.astimezone(UTC).isoformat(),
+        }
+
+    def verified_cleanup_backup(profile: Profile, db: Session) -> BackupRecord | None:
+        """Return one locally verified archive; cleanup never relies on a claim alone."""
+
+        records = db.scalars(
+            select(BackupRecord)
+            .where(
+                BackupRecord.profile_id == profile.id,
+                BackupRecord.status == "completed",
+            )
+            .order_by(BackupRecord.created_at.desc())
+        ).all()
+        for record in records:
+            if not record.file_name or not record.manifest_name:
+                continue
+            try:
+                verify_backup_archive(
+                    config.data_dir,
+                    profile.id,
+                    record.file_name,
+                    record.manifest_name,
+                    record.sha256,
+                )
+            except RestoreError:
+                continue
+            return record
+        return None
+
+    def cleanup_plan_payload(
+        plan: ReviewedCleanupPlan | None,
+        *,
+        candidates: list[CleanupTarget],
+        blockers: list[str],
+        recovery: list[dict[str, object]],
+    ) -> dict[str, object]:
+        targets = list(plan.targets) if plan is not None else candidates
+        return {
+            "plan_id": plan.id if plan is not None else None,
+            "created_at": plan.created_at.astimezone(UTC).isoformat() if plan else None,
+            "expires_at": plan.expires_at.astimezone(UTC).isoformat() if plan else None,
+            "can_apply": plan is not None and not blockers and bool(plan.targets),
+            "blockers": blockers,
+            "targets": [
+                {
+                    "path": target.relative_path,
+                    "label": target.label,
+                    "size_bytes": target.size_bytes,
+                    "reason": target.reason,
+                    "recovery_effect": target.recovery_effect,
+                }
+                for target in targets
+            ],
+            "protected": [
+                {
+                    "label": entry["label"],
+                    "detail": "Recovery copies are never included in automatic cleanup.",
+                }
+                for entry in recovery
+            ],
+        }
+
+    @app.get("/api/v1/profiles/{profile_id}/world-care/cleanup-plan")
+    def review_world_cleanup(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        """Build an exact, short-lived review for safe private-data cleanup."""
+
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        now = datetime.now(UTC)
+        for plan_id, plan in tuple(reviewed_cleanup_plans.items()):
+            if plan.expires_at <= now:
+                reviewed_cleanup_plans.pop(plan_id, None)
+        expired = db.scalars(
+            select(BackupRecord).where(
+                BackupRecord.profile_id == profile.id,
+                BackupRecord.status == "expired",
+            )
+        ).all()
+        candidates = cleanup_candidates(
+            config.data_dir,
+            profile.id,
+            [(record.file_name, record.manifest_name) for record in expired],
+            now,
+        )
+        recovery = recovery_snapshot_entries(directory, config.data_dir, profile.id)
+        blockers: list[str] = []
+        pending = db.scalar(
+            select(BackupRecord).where(
+                BackupRecord.profile_id == profile.id,
+                BackupRecord.status == "in_progress",
+            )
+        )
+        if pending is not None:
+            blockers.append("Wait for the active backup to finish before reviewing cleanup.")
+        if profile.id in recovery_drill_profiles:
+            blockers.append(
+                "Wait for the active recovery drill to finish before reviewing cleanup."
+            )
+        verified = verified_cleanup_backup(profile, db)
+        if verified is None:
+            blockers.append("Create a locally verified backup before removing any artifact.")
+        plan = None
+        if candidates and not blockers and verified is not None:
+            plan = ReviewedCleanupPlan(
+                id=secrets.token_hex(16),
+                profile_id=profile.id,
+                created_at=now,
+                expires_at=now + timedelta(minutes=15),
+                targets=tuple(candidates),
+                verified_backup_id=verified.id,
+            )
+            reviewed_cleanup_plans[plan.id] = plan
+        return cleanup_plan_payload(
+            plan,
+            candidates=candidates,
+            blockers=blockers,
+            recovery=recovery,
+        )
+
+    @app.post("/api/v1/profiles/{profile_id}/world-care/cleanup-plan/{plan_id}/apply")
+    async def apply_world_cleanup(
+        profile_id: str,
+        plan_id: str,
+        payload: CleanupApplyRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        plan = reviewed_cleanup_plans.get(plan_id)
+        now = datetime.now(UTC)
+        if plan is None or plan.profile_id != profile_id or plan.expires_at <= now:
+            reviewed_cleanup_plans.pop(plan_id, None)
+            raise HTTPException(
+                409, "That cleanup review expired. Build a fresh plan before removing files."
+            )
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        pending = db.scalar(
+            select(BackupRecord).where(
+                BackupRecord.profile_id == profile.id,
+                BackupRecord.status == "in_progress",
+            )
+        )
+        if pending is not None or profile.id in recovery_drill_profiles:
+            raise HTTPException(
+                409, "Cleanup is unavailable while a backup or recovery drill is in progress."
+            )
+        verified = verified_cleanup_backup(profile, db)
+        if verified is None or verified.id != plan.verified_backup_id:
+            raise HTTPException(
+                409,
+                "The verified backup changed. Build a fresh cleanup review before removing files.",
+            )
+        try:
+            removed = await asyncio.to_thread(
+                remove_cleanup_targets, config.data_dir, list(plan.targets)
+            )
+        except OSError as exc:
+            db.add(
+                AuditEvent(
+                    admin_id=admin.id,
+                    profile_id=profile.id,
+                    category="world_cleanup",
+                    result="failed",
+                    safe_detail=f"Cleanup refused for {profile.name}: {exc}",
+                )
+            )
+            db.commit()
+            raise HTTPException(409, str(exc)) from exc
+        target_paths = {target.relative_path for target in plan.targets}
+        for capture in db.scalars(
+            select(DiagnosticCapture).where(DiagnosticCapture.profile_id == profile.id)
+        ):
+            if capture.output_file in target_paths:
+                capture.status = "expired"
+                capture.detail = (
+                    "The local diagnostic transcript was removed through reviewed cleanup."
+                )
+        reviewed_cleanup_plans.pop(plan.id, None)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="world_cleanup",
+                result="success",
+                safe_detail=(
+                    f"Removed {removed} reviewed incomplete or expired private artifact(s) for "
+                    f"{profile.name}; worlds and recovery copies were not included"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "removed": removed,
+            "result": (
+                f"Removed {removed} reviewed private artifact(s). No world, completed backup, "
+                "or recovery copy was included."
+            ),
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/backup-destinations/check")
+    async def check_backup_destinations(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        """Test each approved destination with a private write/read/remove nonce."""
+
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        primary = backup_directory(config.data_dir, profile.id)
+        destinations: list[tuple[str, str, Path, Path]] = [
+            ("Blockstead local backup storage", str(primary), primary, config.data_dir)
+        ]
+        for raw in configured_backup_destinations(profile):
+            root = Path(raw)
+            destinations.append(
+                (
+                    "Approved backup destination",
+                    raw,
+                    root / "blockstead-backups" / profile.id,
+                    root,
+                )
+            )
+        results = await asyncio.gather(
+            *[
+                asyncio.to_thread(check_backup_destination, target, root)
+                for _, _, target, root in destinations
+            ]
+        )
+        checked_at = datetime.now(UTC)
+        payloads: list[dict[str, object]] = []
+        for (label, configured_path, _, _), result in zip(destinations, results, strict=True):
+            db.execute(
+                delete(BackupDestinationCheck).where(
+                    BackupDestinationCheck.profile_id == profile.id,
+                    BackupDestinationCheck.destination_path == configured_path,
+                )
+            )
+            record = BackupDestinationCheck(
+                profile_id=profile.id,
+                destination_path=configured_path,
+                label=label,
+                state=str(result["state"]),
+                write_verified=bool(result["write_verified"]),
+                read_verified=bool(result["read_verified"]),
+                detail=str(result["detail"]),
+                checked_at=checked_at,
+            )
+            db.add(record)
+            payloads.append(
+                {
+                    "label": label,
+                    "configured_path": configured_path,
+                    "last_check": {
+                        **result,
+                        "checked_at": checked_at.isoformat(),
+                    },
+                }
+            )
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="backup_destination_check",
+                result=(
+                    "success"
+                    if all(item["last_check"]["state"] == "available" for item in payloads)
+                    else "warning"
+                ),
+                safe_detail=(
+                    f"Tested {len(payloads)} backup destination(s) with private temporary "
+                    "write/read/remove evidence"
+                ),
+            )
+        )
+        db.commit()
+        return {"destinations": payloads}
+
+    def diagnostic_capture_payload(record: DiagnosticCapture) -> dict[str, object]:
+        def timestamp(value: datetime | None) -> str | None:
+            if value is None:
+                return None
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            return value.astimezone(UTC).isoformat()
+
+        output_available = False
+        if record.output_file:
+            try:
+                resolve_capture_path(config.data_dir, record.profile_id, record.output_file)
+                output_available = True
+            except DiagnosticCaptureError:
+                pass
+        return {
+            "id": record.id,
+            "profile_id": record.profile_id,
+            "source": record.source,
+            "kind": record.kind,
+            "duration_seconds": record.duration_seconds,
+            "status": record.status,
+            "size_bytes": record.size_bytes,
+            "detail": record.detail,
+            "created_at": timestamp(record.created_at),
+            "completed_at": timestamp(record.completed_at),
+            "output_available": output_available,
+            "download_url": (
+                f"/api/v1/profiles/{record.profile_id}/diagnostic-captures/{record.id}/download"
+                if output_available
+                else None
+            ),
+        }
+
+    async def log_lines_after(
+        profile_id: str, after_sequence: int, timeout_seconds: float
+    ) -> list[str]:
+        deadline = time.monotonic() + timeout_seconds
+        lines: list[str] = []
+        seen: set[int] = set()
+        while True:
+            for event in manager.logs():
+                if (
+                    event.sequence > after_sequence
+                    and event.sequence not in seen
+                    and event.profile_id == profile_id
+                ):
+                    seen.add(event.sequence)
+                    lines.append(event.line)
+            if time.monotonic() >= deadline:
+                return lines
+            await asyncio.sleep(0.05)
+
+    def profiler_is_confirmed_idle(lines: list[str]) -> bool:
+        joined = "\n".join(lines).casefold()
+        return bool(
+            re.search(r"(?:no|not)\s+(?:spark\s+)?profiler.*(?:active|running)", joined)
+            or re.search(r"(?:profiler).*(?:not\s+running|inactive)", joined)
+        )
+
+    @app.get("/api/v1/profiles/{profile_id}/diagnostic-captures")
+    def list_diagnostic_captures(
+        profile_id: str, request: Request, db: Db
+    ) -> list[dict[str, object]]:
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        captures = db.scalars(
+            select(DiagnosticCapture)
+            .where(DiagnosticCapture.profile_id == profile.id)
+            .order_by(DiagnosticCapture.created_at.desc())
+            .limit(20)
+        ).all()
+        return [diagnostic_capture_payload(capture) for capture in captures]
+
+    @app.get("/api/v1/profiles/{profile_id}/diagnostic-captures/{capture_id}/download")
+    def download_diagnostic_capture(
+        profile_id: str, capture_id: str, request: Request, db: Db
+    ) -> FileResponse:
+        current(request, db)
+        capture = db.get(DiagnosticCapture, capture_id)
+        if capture is None or capture.profile_id != profile_id or not capture.output_file:
+            raise HTTPException(404, "That local diagnostic capture was not found.")
+        try:
+            output = resolve_capture_path(config.data_dir, profile_id, capture.output_file)
+        except DiagnosticCaptureError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return FileResponse(
+            output,
+            filename=f"blockstead-spark-profile-{capture.id[:8]}.txt",
+            media_type="text/plain; charset=utf-8",
+        )
+
+    @app.post("/api/v1/profiles/{profile_id}/diagnostic-captures", status_code=201)
+    async def create_diagnostic_capture(
+        profile_id: str,
+        payload: DiagnosticCaptureRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        """Run a bounded Spark profiler and retain only local owner evidence."""
+
+        admin = mutation(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        if not performance_capable(profile.distribution):
+            raise HTTPException(
+                409,
+                "This profile does not expose Blockstead's supported Spark profiler capability.",
+            )
+        snapshot = manager.snapshot()
+        if app.state.active_profile_id != profile.id or snapshot["state"] != "RUNNING":
+            raise HTTPException(
+                409, "Start this Paper server before capturing a performance profile."
+            )
+        if profile.id in diagnostic_capture_profiles:
+            raise HTTPException(409, "A diagnostic capture is already in progress for this server.")
+
+        capture = DiagnosticCapture(
+            profile_id=profile.id,
+            source="Paper bundled spark profiler",
+            kind="spark_profiler",
+            duration_seconds=payload.duration_seconds,
+            status="in_progress",
+            detail="Checking whether Spark is idle before starting a bounded local profile.",
+            created_at=datetime.now(UTC),
+        )
+        db.add(capture)
+        db.commit()
+        diagnostic_capture_profiles.add(profile.id)
+        profiler_started = False
+        try:
+            async with performance_lock:
+                before_info = manager.logs()[-1].sequence if manager.logs() else 0
+                await manager.command("spark profiler info")
+                info_lines = await log_lines_after(profile.id, before_info, 1.0)
+                if not profiler_is_confirmed_idle(info_lines):
+                    raise ValueError(
+                        "Blockstead could not confirm that Spark's profiler is idle. "
+                        "Stop or cancel any existing Spark profile first."
+                    )
+
+                before_profile = manager.logs()[-1].sequence if manager.logs() else before_info
+                await manager.command("spark profiler start")
+                profiler_started = True
+                start_lines = await log_lines_after(profile.id, before_profile, 1.0)
+                start_text = "\n".join(start_lines).casefold()
+                if "already running" in start_text or "could not start" in start_text:
+                    raise ValueError("Spark did not start a new profiler for this capture.")
+
+                await asyncio.sleep(payload.duration_seconds)
+                before_stop = manager.logs()[-1].sequence if manager.logs() else before_profile
+                await manager.command("spark profiler stop --save-to-file")
+                profiler_started = False
+                stop_lines = await log_lines_after(profile.id, before_stop, 2.0)
+                raw_lines = [*info_lines, *start_lines, *stop_lines][-500:]
+                transcript = "\n".join(
+                    [
+                        "Blockstead local Spark profiler capture",
+                        f"Profile: {profile.name}",
+                        f"Duration: {payload.duration_seconds} seconds",
+                        "Spark was stopped with --save-to-file; no viewer upload was requested.",
+                        "",
+                        *raw_lines,
+                        "",
+                    ]
+                )
+                output_file, size_bytes = await asyncio.to_thread(
+                    write_transcript,
+                    config.data_dir,
+                    profile.id,
+                    capture.id,
+                    transcript,
+                )
+                capture.status = "completed"
+                capture.output_file = output_file
+                capture.size_bytes = size_bytes
+                capture.detail = (
+                    "Spark was profiled for the selected duration and stopped with a local "
+                    "save request. The raw console transcript stays private until download."
+                )
+                capture.completed_at = datetime.now(UTC)
+                db.add(
+                    AuditEvent(
+                        admin_id=admin.id,
+                        profile_id=profile.id,
+                        category="diagnostic_capture",
+                        result="success",
+                        safe_detail=(
+                            f"Captured a {payload.duration_seconds}-second local Spark profile for "
+                            f"{profile.name}; output was not uploaded"
+                        ),
+                    )
+                )
+                db.commit()
+                return diagnostic_capture_payload(capture)
+        except asyncio.CancelledError:
+            if profiler_started:
+                try:
+                    await asyncio.shield(manager.command("spark profiler cancel"))
+                except (InvalidTransition, ValueError):
+                    pass
+            capture.status = "failed"
+            capture.detail = "The local Spark diagnostic capture was cancelled before completion."
+            capture.completed_at = datetime.now(UTC)
+            db.add(
+                AuditEvent(
+                    admin_id=admin.id,
+                    profile_id=profile.id,
+                    category="diagnostic_capture",
+                    result="failed",
+                    safe_detail=f"Local Spark diagnostic capture was cancelled for {profile.name}",
+                )
+            )
+            db.commit()
+            raise
+        except (DiagnosticCaptureError, InvalidTransition, ValueError) as exc:
+            if profiler_started:
+                try:
+                    await manager.command("spark profiler cancel")
+                except (InvalidTransition, ValueError):
+                    pass
+            capture.status = "failed"
+            capture.detail = str(exc)
+            capture.completed_at = datetime.now(UTC)
+            db.add(
+                AuditEvent(
+                    admin_id=admin.id,
+                    profile_id=profile.id,
+                    category="diagnostic_capture",
+                    result="failed",
+                    safe_detail=f"Local Spark diagnostic capture failed for {profile.name}: {exc}",
+                )
+            )
+            db.commit()
+            raise HTTPException(409, str(exc)) from exc
+        finally:
+            diagnostic_capture_profiles.discard(profile.id)
+
     @app.get("/api/v1/profiles/{profile_id}/world-care")
     def profile_world_care(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         """Return read-only world, backup, destination, and recovery evidence."""
@@ -5211,12 +5906,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         primary_backup = backup_directory(config.data_dir, profile.id)
         backup_size = tree_size(primary_backup)
+        latest_checks: dict[str, BackupDestinationCheck] = {}
+        for check in db.scalars(
+            select(BackupDestinationCheck)
+            .where(BackupDestinationCheck.profile_id == profile.id)
+            .order_by(BackupDestinationCheck.checked_at.desc())
+        ):
+            latest_checks.setdefault(check.destination_path, check)
         destinations: list[dict[str, object]] = [
             {
                 "label": "Blockstead local backup storage",
                 "configured_path": str(primary_backup),
                 "stored_bytes": backup_size,
                 "disk": disk_payload(primary_backup),
+                "last_check": (
+                    destination_check_payload(latest_checks[str(primary_backup)])
+                    if str(primary_backup) in latest_checks
+                    else None
+                ),
             }
         ]
         for raw in configured_backup_destinations(profile):
@@ -5227,6 +5934,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "configured_path": raw,
                     "stored_bytes": tree_size(destination),
                     "disk": disk_payload(destination),
+                    "last_check": (
+                        destination_check_payload(latest_checks[raw])
+                        if raw in latest_checks
+                        else None
+                    ),
                 }
             )
 
@@ -5255,10 +5967,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
             },
             "cleanup": {
-                "available": False,
+                "available": True,
                 "detail": (
-                    "Cleanup recommendations are not enabled yet. Review these facts "
-                    "before removing any expired artifact manually."
+                    "Build a reviewed cleanup plan to inspect exact stale private artifacts. "
+                    "Worlds, completed backups, and recovery copies are never included."
                 ),
             },
         }
@@ -5316,6 +6028,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "extension_toggle",
             "extension_remove",
             "extension_upload",
+            "shared_map_profile",
         }
     )
 

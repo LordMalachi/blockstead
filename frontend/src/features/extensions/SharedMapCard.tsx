@@ -1,4 +1,4 @@
-import type { ExtensionEntry, SharedMapView } from "../../api/client";
+import type { ExtensionEntry, SharedMapLowResourceResult, SharedMapView } from "../../api/client";
 import { Button } from "../../components/Button";
 
 export const SHARED_MAP_PROJECT_ID = "squaremap";
@@ -23,6 +23,10 @@ export function SharedMapCard({
   stopped,
   busy,
   install,
+  lowResourceBusy = false,
+  applyLowResource,
+  lowResourceResult,
+  lowResourceError,
 }: {
   entries: ExtensionEntry[];
   disabledEntries: ExtensionEntry[];
@@ -30,6 +34,10 @@ export function SharedMapCard({
   stopped: boolean;
   busy: boolean;
   install: () => void;
+  lowResourceBusy?: boolean;
+  applyLowResource?: () => void;
+  lowResourceResult?: SharedMapLowResourceResult;
+  lowResourceError?: string | null;
 }) {
   const installed = entries.some(isSquaremap);
   const disabled = disabledEntries.some(isSquaremap);
@@ -59,6 +67,14 @@ export function SharedMapCard({
               : "Waiting for squaremap to generate config.yml; using its default port, 8080."}
         </small>
         {map?.problem && <small>{map.problem}</small>}
+        {map?.health && <small className={map.health.state === "available" ? "shared-map-health shared-map-health--ok" : "shared-map-health"}><strong>Health: {map.health.state === "available" ? "local web service responded" : map.health.state.replaceAll("_", " ")}</strong> {map.health.detail}</small>}
+        {map?.config_present && <div className="shared-map-profile">
+          <span>Render threads: {map.normal_render_threads ?? "default"} normal · {map.background_render_threads ?? "default"} background</span>
+          <Button className="button--secondary button--small" disabled={!stopped || busy || lowResourceBusy || !applyLowResource} onClick={applyLowResource}>{lowResourceBusy ? "Applying…" : "Use low-resource profile"}</Button>
+          <small>Caps both squaremap render pools at one thread and saves the prior config as a private recovery copy.</small>
+        </div>}
+        {lowResourceResult && <small className="success" role="status">{lowResourceResult.detail}</small>}
+        {lowResourceError && <small className="error" role="alert">{lowResourceError}</small>}
       </> : disabled ? <>
         <strong>Installed but disabled</strong>
         <span>Enable squaremap in the Disabled list below, then start the server.</span>

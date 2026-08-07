@@ -72,9 +72,11 @@ def test_empty_database_upgrades_to_head(tmp_path: Path) -> None:
         "notification_preferences",
         "player_sessions",
         "performance_samples",
+        "diagnostic_captures",
+        "backup_destination_checks",
         "alembic_version",
     }
-    assert current_revision(database) == "0014"
+    assert current_revision(database) == "0015"
 
 
 def test_unversioned_initial_schema_is_stamped_then_upgraded(tmp_path: Path) -> None:
@@ -95,7 +97,7 @@ def test_unversioned_initial_schema_is_stamped_then_upgraded(tmp_path: Path) -> 
     assert ("profile_id",) in schedule_unique_columns(database)
     assert "backups" in table_names(database)
     assert "metric_samples" in table_names(database)
-    assert current_revision(database) == "0014"
+    assert current_revision(database) == "0015"
 
 
 def test_unversioned_current_schema_is_stamped_at_head(tmp_path: Path) -> None:
@@ -132,7 +134,7 @@ def test_unversioned_current_schema_is_stamped_at_head(tmp_path: Path) -> None:
     assert ("profile_id",) in schedule_unique_columns(database)
     assert "backups" in table_names(database)
     assert "metric_samples" in table_names(database)
-    assert current_revision(database) == "0014"
+    assert current_revision(database) == "0015"
 
 
 def test_unknown_unversioned_schema_is_rejected(tmp_path: Path) -> None:
