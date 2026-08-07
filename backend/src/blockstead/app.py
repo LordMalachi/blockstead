@@ -51,9 +51,11 @@ from .backups import (
     backup_directory,
     create_backup_archive,
     mirror_backup_archive,
+    perform_recovery_drill,
     perform_restore,
     plan_restore,
     verify_backup_archive,
+    world_roots,
 )
 from .catalog import CatalogError, PlannedFile
 from .command_catalog import GuidedCommandRequest, catalog_payload, render_guided_command
@@ -80,6 +82,11 @@ from .distributions import (
     LaunchPlanError,
     launch_arguments,
     required_java_major,
+)
+from .extension_command_packs import (
+    ExtensionRecommendation,
+    active_provider_ids,
+    recommendation_payload,
 )
 from .extension_ops import (
     MAX_UPLOAD_BYTES,
@@ -162,7 +169,6 @@ from .loader_migration import (
     discover_world_roots,
     review_fingerprint,
     safe_level_name,
-    world_roots,
 )
 from .loadout_lockfiles import (
     MAX_LOCKFILE_BYTES,
@@ -211,6 +217,7 @@ from .models import (
     BackupRecord,
     LoginSession,
     MetricSample,
+    PerformanceSample,
     Profile,
     Schedule,
 )
@@ -243,6 +250,14 @@ from .overview import (
     read_properties,
     strict_world_size,
     world_size,
+)
+from .performance import (
+    PERFORMANCE_SAMPLING_PERIOD_SECONDS,
+    PERFORMANCE_SOURCE,
+    MsptValues,
+    TpsValues,
+    parse_paper_performance,
+    performance_capable,
 )
 from .player_pack_exports import (
     PlayerPackExportError,
@@ -372,6 +387,7 @@ from .upgrade_ops import (
     promote_launch_upgrade,
     rollback_launch_upgrade,
 )
+from .world_care import disk_payload, recovery_snapshot_entries, tree_size
 
 log = logging.getLogger("blockstead.api")
 
@@ -454,6 +470,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     player_session_task: asyncio.Task[None] | None = None
     update_wakeup = asyncio.Event()
     update_lock = asyncio.Lock()
+    performance_lock = asyncio.Lock()
 
     def record_player_session_line(profile_id: str, line: str) -> None:
         with factory() as db:
@@ -504,15 +521,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
             for profile in db.scalars(select(Profile)).all():
                 try:
-                    directory = canonical_child(
-                        Path(profile.server_directory), config.server_root
-                    )
+                    directory = canonical_child(Path(profile.server_directory), config.server_root)
                     cleanup_validation_workspaces(directory)
                     info = DISTRIBUTIONS.get(profile.distribution)
                     if info is not None and info.extension_directory is not None:
-                        cleanup_reviewed_batches(
-                            directory / info.extension_directory
-                        )
+                        cleanup_reviewed_batches(directory / info.extension_directory)
                 except (OSError, ValueError, SafeStartError):
                     log.warning(
                         "Could not clean stale loadout validation data for profile %s.",
@@ -574,6 +587,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Profiles with an archive extraction in flight; a second concurrent
     # extraction for the same profile is refused rather than interleaved.
     extracting_profiles: set[str] = set()
+    # Profiles with a recovery drill in flight; drills use private staging and
+    # never mutate the live server folder.
+    recovery_drill_profiles: set[str] = set()
     # Long-running world mutations must finish before the service can hand an
     # update to the root helper. Tokens make concurrent backups independently
     # visible without holding the update lock for their full duration.
@@ -626,6 +642,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.execute(delete(MetricSample).where(MetricSample.created_at < cutoff))
             db.commit()
 
+    async def sample_performance(profile: Profile) -> None:
+        """Ask a supported Paper server for bounded tick evidence at most once a minute."""
+
+        if not performance_capable(profile.distribution):
+            return
+        snapshot = manager.snapshot()
+        state = str(snapshot["state"])
+        if state.startswith("ProcessState."):
+            state = state.removeprefix("ProcessState.")
+        if app.state.active_profile_id != profile.id or state != "RUNNING":
+            return
+        async with performance_lock:
+            with factory() as db:
+                latest = db.scalar(
+                    select(PerformanceSample)
+                    .where(PerformanceSample.profile_id == profile.id)
+                    .order_by(PerformanceSample.created_at.desc())
+                    .limit(1)
+                )
+                latest_at = latest.created_at if latest is not None else None
+            now = datetime.now(timezone.utc)  # noqa: UP017
+            if latest_at is not None:
+                if latest_at.tzinfo is None:
+                    latest_at = latest_at.replace(tzinfo=timezone.utc)  # noqa: UP017
+                if now - latest_at < timedelta(seconds=50):
+                    return
+
+            before = manager.logs()[-1].sequence if manager.logs() else 0
+            tps: TpsValues | None = None
+            mspt: MsptValues | None = None
+            detail = (
+                "Paper performance commands were sent, but the server did not return "
+                "labelled TPS or MSPT output within the bounded wait."
+            )
+            try:
+                await manager.command("tps")
+                await manager.command("mspt")
+                deadline = time.monotonic() + 1.5
+                while time.monotonic() < deadline:
+                    lines = [
+                        event.line
+                        for event in manager.logs()
+                        if event.sequence > before and event.profile_id == profile.id
+                    ]
+                    tps, mspt = parse_paper_performance(lines)
+                    if tps is not None and mspt is not None:
+                        break
+                    await asyncio.sleep(0.05)
+                if tps is not None and mspt is not None:
+                    detail = "Paper returned labelled TPS and MSPT evidence."
+                elif tps is not None or mspt is not None:
+                    detail = (
+                        "Paper returned only part of the expected performance evidence; "
+                        "the missing value is left unavailable."
+                    )
+            except (InvalidTransition, OSError, ValueError):
+                detail = (
+                    "Paper performance sampling was unavailable while the server changed state."
+                )
+
+            with factory() as db:
+                db.add(
+                    PerformanceSample(
+                        profile_id=profile.id,
+                        source=PERFORMANCE_SOURCE,
+                        sampling_period_seconds=PERFORMANCE_SAMPLING_PERIOD_SECONDS,
+                        tps_one_minute=tps.get("one_minute") if tps else None,
+                        tps_five_minutes=tps.get("five_minutes") if tps else None,
+                        tps_fifteen_minutes=tps.get("fifteen_minutes") if tps else None,
+                        mspt_five_seconds=mspt.get("five_seconds") if mspt else None,
+                        mspt_ten_seconds=mspt.get("ten_seconds") if mspt else None,
+                        mspt_sixty_seconds=mspt.get("sixty_seconds") if mspt else None,
+                        detail=detail,
+                        created_at=now,
+                    )
+                )
+                cutoff = now - timedelta(days=7)
+                db.execute(delete(PerformanceSample).where(PerformanceSample.created_at < cutoff))
+                db.commit()
+
     last_observed_state = manager.snapshot()["state"]
 
     async def metrics_loop() -> None:
@@ -633,6 +729,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         while True:
             try:
                 await asyncio.to_thread(sample_active_profile)
+                active_id = app.state.active_profile_id
+                if isinstance(active_id, str):
+                    with factory() as db:
+                        performance_profile = db.get(Profile, active_id)
+                    if performance_profile is not None:
+                        await sample_performance(performance_profile)
                 state = manager.snapshot()["state"]
                 if state == "CRASHED" and last_observed_state != "CRASHED":
                     with factory() as db:
@@ -1757,6 +1859,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             blockers.append("Wait for the current backup to finish before restoring.")
         return blockers
 
+    def recovery_drill_blockers(profile: Profile, db: Session) -> list[str]:
+        blockers: list[str] = []
+        if profile.id in restoring_profiles:
+            blockers.append("A restore is already in progress for this server.")
+        if profile.id in recovery_drill_profiles:
+            blockers.append("A recovery drill is already in progress for this server.")
+        pending = db.scalar(
+            select(BackupRecord).where(
+                BackupRecord.profile_id == profile.id,
+                BackupRecord.status == "in_progress",
+            )
+        )
+        if pending is not None:
+            blockers.append("Wait for the current backup to finish before testing recovery.")
+        return blockers
+
     @app.get("/api/v1/profiles/{profile_id}/backups/{backup_id}/restore-preview")
     def restore_preview(
         profile_id: str, backup_id: str, request: Request, db: Db
@@ -1789,6 +1907,73 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "minecraft_version": plan.minecraft_version,
             "can_restore": not blockers,
             "blockers": blockers,
+        }
+
+    @app.post("/api/v1/profiles/{profile_id}/backups/{backup_id}/recovery-drill")
+    async def recovery_drill(
+        profile_id: str, backup_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        profile, record, server_directory = restore_context(profile_id, backup_id, db)
+        async with update_lock:
+            if update_install_in_progress():
+                raise HTTPException(
+                    409,
+                    "Blockstead is being updated. Run the recovery drill after it finishes.",
+                )
+            blockers = recovery_drill_blockers(profile, db)
+            if blockers:
+                raise HTTPException(409, " ".join(blockers))
+            assert record.file_name and record.manifest_name
+            recovery_drill_profiles.add(profile.id)
+        try:
+            result = await asyncio.to_thread(
+                perform_recovery_drill,
+                config.data_dir,
+                profile.id,
+                record.file_name,
+                record.manifest_name,
+                server_directory,
+                config.data_dir / "recovery-drills",
+                record.sha256,
+            )
+        except RestoreError as exc:
+            db.add(
+                AuditEvent(
+                    admin_id=admin.id,
+                    profile_id=profile.id,
+                    category="backup_recovery_drill",
+                    result="failed",
+                    safe_detail=f"Recovery drill failed for {profile.name}: {exc}",
+                )
+            )
+            db.commit()
+            raise HTTPException(409, str(exc)) from exc
+        finally:
+            recovery_drill_profiles.discard(profile.id)
+            update_wakeup.set()
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="backup_recovery_drill",
+                result="success",
+                safe_detail=(
+                    f"Verified recovery staging for {profile.name}; live worlds were unchanged"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "backup_id": record.id,
+            "verified": True,
+            "staged_paths": list(result.staged_paths),
+            "staged_bytes": result.staged_bytes,
+            "duration_ms": result.duration_ms,
+            "result": (
+                f"Verified {', '.join(result.staged_paths)} in private staging. "
+                "The staging copy was removed and the live world was not changed."
+            ),
         }
 
     @app.post("/api/v1/profiles/{profile_id}/backups/{backup_id}/restore")
@@ -2147,9 +2332,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             source, safe_level_name(properties.get("level-name"))
         )
         view = read_extensions(source, profile.distribution)
-        extensions = classify_extensions(
-            view.entries, profile.distribution, target_distribution
-        )
+        extensions = classify_extensions(view.entries, profile.distribution, target_distribution)
         required_java = required_java_major(profile.minecraft_version)
         runtime = (
             find_java(required_java, discover_java_runtimes())
@@ -2170,11 +2353,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         backup_detail = "Create a verified backup before migrating this world."
         backup_age_hours: float | None = None
         backup_verified = False
-        if (
-            newest_backup is not None
-            and newest_backup.file_name
-            and newest_backup.manifest_name
-        ):
+        if newest_backup is not None and newest_backup.file_name and newest_backup.manifest_name:
             try:
                 await asyncio.to_thread(
                     verify_backup_archive,
@@ -2194,8 +2373,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 backup_verified = backup_age_hours <= FRESH_PROTECTION_HOURS
                 backup_id = newest_backup.id
                 backup_detail = (
-                    f"Verified backup {newest_backup.id} is "
-                    f"{backup_age_hours:.1f} hours old."
+                    f"Verified backup {newest_backup.id} is {backup_age_hours:.1f} hours old."
                     if backup_verified
                     else "The newest verified backup is older than 24 hours."
                 )
@@ -2272,9 +2450,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile = db.get(Profile, profile_id)
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
-        return await build_loader_migration_review(
-            profile, payload.target_distribution, db
-        )
+        return await build_loader_migration_review(profile, payload.target_distribution, db)
 
     @app.post("/api/v1/profiles/{profile_id}/loader-migration/apply", status_code=201)
     async def loader_migration_apply(
@@ -2287,9 +2463,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile = db.get(Profile, profile_id)
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
-        fresh = await build_loader_migration_review(
-            profile, payload.target_distribution, db
-        )
+        fresh = await build_loader_migration_review(profile, payload.target_distribution, db)
         if fresh["review_id"] != payload.review_id:
             raise HTTPException(
                 409, "This server changed after the migration review. Review it again."
@@ -2319,8 +2493,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         java_executable = (
             runtime.path
-            if runtime is not None
-            and payload.target_distribution in {"forge", "quilt", "neoforge"}
+            if runtime is not None and payload.target_distribution in {"forge", "quilt", "neoforge"}
             else None
         )
         try:
@@ -2541,7 +2714,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status = await minecraft_status(read_properties(directory))
         names = roster_names(players, status)
         sessions = summarize_sessions(
-            db, profile_id, names, datetime.now(timezone.utc)  # noqa: UP017
+            db,
+            profile_id,
+            names,
+            datetime.now(timezone.utc),  # noqa: UP017
         )
         return build_roster(players, status, sessions).model_dump()
 
@@ -2575,6 +2751,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if info.extension_directory is None:
             raise HTTPException(409, "This server distribution does not load plugins or mods.")
         return profile, directory / info.extension_directory
+
+    def command_provider_context(
+        profile_id: str, db: Session
+    ) -> tuple[Profile, ExtensionsView, dict[str, str]]:
+        """Load the single evidence set used by command presentation and POST gating."""
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        view = read_extensions(directory, profile.distribution)
+        info = DISTRIBUTIONS.get(profile.distribution, DISTRIBUTIONS["unknown"])
+        if info.extension_directory is None:
+            return profile, view, {}
+        extension_dir = directory / info.extension_directory
+        try:
+            origins = load_origin_map(extension_dir)
+        except OriginRegistryError:
+            origins = {}
+        origin_project_ids = {
+            file_name: origin.project_id
+            for file_name, origin in origins.items()
+            if origin.project_id
+        }
+        return profile, view, origin_project_ids
 
     def require_published_checksums(planned: list[PlannedFile]) -> None:
         """Catalog installs must have a publisher digest, not merely HTTPS."""
@@ -2858,6 +3058,132 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         return {"source": source, "categories": names}
 
+    async def recommendation_status(
+        profile: Profile,
+        recommendation: ExtensionRecommendation,
+        active: set[str],
+        states: dict[str, tuple[bool, bool]],
+    ) -> dict[str, object]:
+        active_state, disabled_state = states[recommendation.id]
+        missing_dependencies = [
+            dependency for dependency in recommendation.dependencies if dependency not in active
+        ]
+        version: object | None = None
+        availability = "unknown"
+        detail = "Compatibility could not be checked right now."
+
+        if recommendation.runtime_mode == "paper-capability":
+            availability = "bundled" if active_state else "unavailable"
+            detail = (
+                "Paper supplies the spark command family for this profile."
+                if active_state
+                else "This server distribution does not provide the bundled capability."
+            )
+        else:
+            try:
+                if recommendation.source == "hangar":
+                    versions = await hangar_versions(
+                        http_client,
+                        profile.distribution,
+                        profile.minecraft_version,
+                        recommendation.project_id,
+                    )
+                else:
+                    versions = await modrinth_versions(
+                        http_client,
+                        profile.distribution,
+                        profile.minecraft_version,
+                        recommendation.project_id,
+                    )
+                chosen = next(
+                    (item for item in versions if item.version_type == "release"),
+                    versions[0] if versions else None,
+                )
+                if chosen is not None:
+                    version = chosen.model_dump()
+                    availability = "available"
+                    detail = "A compatible release is available from the curated catalog."
+                else:
+                    availability = "unavailable"
+                    detail = "No compatible release is listed for this server."
+            except CatalogError:
+                # Keep the curated recommendation visible when the catalog is
+                # unavailable; the owner can still open its project page.
+                availability = "unknown"
+                detail = "Could not check compatible releases right now."
+
+        if active_state and not missing_dependencies:
+            state = "active"
+        elif disabled_state:
+            state = "disabled"
+        elif missing_dependencies:
+            state = "needs-dependency"
+        else:
+            state = availability
+        return {
+            "id": recommendation.id,
+            "project_id": recommendation.project_id,
+            "source": recommendation.source,
+            "title": recommendation.title,
+            "purpose": recommendation.purpose,
+            "state": state,
+            "availability": availability,
+            "detail": detail,
+            "active": active_state and not missing_dependencies,
+            "installed": active_state or disabled_state,
+            "disabled": disabled_state,
+            "dependencies": list(recommendation.dependencies),
+            "missing_dependencies": missing_dependencies,
+            "conflict_group": recommendation.conflict_group,
+            "command_pack_id": recommendation.command_pack_id,
+            "latest_version": version,
+            "project_url": (
+                f"https://hangar.papermc.io/{recommendation.project_id}"
+                if recommendation.source == "hangar"
+                else (
+                    "https://modrinth.com/"
+                    f"{'plugin' if profile.distribution == 'paper' else 'mod'}/"
+                    f"{recommendation.project_id}"
+                )
+            ),
+        }
+
+    @app.get("/api/v1/profiles/{profile_id}/extensions/recommendations")
+    async def extension_recommendations(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        info = DISTRIBUTIONS.get(profile.distribution, DISTRIBUTIONS["unknown"])
+        if info.extension_directory is None:
+            return {
+                "distribution": profile.distribution,
+                "minecraft_version": profile.minecraft_version,
+                "recommendations": [],
+            }
+        profile, view, origin_project_ids = command_provider_context(profile_id, db)
+        candidates, active, states = recommendation_payload(
+            profile.distribution,
+            view.entries,
+            view.disabled_entries,
+            profile.minecraft_version,
+            origin_project_ids,
+        )
+        catalog_limit = asyncio.Semaphore(4)
+
+        async def bounded_status(item: ExtensionRecommendation) -> dict[str, object]:
+            async with catalog_limit:
+                return await recommendation_status(profile, item, active, states)
+
+        statuses = await asyncio.gather(*(bounded_status(item) for item in candidates))
+        return {
+            "distribution": profile.distribution,
+            "minecraft_version": profile.minecraft_version,
+            "recommendations": list(statuses),
+        }
+
     @app.get("/api/v1/profiles/{profile_id}/catalog/versions")
     async def extension_versions(
         profile_id: str, project_id: str, request: Request, db: Db, source: str = "modrinth"
@@ -3075,9 +3401,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 and not target.is_symlink()
                 and item.checksum_algorithm
                 and item.checksum
-                and checksum_matches(
-                    target, item.checksum_algorithm, item.checksum
-                )
+                and checksum_matches(target, item.checksum_algorithm, item.checksum)
             ):
                 verified_existing.add(item.file_name)
         try:
@@ -3116,9 +3440,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Review exact files, dependencies, restart impact, and recovery first."""
 
         admin = mutation(request, db)
-        profile, extension_dir, entry = extension_update_entry(
-            profile_id, payload.file_name, db
-        )
+        profile, extension_dir, entry = extension_update_entry(profile_id, payload.file_name, db)
         _, review = await reviewed_extension_update(profile, extension_dir, entry)
         maintenance_plan = await build_maintenance_plan(
             profile, MaintenanceRequest(change_id="extension_update"), db
@@ -3148,9 +3470,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, object]:
         admin = mutation(request, db)
         require_server_stopped()
-        profile, extension_dir, entry = extension_update_entry(
-            profile_id, payload.file_name, db
-        )
+        profile, extension_dir, entry = extension_update_entry(profile_id, payload.file_name, db)
         update_plan, review = await reviewed_extension_update(profile, extension_dir, entry)
         if review.review_id != payload.review_id:
             raise HTTPException(
@@ -3192,9 +3512,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 extension_directory=extension_dir,
                 review=review,
                 installed_sha512=entry.sha512,
-                old_origin=(
-                    previous_origin.model_dump(mode="json") if previous_origin else None
-                ),
+                old_origin=(previous_origin.model_dump(mode="json") if previous_origin else None),
             )
             changed_names = {
                 item.file_name for item in review.files if item.action != "already_present"
@@ -3208,9 +3526,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         409,
                         "The reviewed update lost a required published checksum.",
                     )
-                recovery_files.append(
-                    (item.file_name, item.checksum_algorithm, item.checksum)
-                )
+                recovery_files.append((item.file_name, item.checksum_algorithm, item.checksum))
             # Persist the exact recovery contract before live promotion. If the
             # promotion then fails, extension_ops restores the loadout and this
             # private bundle is discarded.
@@ -3273,9 +3589,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ],
         }
 
-    @app.post(
-        "/api/v1/profiles/{profile_id}/extensions/update-recovery/{recovery_id}"
-    )
+    @app.post("/api/v1/profiles/{profile_id}/extensions/update-recovery/{recovery_id}")
     def extension_update_rollback(
         profile_id: str,
         recovery_id: str,
@@ -3440,9 +3754,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         require_server_stopped()
         profile, extension_dir = extension_context(profile_id, db)
         if not files or len(files) > MAX_IMPORT_FILES:
-            raise HTTPException(
-                422, f"Choose between 1 and {MAX_IMPORT_FILES} jar files."
-            )
+            raise HTTPException(422, f"Choose between 1 and {MAX_IMPORT_FILES} jar files.")
         cleanup_expired(extension_dir)
         review_id = secrets.token_hex(8)
         try:
@@ -3483,23 +3795,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 for item in [*installed_view.entries, *installed_view.disabled_entries]
                 if item.identifier
             }
-            staged_ids = {
-                item.identifier.casefold() for item in staged_entries if item.identifier
-            }
+            staged_ids = {item.identifier.casefold() for item in staged_entries if item.identifier}
             wrong_loader = [
                 item.file_name
                 for item in staged_entries
                 if item.loaders and not (set(item.loaders) & native)
             ]
             client_only = [
-                item.file_name
-                for item in staged_entries
-                if item.environment == "client"
+                item.file_name for item in staged_entries if item.environment == "client"
             ]
             unknown = [
-                item.file_name
-                for item in staged_entries
-                if not item.loaders or not item.identifier
+                item.file_name for item in staged_entries if not item.loaders or not item.identifier
             ]
             missing = sorted(
                 {
@@ -3522,9 +3828,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     f"These files target a different loader: {', '.join(wrong_loader)}."
                 )
             if client_only:
-                blockers.append(
-                    f"These files are client-only: {', '.join(client_only)}."
-                )
+                blockers.append(f"These files are client-only: {', '.join(client_only)}.")
             if conflicts:
                 blockers.append(
                     f"Files with these names are already installed: {', '.join(conflicts)}."
@@ -3593,9 +3897,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if len(entries) != len(raw_files) or any(
             entry.sha256 != reviewed[entry.file_name].get("sha256") for entry in entries
         ):
-            raise HTTPException(
-                409, "A staged jar changed after review. Choose the files again."
-            )
+            raise HTTPException(409, "A staged jar changed after review. Choose the files again.")
 
         native = (
             {"paper"}
@@ -3645,9 +3947,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if blockers:
             raise HTTPException(409, blockers[0])
         try:
-            promote_staged_files(
-                extension_dir, staging, [entry.file_name for entry in entries]
-            )
+            promote_staged_files(extension_dir, staging, [entry.file_name for entry in entries])
         except ExtensionOpsError as exc:
             raise HTTPException(409, str(exc)) from exc
         warnings: list[str] = []
@@ -3694,16 +3994,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/profiles/{profile_id}/extensions/manual-import/{review_id}",
         status_code=204,
     )
-    def manual_import_cancel(
-        profile_id: str, review_id: str, request: Request, db: Db
-    ) -> None:
+    def manual_import_cancel(profile_id: str, review_id: str, request: Request, db: Db) -> None:
         mutation(request, db)
         _, extension_dir = extension_context(profile_id, db)
         if not re.fullmatch(r"[0-9a-f]{16}", review_id):
             raise HTTPException(404, "That manual import review was not found.")
-        shutil.rmtree(
-            extension_dir / f".blockstead-manual-{review_id}", ignore_errors=True
-        )
+        shutil.rmtree(extension_dir / f".blockstead-manual-{review_id}", ignore_errors=True)
 
     @app.post("/api/v1/profiles/{profile_id}/loadout/test-start")
     async def loadout_test_start(
@@ -3724,9 +4020,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if payload.recent_batch_ids and payload.retry_of is None:
             ignored_batches = max(0, len(payload.recent_batch_ids) - 1)
             try:
-                reviewed_batch = load_reviewed_batch(
-                    extension_dir, payload.recent_batch_ids[-1]
-                )
+                reviewed_batch = load_reviewed_batch(extension_dir, payload.recent_batch_ids[-1])
             except SafeStartError as exc:
                 raise HTTPException(409, str(exc)) from exc
         try:
@@ -3743,9 +4037,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 runtime = find_java(required, discover_java_runtimes())
                 if runtime is None:
                     needed = f"Java {required} or newer" if required else "a Java runtime"
-                    raise SafeStartError(
-                        f"Private validation needs {needed}, but none was found."
-                    )
+                    raise SafeStartError(f"Private validation needs {needed}, but none was found.")
                 arguments = None
                 java_executable = runtime.path
             plan = plan_safe_test_start(
@@ -3780,8 +4072,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         warnings = list(result.warnings)
         if ignored_batches:
             warnings.append(
-                "Only the most recent reviewed install batch was eligible for automatic "
-                "quarantine."
+                "Only the most recent reviewed install batch was eligible for automatic quarantine."
             )
         db.add(
             AuditEvent(
@@ -3902,18 +4193,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "changes": changes,
             "exclusions": [],
             "manual_requirements": manual_requirements,
-            "warnings": [
-                "This comparison is review-only. Blockstead did not change this loadout."
-            ],
+            "warnings": ["This comparison is review-only. Blockstead did not change this loadout."],
             "blockers": review.blockers,
             "expires_in_seconds": 15 * 60,
             "compatible": review.compatible,
             "mutation_performed": False,
         }
 
-    def build_player_pack_export(
-        profile_id: str, db: Session
-    ) -> PlayerPackExportResult:
+    def build_player_pack_export(profile_id: str, db: Session) -> PlayerPackExportResult:
         profile, _, view, origins = loadout_view(profile_id, db)
         if profile.distribution == "paper":
             raise HTTPException(
@@ -3946,9 +4233,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ).hexdigest()[:16]
 
     @app.get("/api/v1/profiles/{profile_id}/loadout/player-pack/review")
-    def loadout_player_pack_review(
-        profile_id: str, request: Request, db: Db
-    ) -> dict[str, object]:
+    def loadout_player_pack_review(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
         exported = build_player_pack_export(profile_id, db)
         return {
@@ -3978,9 +4263,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content=exported.archive,
             media_type="application/x-modrinth-modpack+zip",
             headers={
-                "Content-Disposition": (
-                    f'attachment; filename="{exported.summary.file_name}"'
-                ),
+                "Content-Disposition": (f'attachment; filename="{exported.summary.file_name}"'),
                 "X-Blockstead-Included": str(len(exported.summary.included)),
                 "X-Blockstead-Manual": str(len(exported.summary.manual_requirements)),
                 "X-Blockstead-Excluded": str(len(exported.summary.excluded)),
@@ -4601,6 +4884,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if status_probe is not None:
             remember_status_probe(profile.id, cast(dict[str, object], status_probe))
         status = status_probe["status"] if status_probe is not None else None
+        if active and state == "RUNNING":
+            await sample_performance(profile)
+        latest_performance = db.scalar(
+            select(PerformanceSample)
+            .where(PerformanceSample.profile_id == profile.id)
+            .order_by(PerformanceSample.created_at.desc())
+            .limit(1)
+        )
         configured_max = 20
         try:
             possible_max = int(properties.get("max-players", "20"))
@@ -4768,6 +5059,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         category_links = {
             "manual_backup": "backups",
             "backup_restore": "backups",
+            "backup_recovery_drill": "backups",
             "backup_policy": "backups",
             "server_start": "console",
             "server_restart": "console",
@@ -4808,6 +5100,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 break
 
         backup_payload_value = backup_payload(backup) if backup else None
+        performance_supported = performance_capable(profile.distribution)
+        performance_sampled_at: str | None = None
+        if latest_performance is not None:
+            sampled_at = latest_performance.created_at
+            if sampled_at.tzinfo is None:
+                sampled_at = sampled_at.replace(tzinfo=timezone.utc)  # noqa: UP017
+            performance_sampled_at = sampled_at.astimezone(timezone.utc).isoformat()  # noqa: UP017
+        if not performance_supported:
+            performance_detail = (
+                f"{info.label} does not expose a supported Blockstead TPS/MSPT source. "
+                "These values are omitted rather than guessed."
+            )
+            performance_state = "unsupported"
+        elif state != "RUNNING":
+            performance_detail = (
+                "Performance sampling is available while this Paper server is running. "
+                "No current value is being claimed while it is stopped."
+            )
+            performance_state = "not_running"
+        elif latest_performance is None:
+            performance_detail = "Waiting for the first bounded Paper performance response."
+            performance_state = "waiting"
+        else:
+            performance_detail = latest_performance.detail
+            performance_values = (
+                latest_performance.tps_one_minute is not None
+                and latest_performance.mspt_five_seconds is not None
+            )
+            performance_state = "available" if performance_values else "partial"
         current_metrics: dict[str, object] = sample_payload(live_sample)
         current_metrics.update(
             {
@@ -4833,10 +5154,112 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "next_operation": next_operation,
             "warnings": warnings,
             "activity": activity,
+            "performance": {
+                "state": performance_state,
+                "available": performance_state == "available",
+                "source": PERFORMANCE_SOURCE if performance_supported else None,
+                "sampling_period_seconds": (
+                    PERFORMANCE_SAMPLING_PERIOD_SECONDS if performance_supported else None
+                ),
+                "sampled_at": performance_sampled_at,
+                "tps": (
+                    {
+                        "one_minute": latest_performance.tps_one_minute,
+                        "five_minutes": latest_performance.tps_five_minutes,
+                        "fifteen_minutes": latest_performance.tps_fifteen_minutes,
+                    }
+                    if latest_performance is not None
+                    and performance_state in {"available", "partial"}
+                    else None
+                ),
+                "mspt": (
+                    {
+                        "five_seconds": latest_performance.mspt_five_seconds,
+                        "ten_seconds": latest_performance.mspt_ten_seconds,
+                        "sixty_seconds": latest_performance.mspt_sixty_seconds,
+                    }
+                    if latest_performance is not None
+                    and performance_state in {"available", "partial"}
+                    else None
+                ),
+                "detail": performance_detail,
+            },
             "capabilities": {
-                "tps": False,
-                "mspt": False,
+                "tps": performance_supported,
+                "mspt": performance_supported,
                 "distribution_label": info.label,
+            },
+        }
+
+    @app.get("/api/v1/profiles/{profile_id}/world-care")
+    def profile_world_care(profile_id: str, request: Request, db: Db) -> dict[str, object]:
+        """Return read-only world, backup, destination, and recovery evidence."""
+
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        directory = profile_directory(profile_id, db)
+        properties = read_properties(directory)
+        roots = world_roots(directory)
+        world_entries = [{"name": root.name, "size_bytes": tree_size(root)} for root in roots]
+        world_bytes = strict_world_size(directory, properties)
+        try:
+            server_disk = disk_payload(directory)
+        except OSError:
+            server_disk = disk_payload(config.server_root)
+
+        primary_backup = backup_directory(config.data_dir, profile.id)
+        backup_size = tree_size(primary_backup)
+        destinations: list[dict[str, object]] = [
+            {
+                "label": "Blockstead local backup storage",
+                "configured_path": str(primary_backup),
+                "stored_bytes": backup_size,
+                "disk": disk_payload(primary_backup),
+            }
+        ]
+        for raw in configured_backup_destinations(profile):
+            destination = Path(raw) / "blockstead-backups" / profile.id
+            destinations.append(
+                {
+                    "label": "Approved backup destination",
+                    "configured_path": raw,
+                    "stored_bytes": tree_size(destination),
+                    "disk": disk_payload(destination),
+                }
+            )
+
+        recovery = recovery_snapshot_entries(directory, config.data_dir, profile.id)
+        backups = db.scalars(
+            select(BackupRecord)
+            .where(
+                BackupRecord.profile_id == profile.id,
+                BackupRecord.status == "completed",
+            )
+            .order_by(BackupRecord.created_at.desc())
+        ).all()
+        latest = backups[0] if backups else None
+        return {
+            "worlds": world_entries,
+            "world_size_bytes": world_bytes,
+            "disk": server_disk,
+            "last_verified_backup": backup_payload(latest) if latest else None,
+            "backup_destinations": destinations,
+            "recovery": {
+                "entries": recovery,
+                "total_bytes": sum(
+                    entry["size_bytes"]
+                    for entry in recovery
+                    if isinstance(entry.get("size_bytes"), int)
+                ),
+            },
+            "cleanup": {
+                "available": False,
+                "detail": (
+                    "Cleanup recommendations are not enabled yet. Review these facts "
+                    "before removing any expired artifact manually."
+                ),
             },
         }
 
@@ -4949,8 +5372,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except ProvisionError as exc:
                 problem = str(exc)
         java_majors = frozenset(
-            runtime.major
-            for runtime in ([] if profile.is_fixture else discover_java_runtimes())
+            runtime.major for runtime in ([] if profile.is_fixture else discover_java_runtimes())
         )
         return review_upgrades(
             UpgradeContext(
@@ -4964,9 +5386,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.get("/api/v1/profiles/{profile_id}/maintenance/upgrades")
-    async def maintenance_upgrades(
-        profile_id: str, request: Request, db: Db
-    ) -> dict[str, object]:
+    async def maintenance_upgrades(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         """Report published server releases and whether Blockstead can install one."""
 
         current(request, db)
@@ -5051,9 +5471,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 plan = await resolve_plan(
                     http_client, profile.distribution, payload.minecraft_version
                 )
-                if (
-                    profile.distribution in {"vanilla", "paper"}
-                    and (not plan.checksum_algorithm or not plan.checksum)
+                if profile.distribution in {"vanilla", "paper"} and (
+                    not plan.checksum_algorithm or not plan.checksum
                 ):
                     raise HTTPException(
                         409,
@@ -5168,9 +5587,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
         }
 
-    @app.post(
-        "/api/v1/profiles/{profile_id}/maintenance/upgrades/recovery/{recovery_id}"
-    )
+    @app.post("/api/v1/profiles/{profile_id}/maintenance/upgrades/recovery/{recovery_id}")
     def rollback_server_upgrade(
         profile_id: str,
         recovery_id: str,
@@ -5196,12 +5613,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, str(exc)) from exc
         previous_version = recovered.get("previous_version")
         previous_loader = recovered.get("previous_loader_version")
-        profile.minecraft_version = (
-            previous_version if isinstance(previous_version, str) else None
-        )
-        profile.loader_version = (
-            previous_loader if isinstance(previous_loader, str) else None
-        )
+        profile.minecraft_version = previous_version if isinstance(previous_version, str) else None
+        profile.loader_version = previous_loader if isinstance(previous_loader, str) else None
         db.add(
             AuditEvent(
                 admin_id=admin.id,
@@ -5349,9 +5762,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Only the upgrade review needs a published release list, so only it pays
         # for the lookup — the other reviews stay offline and fast.
         upgrade = (
-            await upgrade_review_for(profile)
-            if payload.change_id == "server_upgrade"
-            else None
+            await upgrade_review_for(profile) if payload.change_id == "server_upgrade" else None
         )
         # The newest published release, installable or not: naming it lets the
         # review explain why it cannot be installed instead of going quiet.
@@ -5604,10 +6015,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage(str(config.data_dir))
-        errors = [
-            str(entry["message"])
-            for entry in reversed(diagnostics.tail(6, logging.WARNING))
-        ]
+        errors = [str(entry["message"]) for entry in reversed(diagnostics.tail(6, logging.WARNING))]
         assessment = assess_troubleshooting(
             payload,
             TroubleshootingContext(
@@ -5670,8 +6078,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         normalized = payload.player_name.casefold()
         if payload.action_id == "allowlist_add":
             whitelist_enabled = (
-                read_properties(directory).get("white-list", "false").strip().casefold()
-                == "true"
+                read_properties(directory).get("white-list", "false").strip().casefold() == "true"
             )
             if not whitelist_enabled:
                 raise HTTPException(409, "The allowlist is no longer enabled for this server.")
@@ -5679,9 +6086,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(409, "The server allowlist could not be read safely.")
             if normalized in {entry.name.casefold() for entry in players.allowlist.players}:
                 raise HTTPException(409, "That player is already on the allowlist.")
-            player_request = PlayerActionRequest(
-                action="whitelist_add", player=payload.player_name
-            )
+            player_request = PlayerActionRequest(action="whitelist_add", player=payload.player_name)
             detail = f"Requested allowlist access for {payload.player_name}"
         else:
             if not players.bans.readable:
@@ -5951,9 +6356,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             elif root not in directory.parents:
                 unsafe_detail = "Its server folder is outside the configured server root."
             elif any(
-                other_id != profile.id
-                and other != root
-                and directory_overlap(directory, other)
+                other_id != profile.id and other != root and directory_overlap(directory, other)
                 for other_id, other in resolved_profiles.items()
             ):
                 unsafe_detail = (
@@ -6494,21 +6897,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/profiles/{profile_id}/commands")
     def guided_commands(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
-        if db.get(Profile, profile_id) is None:
-            raise HTTPException(404, "That profile was not found.")
-        return catalog_payload()
+        profile, view, origin_project_ids = command_provider_context(profile_id, db)
+        # Presentation filtering is helpful, but the POST route repeats this
+        # provider check so hidden commands cannot be invoked by hand.
+        providers = active_provider_ids(
+            profile.distribution,
+            view.entries,
+            profile.minecraft_version,
+            origin_project_ids,
+        )
+        return catalog_payload(providers)
 
     @app.post("/api/v1/server/guided-command", status_code=202)
     async def guided_command(
         payload: GuidedCommandRequest, request: Request, db: Db
     ) -> dict[str, str]:
         admin = mutation(request, db)
-        if db.get(Profile, payload.profile_id) is None:
+        profile = db.get(Profile, payload.profile_id)
+        if profile is None:
             raise HTTPException(404, "That profile was not found.")
         if app.state.active_profile_id != payload.profile_id:
             raise HTTPException(409, "Start this profile before sending it a command.")
+        _, view, origin_project_ids = command_provider_context(payload.profile_id, db)
+        providers = active_provider_ids(
+            profile.distribution,
+            view.entries,
+            profile.minecraft_version,
+            origin_project_ids,
+        )
         try:
-            command, safety = render_guided_command(payload.command_id, payload.values)
+            command, safety = render_guided_command(payload.command_id, payload.values, providers)
             if safety != "normal" and not payload.confirmed:
                 raise ValueError("Review and confirm this command before sending it.")
             await manager.command(command)

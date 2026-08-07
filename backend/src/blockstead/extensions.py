@@ -361,6 +361,8 @@ def _collect_warnings(distribution: str, entries: list[ExtensionEntry]) -> list[
 
 
 def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView:
+    # Active readable entries are the only inventory evidence that may unlock
+    # extension command packs; disabled entries are installer state only.
     info = DISTRIBUTIONS.get(distribution, DISTRIBUTIONS["unknown"])
     if info.extension_directory is None:
         stray = [

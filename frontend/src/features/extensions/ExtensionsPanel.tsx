@@ -6,6 +6,8 @@ import {
   type CatalogSearch,
   type CatalogVersion,
   type ExtensionEntry,
+  type ExtensionRecommendation,
+  type ExtensionRecommendations,
   type ExtensionUpdate,
   type ExtensionUpdateResult,
   type ExtensionUpdateReviewResponse,
@@ -100,6 +102,74 @@ function VersionChooser({
   </div>;
 }
 
+function RecommendationCard({
+  profileId,
+  recommendation,
+  stopped,
+  busy,
+  expanded,
+  conflictingTitle,
+  toggleVersions,
+  install,
+}: {
+  profileId: string;
+  recommendation: ExtensionRecommendation;
+  stopped: boolean;
+  busy: boolean;
+  expanded: boolean;
+  conflictingTitle?: string;
+  toggleVersions: () => void;
+  install: (projectId: string, versionId: string, source: CatalogSource) => void;
+}) {
+  const latest = recommendation.latest_version;
+  const canInstall = recommendation.state === "available" && latest && !latest.external_url;
+  const actionLabel = recommendation.state === "active"
+    ? "Enabled"
+    : recommendation.state === "disabled"
+      ? "Disabled in loadout"
+      : recommendation.state === "needs-dependency"
+        ? `Needs ${recommendation.missing_dependencies.join(", ")}`
+        : recommendation.state === "bundled"
+          ? "Included with server"
+          : recommendation.state === "available"
+            ? "Install"
+            : recommendation.state === "unknown"
+              ? "Check releases"
+              : "Unavailable";
+
+  return <article className="recommendation-card">
+    <div className="catalog-project__marker" aria-hidden="true">{recommendation.title.slice(0, 1).toUpperCase()}</div>
+    <div className="catalog-project__copy">
+      <div className="catalog-project__title"><strong>{recommendation.title}</strong><span>Recommended</span></div>
+      <p>{recommendation.purpose}</p>
+      <small>{recommendation.detail}{conflictingTitle ? ` Alternative to ${conflictingTitle}.` : ""}</small>
+      {recommendation.dependencies.length > 0 && <small>Needs: {recommendation.dependencies.join(", ")}</small>}
+      {expanded && <VersionChooser
+        profileId={profileId}
+        projectId={recommendation.project_id}
+        source={recommendation.source}
+        locked={!stopped || busy}
+        install={versionId => install(recommendation.project_id, versionId, recommendation.source)}
+      />}
+    </div>
+    <div className="row-actions catalog-project__actions">
+      {canInstall && latest ? <Button
+        className="button--secondary button--small"
+        aria-label={`Install recommended ${recommendation.title}`}
+        disabled={!stopped || busy}
+        onClick={() => install(recommendation.project_id, latest.version_id, recommendation.source)}
+      >{actionLabel}</Button> : <span className="catalog-project__unavailable">{actionLabel}</span>}
+      {recommendation.state !== "active" && recommendation.state !== "disabled" && recommendation.state !== "bundled" && <Button
+        className="button--quiet button--small"
+        aria-label={`${expanded ? "Hide" : "Show"} releases for ${recommendation.title}`}
+        aria-expanded={expanded}
+        onClick={toggleVersions}
+      >{expanded ? "Hide releases" : "Releases"}</Button>}
+      <a className="button button--quiet button--small" href={recommendation.project_url} target="_blank" rel="noreferrer">Project page</a>
+    </div>
+  </article>;
+}
+
 function ExtensionRow({
   entry,
   disabled,
@@ -187,6 +257,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   const [offset, setOffset] = useState(0);
   const [source, setSource] = useState<CatalogSource>("modrinth");
   const [versionsFor, setVersionsFor] = useState<string | null>(null);
+  const [recommendationVersionsFor, setRecommendationVersionsFor] = useState<string | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
   const [reviewedUpdate, setReviewedUpdate] = useState<ExtensionUpdateReviewResponse | null>(null);
   const [appliedUpdate, setAppliedUpdate] = useState<ExtensionUpdateResult | null>(null);
@@ -207,6 +278,13 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   const inventory = useQuery({
     queryKey: ["extensions", profileId],
     queryFn: () => api<ExtensionsView>(`/profiles/${profileId}/extensions`),
+  });
+  // Curated recommendations belong beside the existing catalog; their install
+  // and version actions intentionally reuse the same verified workflow.
+  const recommendations = useQuery({
+    queryKey: ["extension-recommendations", profileId],
+    queryFn: () => api<ExtensionRecommendations>(`/profiles/${profileId}/extensions/recommendations`),
+    enabled: inventory.data?.directory != null,
   });
   const sharedMap = useQuery({
     queryKey: ["shared-map", profileId],
@@ -245,6 +323,8 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   });
   const refresh = () => {
     void client.invalidateQueries({ queryKey: ["extensions", profileId] });
+    void client.invalidateQueries({ queryKey: ["extension-recommendations", profileId] });
+    void client.invalidateQueries({ queryKey: ["command-catalog", profileId] });
     if (updates.data) void updates.refetch();
   };
   const clearNotice = () => setNotice("");
@@ -428,11 +508,11 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     setVersionsFor(null);
   }
 
-  function install(projectId: string, versionId?: string) {
+  function install(projectId: string, versionId?: string, installSource: CatalogSource = source) {
     clearNotice();
     action.mutate({
       endpoint: `/profiles/${profileId}/extensions/install`,
-      init: { method: "POST", body: JSON.stringify({ project_id: projectId, source, ...(versionId ? { version_id: versionId } : {}) }) },
+      init: { method: "POST", body: JSON.stringify({ project_id: projectId, source: installSource, ...(versionId ? { version_id: versionId } : {}) }) },
       success: "Extension installed and verified. Run a safe test start before inviting players.",
       afterSuccess: result => {
         const installed = result as ExtensionInstallResult;
@@ -485,6 +565,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     entry => entry.identifier?.toLowerCase() === SHARED_MAP_PROJECT_ID
       || entry.display_name?.toLowerCase() === SHARED_MAP_PROJECT_ID,
   ));
+  const recommended = recommendations.data?.recommendations ?? [];
 
   return <section className="card extensions-workspace" id="extensions">
     <header className="workspace-hero workspace-hero--extensions">
@@ -555,6 +636,37 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
           }}>Dismiss checklist</Button>
         </div>
       </div>}
+
+      <section className="workspace-section extension-recommendations" id="extension-recommendations" aria-labelledby="extension-recommendations-heading">
+        <div className="workspace-section__heading">
+          <div>
+            <p className="eyebrow">Curated starting points</p>
+            <h3 id="extension-recommendations-heading">Recommended for this server</h3>
+            <p>These projects are selected for this loader. Releases are checked against this server’s Minecraft version before installation.</p>
+          </div>
+          {recommendations.isFetching && <span className="section-count">Checking compatibility…</span>}
+        </div>
+        {recommendations.error && <p className="error" role="alert">Recommendations could not be checked: {recommendations.error.message}</p>}
+        {!recommendations.error && !recommended.length && !recommendations.isFetching && <p className="empty-note">No curated recommendations are available for this server distribution.</p>}
+        {recommended.length > 0 && <div className="recommendation-list">
+          {recommended.map(recommendation => {
+            const conflict = recommendation.conflict_group
+              ? recommended.find(item => item.id !== recommendation.id && item.conflict_group === recommendation.conflict_group && item.active)
+              : undefined;
+            return <RecommendationCard
+              key={recommendation.id}
+              profileId={profileId}
+              recommendation={recommendation}
+              stopped={stopped}
+              busy={action.isPending}
+              expanded={recommendationVersionsFor === recommendation.id}
+              conflictingTitle={conflict?.title}
+              toggleVersions={() => setRecommendationVersionsFor(current => current === recommendation.id ? null : recommendation.id)}
+              install={install}
+            />;
+          })}
+        </div>}
+      </section>
 
       <section className="manual-install manual-install--prominent" aria-labelledby="manual-install-heading">
         <div>

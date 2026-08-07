@@ -1,6 +1,6 @@
 # Blockstead upgrade plan and progress
 
-Last updated: 2026-07-22
+Last updated: 2026-08-07
 
 This document explains the next Blockstead UI and product upgrades and tracks
 their implementation. The full product specification lives in
@@ -44,8 +44,9 @@ remain available without dominating normal server care.
 | 7. Safe file workspace | Complete | Category-scoped browsing, editing, uploads, downloads, and archive extraction with recovery snapshots |
 | 8. Player and mobile improvements | Complete | Merged player roster with best-effort session history, search, filters, opt-in avatars, quicker actions, PWA installability, and clearer mobile navigation |
 | 9. Maintenance and Upgrade Center | Complete | Reviewed extension updates with retained rollback bundles plus stopped-server Vanilla, Paper, and Fabric upgrades that preserve the prior launch artifact |
-| 10. World Care and performance insight | Planned | Honest performance evidence, safe world/storage care, and recovery cleanup |
+| 10. World Care and performance insight | In progress | Honest performance evidence, safe world/storage care, and recovery cleanup |
 | 11. Calm daily operations | Planned | A task-first daily summary and incident story that connect the evidence already collected |
+| 11.5. Extension-aware command packs | In progress | Curated extension recommendations and guided commands gated by active, readable providers |
 | 12. Saved setups and trusted connections | Deferred | Explicit profile switching plus narrowly scoped sharing and notifications, after the local workflows are proven |
 
 ## Release status
@@ -113,14 +114,21 @@ Blockstead already provides:
   stages the replacement, preserves the prior launch artifact, validates the
   resulting launch plan, and offers explicit launch-file recovery without ever
   claiming that a world downgrade is safe.
+- a curated shortlist of high-value plugins and mods is now exposed through the
+  installer workstream, while the guided command catalog retains safe vanilla
+  commands for every profile. Extension command packs appear only when
+  Blockstead identifies an active, readable, compatible provider.
 
 The main limitations to address are:
 
 - outbound notification integrations remain deferred until a later integration
   milestone; local alerts and preferences are complete;
 - server cards still show allowlist size rather than polling every server;
-- TPS, MSPT, and update availability remain hidden until a reliable capability
-  supplies them.
+- TPS/MSPT remain unavailable for profiles without a supported capability; Paper
+  profiles now expose labelled samples, while update availability remains hidden
+  until a reliable source supplies it.
+- extension-specific guided commands and installer recommendations are in
+  active rollout and still need the final end-to-end validation described below.
 
 ## Focused enhancement: shared browser map
 
@@ -459,7 +467,12 @@ extension, and schedule capabilities into one reversible maintenance workflow.
 
 ## Milestone 10: World Care and performance insight
 
-**Status: Planned**
+**Status: In progress** — the first evidence slice is shipped: supported Paper
+profiles collect labelled TPS/MSPT responses at a bounded cadence, and the
+read-only World Care workspace reports world, disk, backup-destination, and
+known recovery-copy facts. Verified backups can now be tested in private staging
+without replacing the live world. Cleanup plans, profiler capture, and
+destination resilience checks remain open.
 
 ### Why
 
@@ -470,19 +483,21 @@ slow, large, or consuming its recovery space.
 
 ### Work checklist
 
-- [ ] Add capability-gated TPS/MSPT collection for supported Paper-family
+- [x] Add capability-gated TPS/MSPT collection for supported Paper-family
       profiles, with source, sampling period, and unavailable state visible.
 - [ ] Provide an opt-in, time-bounded diagnostic capture for supported
       profilers; link its result from the relevant warning and keep raw data
       local until the owner exports it.
-- [ ] Build a World Care view for world size growth, available disk, backup age,
-      backup-destination health, and pre-restore/recovery-snapshot storage.
+- [x] Build a read-only World Care view for current world size, available disk,
+      latest verified backup, backup-destination health, and
+      pre-restore/recovery-snapshot storage. Growth history and cleanup review
+      remain open.
 - [ ] Offer only reviewed cleanup plans: explain reclaimable paths, protection
       requirements, exact files, and recovery effect before an owner removes
       expired artifacts.
-- [ ] Add backup-destination resilience checks and a recovery drill that
-      verifies a selected archive can be read and staged without replacing the
-      live world.
+- [ ] Add backup-destination resilience checks.
+- [x] Add a recovery drill that verifies a selected archive can be read and
+      staged without replacing the live world.
 - [ ] Add a low-resource squaremap profile and reachability/health check after
       the shared-map prerequisites are complete.
 
@@ -496,7 +511,7 @@ slow, large, or consuming its recovery space.
 
 ## Milestone 11: Calm daily operations
 
-**Status: Planned**
+**Status: In progress**
 
 ### Why
 
@@ -522,6 +537,91 @@ owner to correlate logs, schedules, backups, and extension history manually.
 - The daily summary stays concise and never replaces the detailed workspaces.
 - An incident view can lead the owner from a symptom to the relevant event,
   log context, and safe next action without asserting unproven causation.
+
+## Milestone 11.5: Extension-aware command packs
+
+**Status: Planned**
+
+### Why
+
+Blockstead already inventories readable extension metadata and has a verified
+catalog installer. This milestone adds practical server-side command packs
+without trusting arbitrary jar metadata or exposing commands that the selected
+server cannot run.
+
+### Recommended shortlist
+
+The first curated set is intentionally broad enough for normal home-server use
+while keeping the first command implementation focused on console-safe providers:
+
+| Project | Profiles | Initial treatment |
+| --- | --- | --- |
+| [EssentialsX](https://modrinth.com/plugin/essentialsx) | Paper | Homes, warps, teleports, broadcasts, moderation |
+| [LuckPerms](https://modrinth.com/plugin/luckperms) | Paper, Fabric, Forge, NeoForge | Groups and permission management |
+| [WorldEdit](https://modrinth.com/plugin/worldedit) | Paper and supported mod loaders | Status first; player-selection actions later |
+| [WorldGuard](https://modrinth.com/plugin/worldguard) | Paper | Region inspection and flags; requires WorldEdit |
+| [CoreProtect](https://modrinth.com/plugin/coreprotect) | Paper | Status, lookup, rollback preview, rollback, restore |
+| [spark](https://modrinth.com/mod/spark) | Paper capability and supported mod loaders | TPS, health reports, profiling, memory diagnostics |
+| [Chunky](https://modrinth.com/plugin/chunky) | Paper and supported mod loaders | Chunk pre-generation controls |
+| [ViaVersion](https://modrinth.com/plugin/viaversion) | Paper, Fabric | Protocol/status information |
+| [Geyser](https://modrinth.com/plugin/geyser) | Paper, Fabric, NeoForge | Bedrock player and diagnostic commands |
+| [Floodgate](https://modrinth.com/plugin/floodgate) | Geyser companion | Dependency recommendation; no standalone pack initially |
+| [Simple Voice Chat](https://modrinth.com/plugin/simple-voice-chat) | Paper and supported mod loaders | Recommendation only; commands are player-only |
+| [squaremap](https://modrinth.com/plugin/squaremap) | Paper and supported mod loaders | Continue the existing browser-map workflow |
+| [BlueMap](https://modrinth.com/plugin/bluemap) | Paper and supported mod loaders | Alternative 3D map recommendation |
+| [Carpet](https://modrinth.com/mod/carpet) | Fabric | Tick, logging, and technical diagnostics |
+| [Lithium](https://modrinth.com/mod/lithium) | Fabric, NeoForge, Quilt | Performance recommendation; no pack initially |
+| [FerriteCore](https://modrinth.com/mod/ferrite-core) | Fabric, Forge, NeoForge, Quilt | Memory recommendation; no pack initially |
+
+### Work checklist
+
+- [x] Add a curated registry of stable project IDs, catalog sources, supported
+      distributions, metadata aliases, dependencies, conflicts, and purposes.
+- [x] Add bounded live compatible-version checks through Modrinth or Hangar;
+      keep recommendations visible with an honest unavailable state if a
+      catalog cannot be reached.
+- [x] Add **Recommended for this server** above free-form catalog search and
+      reuse the existing release chooser, checksum verification, and install
+      path.
+- [x] Mark squaremap and BlueMap as alternative map providers.
+- [x] Extend the guided catalog with curated provider command packs while
+      retaining vanilla commands for every profile.
+- [x] Unlock packs only from active, readable, loader-compatible entries;
+      disabled, unreadable, client-only, wrong-loader, or dependency-incomplete
+      entries must not unlock commands.
+- [x] Re-check provider availability in the guided-command POST handler so a
+      hidden command cannot be invoked by manually submitting its ID.
+- [x] Keep command definitions static and validated; do not execute arbitrary
+      command text discovered from plugin metadata.
+- [x] Use normal, caution, and danger safety levels for inspection, operational,
+      and destructive/resource-heavy actions respectively.
+- [x] Treat Paper's bundled spark as a capability rather than recommending a
+      duplicate jar where that capability is present.
+- [x] Refresh extension recommendations and command catalogs after every
+      install, update, enable, disable, removal, and bulk loadout change.
+- [ ] Complete the end-to-end install → restart → command visibility → disable
+      flow and run the full backend/frontend regression suites.
+
+### Acceptance criteria
+
+- Vanilla profiles return only vanilla guided commands.
+- Installing a recognized active jar exposes its provider pack; disabling,
+  removing, or making it unreadable removes that pack.
+- Missing dependencies prevent dependent packs from appearing.
+- Recommendations are filtered by loader and Minecraft version, and catalog
+  outages do not hide the curated shortlist.
+- Dangerous provider commands require the existing confirmation flow.
+- Player-only commands, including Simple Voice Chat commands, are not exposed
+  through Blockstead's server-console command path.
+- Backend API/unit tests, frontend component tests, an install-to-command
+  visibility flow, and the production build all pass.
+
+### Research references
+
+- [CoreProtect command reference](https://docs.coreprotect.net/commands/)
+- [spark command reference](https://spark.lucko.me/docs/Command-Usage)
+- [Geyser commands and permissions](https://geysermc.org/wiki/geyser/commands/)
+- [Simple Voice Chat commands](https://modrepo.de/minecraft/voicechat/wiki/commands)
 
 ## Milestone 12: Saved setups and trusted connections
 
@@ -601,6 +701,23 @@ Before marking any milestone complete:
 - [ ] The progress summary and progress log below are updated.
 
 ## Progress log
+
+- **2026-08-07 — Milestone 10 recovery drill added.** Backup Center now offers
+  an explicit recovery test for completed archives. It rechecks the recorded
+  checksum, validates archive members, stages the worlds under Blockstead's
+  private data directory, verifies the expected folders, and removes the
+  staging copy. The result is recorded in Activity and clearly states that
+  live world folders were not changed.
+
+- **2026-08-07 — Milestone 10 started.** Added a capability-gated Paper
+  performance sampler using the documented `tps` and `mspt` console commands.
+  It sends at most one bounded sample per minute, parses only labelled output,
+  persists the source and sampling period, and exposes explicit unsupported,
+  waiting, partial, and unavailable states. Added the read-only World Care
+  workspace with world sizing, filesystem capacity, backup destination health,
+  and known settings/extension/upgrade/pre-restore recovery storage. No cleanup
+  action is offered until an exact reviewed reclaim plan and recovery drill are
+  implemented.
 
 - **2026-07-26 — Maintenance and Upgrade Center complete.** Closed Milestone 9
   with the two execution boundaries that remained after preflight and booking.

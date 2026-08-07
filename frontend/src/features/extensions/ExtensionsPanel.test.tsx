@@ -25,6 +25,29 @@ const searchPage = {
 const versionList = {
   versions: [{ version_id: "ver-2", version_number: "2.0.0", version_type: "release", date_published: "2026-05-01T00:00:00Z", game_versions: ["1.21.1"], loaders: ["fabric"] }],
 };
+const recommendationPage = {
+  distribution: "fabric",
+  minecraft_version: "1.21.1",
+  recommendations: [{
+    id: "geyser",
+    project_id: "geyser",
+    source: "modrinth",
+    title: "Geyser",
+    purpose: "Bedrock bridge.",
+    state: "available",
+    availability: "available",
+    detail: "A compatible release is available.",
+    active: false,
+    installed: false,
+    disabled: false,
+    dependencies: [],
+    missing_dependencies: [],
+    conflict_group: null,
+    command_pack_id: "geyser",
+    latest_version: versionList.versions[0],
+    project_url: "https://modrinth.com/mod/geyser",
+  }],
+};
 
 const updatesResponse = {
   updates: [{ file_name: "lithium.jar", installed_version: "1.0", new_version_number: "2.0", new_file_name: "lithium-2.0.jar", project_id: "proj-lithium", version_id: "ver-2" }],
@@ -101,7 +124,8 @@ const manualResult = {
 function renderPanel(stopped = true, view: ExtensionsView = inventory) {
   const fetch = vi.fn().mockImplementation((url: string) => {
     const target = url;
-    const body = target.includes("/catalog/categories") ? { categories: ["optimization", "technology"] }
+    const body = target.includes("/extensions/recommendations") ? recommendationPage
+      : target.includes("/catalog/categories") ? { categories: ["optimization", "technology"] }
       : target.includes("/catalog/versions") ? versionList
       : target.includes("/catalog/search") ? searchPage
       : target.includes("/extensions/update-review") ? updateReview
@@ -125,6 +149,19 @@ test("shows installed extension metadata and inventory warnings", async () => {
   expect(screen.getByText("lithium.jar")).toBeVisible();
   expect(screen.getByText("This mod belongs on a client.")).toBeVisible();
   expect(screen.getByRole("button", { name: "Disable Lithium" })).toBeEnabled();
+});
+
+test("shows compatible curated recommendations and reuses verified install", async () => {
+  const fetch = renderPanel();
+  expect(await screen.findByText("Geyser")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Install recommended Geyser" }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/extensions/install",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ project_id: "geyser", source: "modrinth", version_id: "ver-2" }),
+    }),
+  ));
 });
 
 test("locks file changes while the server is active", async () => {

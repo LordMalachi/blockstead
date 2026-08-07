@@ -32,7 +32,7 @@ def test_catalog_is_authenticated_and_marks_curated_coverage(
     response = client.get(f"/api/v1/profiles/{profile_id}/commands")
     assert response.status_code == 200
     body = response.json()
-    assert body["schema_version"] == 1
+    assert body["schema_version"] == 2
     assert body["complete"] is False
     assert {command["id"] for command in body["commands"]} >= {"give", "say", "ban"}
 

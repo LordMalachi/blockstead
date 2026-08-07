@@ -45,6 +45,16 @@ const overview: ProfileOverview = {
       { at: "2026-07-19T15:00:00Z", cpu_percent: 18, memory_percent: 42, disk_percent: 35, process_memory_bytes: 800_000_000, world_size_bytes: 2_000_000_000 },
     ],
   },
+  performance: {
+    state: "available",
+    available: true,
+    source: "Paper console /tps and /mspt commands",
+    sampling_period_seconds: 60,
+    sampled_at: "2026-07-19T15:00:00Z",
+    tps: { one_minute: 20, five_minutes: 20, fifteen_minutes: 20 },
+    mspt: { five_seconds: 2, ten_seconds: 2, sixty_seconds: 2 },
+    detail: "Paper returned labelled TPS and MSPT evidence.",
+  },
   last_backup: null,
   next_operation: { label: "Back up and stop", at: "2026-07-20T03:00:00Z" },
   warnings: [{ code: "backup-missing", title: "This world has not been backed up", detail: "Create a verified backup.", to: "/servers/profile-1/backups", severity: "warning" }],
@@ -66,6 +76,8 @@ test("shows owner health, join address, trends, warnings, and diagnostics", asyn
   expect(screen.getByText("8.8.8.8")).toBeVisible();
   expect(screen.getByText("Port").parentElement).toHaveTextContent("25570");
   expect(screen.getByRole("img", { name: "Host CPU recent history" })).toBeVisible();
+  expect(screen.getByText("Tick performance")).toBeVisible();
+  expect(screen.getByText("TPS · 1 minute").parentElement).toHaveTextContent("20.00");
   expect(screen.getByRole("link", { name: "Resolve" })).toHaveAttribute("href", "/servers/profile-1/backups");
   expect(screen.getByText("Process ID")).toBeInTheDocument();
   expect(screen.getByText("4321")).toBeInTheDocument();

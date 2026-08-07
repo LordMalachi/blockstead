@@ -233,6 +233,75 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
   await expect(page).toHaveURL(`${workspace}/mods`);
 });
 
+test("an installed provider pack appears after restart and disappears when disabled", async ({ page }) => {
+  test.setTimeout(60_000);
+  const folder = resolve(process.cwd(), "../fixtures/servers/e2e-command-paper");
+  rmSync(folder, { recursive: true, force: true });
+  mkdirSync(join(folder, "world"), { recursive: true });
+  writeFileSync(join(folder, "server.properties"), "motd=Command pack test\n");
+  writeFileSync(join(folder, "paper.yml"), "");
+  writeFileSync(join(folder, "fake-server.json"), '{"minecraft_version":"1.21.1"}\n');
+  writeFileSync(join(folder, "eula.txt"), "eula=true\n");
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+  await page.getByLabel("Username").fill("owner");
+  await page.getByLabel("Password").fill("correct horse battery staple");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
+
+  await page.getByRole("button", { name: /Use an existing server/ }).click();
+  await page.getByLabel("Profile name").fill("Paper command pack fixture");
+  await page.getByText("The folder is already inside /srv/minecraft").click();
+  await page.getByLabel("Full path").fill("fixtures/servers/e2e-command-paper");
+  await page.getByRole("button", { name: "Scan folder" }).click();
+  await expect(page.getByRole("heading", { name: "Import plan" })).toBeVisible();
+  await page.getByRole("button", { name: "Confirm profile record" }).click();
+  await expect(page).toHaveURL(/\/servers\/[^/]+\/overview$/);
+
+  // The command-pack flow is local; keep this browser test independent of a
+  // live Modrinth response while exercising the real installer and command APIs.
+  await page.route(/\/api\/v1\/profiles\/[^/]+\/extensions\/recommendations$/, route => route.fulfill({
+    json: { distribution: "paper", minecraft_version: "1.21.1", recommendations: [] },
+  }));
+  await page.route(/\/api\/v1\/profiles\/[^/]+\/catalog\/(categories|versions)/, route => route.fulfill({ json: { categories: [], versions: [] } }));
+
+  await page.getByRole("link", { name: "Mods and plugins" }).click();
+  await expect(page.getByRole("heading", { name: "Extension Workshop" })).toBeVisible();
+  const plugin = buildStoredZip([{
+    name: "plugin.yml",
+    data: Buffer.from("name: EssentialsX\nversion: 2.20\napi-version: '1.21'\n"),
+  }]);
+  await page.getByLabel("Choose jar files").setInputFiles({
+    name: "essentials.jar",
+    mimeType: "application/java-archive",
+    buffer: plugin,
+  });
+  await page.getByRole("button", { name: "Review 1 file" }).click();
+  await expect(page.getByText("Review before installing to plugins/")).toBeVisible();
+  await page.getByRole("button", { name: "Install reviewed files" }).click();
+  await expect(page.getByText(/installed\. Run a safe test start/)).toBeVisible();
+
+  await page.getByRole("button", { name: "Start server" }).click();
+  await expect(page.getByText("Running", { exact: true })).toBeVisible({ timeout: 5_000 });
+  await page.getByRole("link", { name: "Console" }).click();
+  await expect(page.getByRole("button", { name: "Send a player to spawn" })).toBeVisible();
+
+  await page.getByRole("link", { name: "Overview" }).click();
+  await page.getByRole("button", { name: "Restart" }).click();
+  await expect(page.getByText("Running", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Stop safely" }).click();
+  await expect(page.getByText("Stopped", { exact: true })).toBeVisible({ timeout: 5_000 });
+
+  await page.getByRole("link", { name: "Mods and plugins" }).click();
+  await page.getByRole("button", { name: "Disable EssentialsX" }).click();
+  await expect(page.getByRole("button", { name: "Enable EssentialsX" })).toBeVisible();
+  await page.getByRole("link", { name: "Console" }).click();
+  await expect(page.getByRole("button", { name: "Send a player to spawn" })).toHaveCount(0);
+  await expect(page.getByText(/No guided commands match/)).toHaveCount(0);
+  rmSync(folder, { recursive: true, force: true });
+});
+
 test("a server folder from anywhere on the computer imports through the browser", async ({ page }) => {
   // A previous run may have left the copied folder behind in the fixtures root.
   rmSync(resolve(process.cwd(), "../fixtures/servers/e2e-upload-world"), { recursive: true, force: true });

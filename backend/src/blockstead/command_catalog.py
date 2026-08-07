@@ -1,14 +1,17 @@
 """Versioned, curated Minecraft commands used by the guided console.
 
 The catalog intentionally describes a useful subset rather than pretending to
-discover commands registered at runtime.  Its wire format leaves room for a
-future companion plugin/mod to merge live Brigadier nodes into the same view.
+discover commands registered at runtime.  Extension packs are curated and
+non-executable metadata; a future companion plugin/mod may merge live
+Brigadier nodes only after they pass the same validation and safety boundary.
 """
 
 import re
 from typing import Literal, cast
 
 from pydantic import BaseModel, Field
+
+from .extension_command_packs import command_entries
 
 Safety = Literal["normal", "caution", "danger"]
 ArgumentKind = Literal["text", "player", "integer", "choice", "resource", "boolean"]
@@ -381,13 +384,19 @@ COMMANDS: tuple[dict[str, object], ...] = (
 )
 
 
-def catalog_payload() -> dict[str, object]:
+def _catalog_commands(provider_ids: set[str]) -> list[dict[str, object]]:
+    vanilla = [{**command, "provider_id": "minecraft"} for command in COMMANDS]
+    return [*vanilla, *command_entries(provider_ids)]
+
+
+def catalog_payload(provider_ids: set[str] | None = None) -> dict[str, object]:
+    available = provider_ids or set()
     return {
-        "schema_version": 1,
-        "revision": "curated-1",
+        "schema_version": 2,
+        "revision": "curated-2",
         "source": "curated",
         "complete": False,
-        "commands": list(COMMANDS),
+        "commands": _catalog_commands(available),
     }
 
 
@@ -396,11 +405,23 @@ def _value_text(value: str | int | bool) -> str:
 
 
 def render_guided_command(
-    command_id: str, values: dict[str, str | int | bool]
+    command_id: str,
+    values: dict[str, str | int | bool],
+    available_provider_ids: set[str] | None = None,
 ) -> tuple[str, Safety]:
-    command = next((entry for entry in COMMANDS if entry["id"] == command_id), None)
+    all_commands = [*COMMANDS]
+    for provider_id in available_provider_ids or set():
+        all_commands.extend(command_entries({provider_id}))
+    command = next((entry for entry in all_commands if entry["id"] == command_id), None)
     if command is None:
         raise ValueError("That guided command is not in this catalog.")
+    provider_id = str(command.get("provider_id", "minecraft"))
+    if provider_id != "minecraft" and (
+        available_provider_ids is None or provider_id not in available_provider_ids
+    ):
+        raise ValueError(
+            "That extension command is unavailable because its provider is not active."
+        )
     arguments = command["arguments"]
     assert isinstance(arguments, list)
     allowed_keys = {str(argument["key"]) for argument in arguments}

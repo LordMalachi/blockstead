@@ -6,8 +6,9 @@ import os
 import re
 import shutil
 import tarfile
+import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
 MANIFEST_VERSION = 1
@@ -80,6 +81,15 @@ class RestorePlan:
 class RestoreResult:
     restored_paths: tuple[str, ...]
     preserved_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RecoveryDrillResult:
+    """Evidence from unpacking a verified archive without replacing live worlds."""
+
+    staged_paths: tuple[str, ...]
+    staged_bytes: int
+    duration_ms: int
 
 
 def backup_directory(destination_root: Path, profile_id: str) -> Path:
@@ -495,6 +505,77 @@ def perform_restore(
 
     shutil.rmtree(staging, ignore_errors=True)
     return RestoreResult(restored_paths=tuple(swapped), preserved_paths=tuple(preserved))
+
+
+def perform_recovery_drill(
+    destination_root: Path,
+    profile_id: str,
+    file_name: str,
+    manifest_name: str,
+    server_directory: Path,
+    drill_root: Path,
+    expected_sha256: str | None = None,
+) -> RecoveryDrillResult:
+    """Verify and unpack a backup into private temporary storage only.
+
+    This deliberately shares restore validation with ``perform_restore`` but
+    never points extraction at the server directory and never renames a live
+    world. The temporary directory is removed on every exit path.
+    """
+
+    started = datetime.now(UTC)
+    plan = plan_restore(
+        destination_root,
+        profile_id,
+        file_name,
+        manifest_name,
+        server_directory,
+        expected_sha256,
+    )
+    try:
+        drill_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        drill_root.chmod(0o700)
+        available = shutil.disk_usage(drill_root).free
+    except OSError as exc:
+        raise RestoreError("Private recovery staging storage is unavailable.") from exc
+    if available < plan.required_bytes:
+        raise RestoreError(
+            "There is not enough free disk space to stage this recovery drill safely. "
+            f"About {plan.required_bytes // (1024 * 1024)} MB is needed."
+        )
+
+    archive_path = _stored_file(destination_root, profile_id, file_name)
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=f"recovery-{profile_id[:8]}-", dir=drill_root
+        ) as temporary:
+            staging = Path(temporary)
+            staged_bytes = 0
+            try:
+                with tarfile.open(archive_path, "r:gz") as archive:
+                    if _DATA_FILTER is not None:
+                        archive.extraction_filter = _DATA_FILTER
+                    for member in _validated_members(archive, frozenset(plan.included_paths)):
+                        if member.isfile():
+                            staged_bytes += max(member.size, 0)
+                        archive.extract(member, path=staging, set_attrs=False)
+            except (OSError, tarfile.TarError) as exc:
+                raise RestoreError(
+                    "The backup could not be staged for a recovery drill."
+                ) from exc
+
+            present = [name for name in plan.included_paths if (staging / name).is_dir()]
+            if tuple(present) != plan.included_paths:
+                raise RestoreError("The staged backup is missing an expected world folder.")
+    except OSError as exc:
+        raise RestoreError("Private recovery staging storage is unavailable.") from exc
+
+    elapsed = datetime.now(UTC) - started
+    return RecoveryDrillResult(
+        staged_paths=plan.included_paths,
+        staged_bytes=staged_bytes,
+        duration_ms=max(0, int(elapsed.total_seconds() * 1000)),
+    )
 
 
 @dataclass(frozen=True)

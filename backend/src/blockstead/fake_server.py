@@ -39,6 +39,10 @@ def main() -> None:
                 f"There are {len(online)} of a max of {PLAYER_LIMIT} players online: "
                 + ", ".join(sorted(online))
             )
+        elif command == "tps":
+            info("TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0")
+        elif command == "mspt":
+            info("MSPT from last 5s, 10s, 60s: 2.0, 2.0, 2.0")
         elif words[:2] == ["whitelist", "list"]:
             info(
                 f"There are {len(whitelist)} whitelisted player(s): " + ", ".join(sorted(whitelist))

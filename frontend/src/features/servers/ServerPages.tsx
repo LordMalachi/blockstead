@@ -5,6 +5,7 @@ import { PlayersPanel } from "../players/PlayersPanel";
 import { SchedulePanel } from "../schedule/SchedulePanel";
 import { MinecraftVersionCard } from "../settings/MinecraftVersionCard";
 import { SettingsPanel } from "../settings/SettingsPanel";
+import { WorldCarePage as WorldCareWorkspace } from "../worldcare/WorldCarePage";
 import { useServerScope } from "./scope";
 
 export function PlayersPage() {
@@ -45,5 +46,9 @@ export function MaintenancePage() {
 export function FilesPage() {
   const scope = useServerScope();
   return <FilesPanel profileId={scope.profile.id} distribution={scope.profile.distribution} stopped={scope.stopped} />;
+}
+
+export function WorldCarePage() {
+  return <WorldCareWorkspace />;
 }
 import { BackupsPanel } from "../backups/BackupsPanel";

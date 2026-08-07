@@ -186,6 +186,28 @@ class MetricSample(Base):
     )
 
 
+class PerformanceSample(Base):
+    """A labelled Paper performance response collected by bounded console commands."""
+
+    __tablename__ = "performance_samples"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), index=True
+    )
+    source: Mapped[str] = mapped_column(String(120))
+    sampling_period_seconds: Mapped[int] = mapped_column(Integer)
+    tps_one_minute: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tps_five_minutes: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tps_fifteen_minutes: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mspt_five_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mspt_ten_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mspt_sixty_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    detail: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
 class AppSecret(Base):
     """Small owner-provided secrets (external API keys), never exported."""
 

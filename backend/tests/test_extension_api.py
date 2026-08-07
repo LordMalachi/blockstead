@@ -123,6 +123,30 @@ def test_upload_toggle_and_remove_flow(
     assert not (root / "paper-server" / "plugins-disabled" / "essentials.jar").exists()
 
 
+def test_commands_follow_active_extension_metadata(
+    api: tuple[TestClient, Path], headers: dict[str, str], paper_profile: str
+) -> None:
+    client, root = api
+    before = client.get(f"/api/v1/profiles/{paper_profile}/commands")
+    assert before.status_code == 200
+    assert "essentialsx_spawn" not in {item["id"] for item in before.json()["commands"]}
+
+    plugins = root / "paper-server" / "plugins"
+    plugins.mkdir(parents=True, exist_ok=True)
+    (plugins / "essentials.jar").write_bytes(paper_plugin_bytes("EssentialsX"))
+    active = client.get(f"/api/v1/profiles/{paper_profile}/commands").json()
+    assert "essentialsx_spawn" in {item["id"] for item in active["commands"]}
+
+    toggle = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/toggle",
+        headers=headers,
+        json={"file_name": "essentials.jar", "enabled": False},
+    )
+    assert toggle.status_code == 200
+    disabled = client.get(f"/api/v1/profiles/{paper_profile}/commands").json()
+    assert "essentialsx_spawn" not in {item["id"] for item in disabled["commands"]}
+
+
 def test_manual_import_reviews_dependencies_then_promotes_the_batch(
     api: tuple[TestClient, Path], headers: dict[str, str], paper_profile: str
 ) -> None:
@@ -279,19 +303,15 @@ def test_player_pack_download_requires_a_fresh_review(
     assert review["manual_requirements"] == []
 
     downloaded = client.get(
-        f"/api/v1/profiles/{paper_profile}/loadout/player-pack"
-        f"?review_id={review['review_id']}",
+        f"/api/v1/profiles/{paper_profile}/loadout/player-pack?review_id={review['review_id']}",
         headers=headers,
     )
     assert downloaded.status_code == 200
-    assert downloaded.headers["content-type"].startswith(
-        "application/x-modrinth-modpack"
-    )
+    assert downloaded.headers["content-type"].startswith("application/x-modrinth-modpack")
 
     path.write_bytes(fabric_mod_bytes("client_mod", "*"))
     stale = client.get(
-        f"/api/v1/profiles/{paper_profile}/loadout/player-pack"
-        f"?review_id={review['review_id']}",
+        f"/api/v1/profiles/{paper_profile}/loadout/player-pack?review_id={review['review_id']}",
         headers=headers,
     )
     assert stale.status_code == 409
@@ -534,9 +554,7 @@ def test_update_check_and_apply(
         }
     ]
 
-    backup = client.post(
-        f"/api/v1/profiles/{paper_profile}/backups", headers=headers
-    )
+    backup = client.post(f"/api/v1/profiles/{paper_profile}/backups", headers=headers)
     assert backup.status_code == 201
     reviewed = client.post(
         f"/api/v1/profiles/{paper_profile}/extensions/update-review",

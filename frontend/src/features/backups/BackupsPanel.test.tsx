@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
-import type { BackupPolicy, BackupRecord, RestorePreview, RestoreResult } from "../../api/client";
+import type { BackupPolicy, BackupRecord, RecoveryDrillResult, RestorePreview, RestoreResult } from "../../api/client";
 import { BackupsPanel } from "./BackupsPanel";
 
 const completed: BackupRecord = {
@@ -44,6 +44,15 @@ const restoreResult: RestoreResult = {
   result: "Restored world.",
 };
 
+const recoveryDrillResult: RecoveryDrillResult = {
+  backup_id: "backup-1",
+  verified: true,
+  staged_paths: ["world"],
+  staged_bytes: 1024,
+  duration_ms: 42,
+  result: "Verified world in private staging. The staging copy was removed and the live world was not changed.",
+};
+
 interface Handlers {
   records?: BackupRecord[];
   policy?: BackupPolicy;
@@ -62,6 +71,7 @@ function renderPanel({ records = [completed], policy = defaultPolicy, preview = 
     if (url.endsWith("/backup-policy") && method === "PUT") return Promise.resolve(respond({ ...policy, expired_now: 1 }));
     if (url.endsWith("/restore-preview")) return Promise.resolve(respond(preview));
     if (url.endsWith("/restore") && method === "POST") return Promise.resolve(respond(restoreResult));
+    if (url.endsWith("/recovery-drill") && method === "POST") return Promise.resolve(respond(recoveryDrillResult));
     if (url.endsWith("/backups") && method === "POST") return Promise.resolve(respond(completed));
     return Promise.resolve(respond(records));
   }));
@@ -104,6 +114,18 @@ test("reviews a verified restore before performing it", async () => {
   ));
   expect(await screen.findByText(/Restored world\./)).toBeVisible();
   expect(screen.getByText(/world\.pre-restore-20260717-143000/)).toBeVisible();
+});
+
+test("runs a recovery drill without offering a live restore", async () => {
+  renderPanel();
+
+  fireEvent.click(await screen.findByRole("button", { name: /Run recovery test from/ }));
+
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/backups/backup-1/recovery-drill",
+    expect.objectContaining({ method: "POST" }),
+  ));
+  expect(await screen.findByText(/live world was not changed/i)).toBeVisible();
 });
 
 test("keeps restore disabled while a blocker exists", async () => {

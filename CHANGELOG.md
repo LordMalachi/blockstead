@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Start Milestone 10 with capability-gated Paper TPS/MSPT evidence and a read-only
+  World Care workspace. Paper samples are sourced from labelled `/tps` and `/mspt`
+  console responses at a bounded cadence and expose their source, sampling period,
+  and unavailable states. World Care reports recognized world size, filesystem
+  capacity, backup destination health, and known recovery-copy storage without
+  offering cleanup until a reviewed reclaim plan and recovery drill exist.
+
+- Add an explicit recovery drill to Backup Center. A completed archive is
+  checksum-verified, unpacked into private temporary staging, and checked for
+  its expected world folders; the staging copy is removed and the live world is
+  never replaced. The result is recorded in Activity for later review.
+
 - Harden connection and incident diagnostics. Minecraft status requests now
   distinguish a valid response, an intentionally disabled status protocol, an
   early peer close, a timeout, and a genuinely unreachable local port instead

@@ -110,6 +110,8 @@ export function CommandCenter({ profileId, running }: { profileId: string; runni
   const [values, setValues] = useState<Values>({});
   const [confirming, setConfirming] = useState(false);
   const [notice, setNotice] = useState("");
+  // The server owns provider availability and safety; this UI only renders the
+  // filtered catalog returned for the selected profile.
   const catalog = useQuery({ queryKey: ["command-catalog", profileId], queryFn: () => api<CommandCatalog>(`/profiles/${profileId}/commands`) });
   const players = useQuery({ queryKey: ["players", profileId], queryFn: () => api<PlayersView>(`/profiles/${profileId}/players`) });
   const commands = useMemo(() => catalog.data?.commands ?? [], [catalog.data?.commands]);

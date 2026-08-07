@@ -23,6 +23,7 @@ const serverNav = [
   { path: "backups", label: "Backups", icon: "package" },
   { path: "maintenance", label: "Maintenance", icon: "shield" },
   { path: "files", label: "Files", icon: "folder" },
+  { path: "world-care", label: "World Care", icon: "leaf" },
   { path: "schedule", label: "Schedule", icon: "clock" },
   { path: "settings", label: "Settings", icon: "sliders" },
 ];

@@ -39,7 +39,7 @@ export interface CommandArgument {
   maximum?: number;
   max_length?: number;
 }
-export interface GuidedCommand { id: string; label: string; root: string; category: string; description: string; safety: "normal" | "caution" | "danger"; arguments: CommandArgument[] }
+export interface GuidedCommand { id: string; label: string; root: string; category: string; description: string; safety: "normal" | "caution" | "danger"; arguments: CommandArgument[]; provider_id?: string }
 export interface CommandCatalog { schema_version: number; revision: string; source: "curated" | "runtime"; complete: boolean; commands: GuidedCommand[] }
 export interface SystemMetrics { cpu_percent: number; memory: { total_bytes: number; used_bytes: number; percent: number }; disk: { total_bytes: number; used_bytes: number; percent: number }; process: { uptime_seconds: number | null; memory_bytes: number | null } }
 export interface DiagnosticLogEntry { at: string; level: string; logger: string; message: string; occurrences?: number; first_at?: string; last_at?: string }
@@ -257,6 +257,16 @@ export interface UpdateStatus {
 export interface OverviewMetricPoint { at: string; cpu_percent: number; memory_percent: number; disk_percent: number; process_memory_bytes: number | null; world_size_bytes: number | null }
 export interface OverviewWarning { code: string; title: string; detail: string; to: string; severity: "warning" | "danger" }
 export interface OverviewActivity { id: string; category: string; result: string; detail: string; created_at: string; to: string }
+export interface PerformanceEvidence {
+  state: "available" | "partial" | "waiting" | "not_running" | "unsupported";
+  available: boolean;
+  source: string | null;
+  sampling_period_seconds: number | null;
+  sampled_at: string | null;
+  tps: { one_minute: number | null; five_minutes: number | null; fifteen_minutes: number | null } | null;
+  mspt: { five_seconds: number | null; ten_seconds: number | null; sixty_seconds: number | null } | null;
+  detail: string;
+}
 export interface ActivityEvent { id: string; category: string; group: string; title: string; result: string; severity: "success" | "warning" | "danger"; detail: string; actor: string; profile: { id: string; name: string } | null; created_at: string; recovery_to: string; report_url: string }
 export interface ActivityFeed { events: ActivityEvent[]; total: number; limit: number; offset: number }
 export interface NotificationPreferences { server_crashes: boolean; failed_backups: boolean; failed_automations: boolean; low_disk_space: boolean; completed_updates: boolean; show_player_avatars: boolean; last_seen_at: string | null }
@@ -288,11 +298,23 @@ export interface ProfileOverview {
     status_detail: string;
   };
   metrics: { current: OverviewMetricPoint & { memory_used_bytes: number; memory_total_bytes: number; disk_used_bytes: number; disk_total_bytes: number }; history: OverviewMetricPoint[] };
+  performance: PerformanceEvidence;
   last_backup: BackupRecord | null;
   next_operation: { label: string; at: string } | null;
   warnings: OverviewWarning[];
   activity: OverviewActivity[];
   capabilities: { tps: boolean; mspt: boolean; distribution_label: string };
+}
+export interface WorldCareStorageDisk { state: "available" | "missing" | "unavailable"; path: string; total_bytes: number | null; free_bytes: number | null; used_bytes: number | null; used_percent: number | null }
+export interface WorldCareDestination { label: string; configured_path: string; stored_bytes: number | null; disk: WorldCareStorageDisk }
+export interface WorldCareView {
+  worlds: Array<{ name: string; size_bytes: number | null }>;
+  world_size_bytes: number | null;
+  disk: WorldCareStorageDisk;
+  last_verified_backup: BackupRecord | null;
+  backup_destinations: WorldCareDestination[];
+  recovery: { entries: Array<{ label: string; size_bytes: number | null; state: "available" | "unknown" }>; total_bytes: number };
+  cleanup: { available: false; detail: string };
 }
 export interface AutomationExecution { kind: "recurring" | "one_time"; action: "start" | "maintenance"; label: string; at: string; steps: string[] }
 export interface AutomationEvent { id: string; run_at: string; backup_before_stop: boolean; power_off_after_stop: boolean; wake_time: string | null; only_when_empty: boolean }
@@ -302,6 +324,7 @@ export interface AutomationCapabilities { host_power: boolean }
 export interface BackupRecord { id: string; profile_id: string; status: "in_progress" | "completed" | "failed" | "expired"; method: "world_archive"; trigger: "manual" | "schedule"; file_name: string | null; size_bytes: number | null; duration_ms: number | null; sha256: string | null; included_paths: string[]; archive_available: boolean; result: string; created_at: string; completed_at: string | null }
 export interface RestorePreview { backup_id: string; verified: boolean; sha256: string; size_bytes: number; included_paths: string[]; worlds_replaced: string[]; required_bytes: number; available_bytes: number; backup_created_at: string | null; minecraft_version: string | null; can_restore: boolean; blockers: string[] }
 export interface RestoreResult { restored_paths: string[]; preserved_paths: string[]; result: string }
+export interface RecoveryDrillResult { backup_id: string; verified: boolean; staged_paths: string[]; staged_bytes: number; duration_ms: number; result: string }
 export interface BackupPolicy { keep_count: number | null; keep_days: number | null; max_total_mb: number | null; redundancy_enabled: boolean; destinations: string[]; storage_path: string | null }
 export interface JavaRuntime { path: string; version: string; major: number }
 export interface PrerequisitesView { distribution: string; label: string; minecraft_version: string | null; is_fixture: boolean; eula_accepted: boolean; required_java_major: number | null; java_runtimes: JavaRuntime[]; selected_java: JavaRuntime | null; java_satisfied: boolean; launch_files_ready: boolean; launch_problem: string | null; extension_directory: string | null; extension_directory_present: boolean }
@@ -376,6 +399,26 @@ export interface ServerUpgradeResult {
 }
 export interface ExtensionWarning { code: string; message: string; files: string[] }
 export interface ExtensionsView { directory: string | null; present: boolean; entries: ExtensionEntry[]; disabled_entries: ExtensionEntry[]; warnings: ExtensionWarning[]; truncated: boolean }
+export interface ExtensionRecommendation {
+  id: string;
+  project_id: string;
+  source: "modrinth" | "hangar";
+  title: string;
+  purpose: string;
+  state: "active" | "disabled" | "available" | "bundled" | "unknown" | "unavailable" | "needs-dependency";
+  availability: "available" | "bundled" | "unknown" | "unavailable";
+  detail: string;
+  active: boolean;
+  installed: boolean;
+  disabled: boolean;
+  dependencies: string[];
+  missing_dependencies: string[];
+  conflict_group: string | null;
+  command_pack_id: string | null;
+  latest_version: CatalogVersion | null;
+  project_url: string;
+}
+export interface ExtensionRecommendations { distribution: string; minecraft_version: string | null; recommendations: ExtensionRecommendation[] }
 export interface SharedMapView { config_present: boolean; config_path: string | null; internal_webserver_enabled: boolean; bind: string; port: number; problem: string | null }
 export interface CatalogProject { project_id: string; slug: string | null; title: string | null; description: string | null; downloads: number | null; icon_url?: string | null; author?: string | null; project_type?: string | null; source?: string; page_url?: string | null; installable?: boolean }
 export interface CatalogSearch { minecraft_version?: string | null; source?: string; projects: CatalogProject[]; total?: number; offset?: number; limit?: number }

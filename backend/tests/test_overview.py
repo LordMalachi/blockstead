@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from blockstead.models import Profile
 from blockstead.overview import (
     PublicIpDiscovery,
     join_details,
@@ -18,6 +20,7 @@ from blockstead.overview import (
     strict_world_size,
     world_size,
 )
+from blockstead.performance import parse_paper_mspt, parse_paper_tps
 
 FIXTURE = Path(__file__).parents[2] / "fixtures" / "servers" / "vanilla-fixture"
 
@@ -68,10 +71,76 @@ def test_overview_reports_join_address_health_and_protection(
     assert "backup-missing" in {warning["code"] for warning in body["warnings"]}
     assert body["capabilities"]["tps"] is False
     assert body["capabilities"]["mspt"] is False
+    assert body["performance"]["state"] == "unsupported"
+    assert body["performance"]["available"] is False
 
     # Refreshing faster than the sampling interval does not manufacture a trend.
     refreshed = client.get(f"/api/v1/profiles/{profile_id}/overview").json()
     assert len(refreshed["metrics"]["history"]) == 1
+
+
+def test_paper_performance_parser_accepts_only_labelled_windows() -> None:
+    tps = parse_paper_tps("[Server thread/INFO]: TPS from last 1m, 5m, 15m: *20.0, 19.98, 19.95")
+    mspt = parse_paper_mspt("[Server thread/INFO]: MSPT from last 5s, 10s, 60s: 2.0, 2.5, 3.0")
+
+    assert tps == {"one_minute": 20.0, "five_minutes": 19.98, "fifteen_minutes": 19.95}
+    assert mspt == {"five_seconds": 2.0, "ten_seconds": 2.5, "sixty_seconds": 3.0}
+    assert parse_paper_tps("A plugin reported TPS: 20.0") is None
+    assert parse_paper_mspt("A plugin reported MSPT: 3.0") is None
+
+
+def test_paper_overview_collects_bounded_console_evidence(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    profile_id = import_fixture(client, auth)
+    with client.app.state.session_factory() as db:
+        profile = db.get(Profile, profile_id)
+        assert profile is not None
+        # The fixture controller is owned by Blockstead, so it can safely stand
+        # in for a Paper process without requiring Java in an offline test.
+        profile.distribution = "paper"
+        db.commit()
+
+    started = client.post("/api/v1/server/start", headers=auth, json={"profile_id": profile_id})
+    assert started.status_code == 202
+    for _ in range(100):
+        if client.get("/api/v1/server/state").json()["state"] == "RUNNING":
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("Fixture did not reach RUNNING")
+
+    body = client.get(f"/api/v1/profiles/{profile_id}/overview").json()
+
+    assert body["capabilities"] == {"tps": True, "mspt": True, "distribution_label": "Paper"}
+    assert body["performance"]["state"] == "available"
+    assert body["performance"]["source"] == "Paper console /tps and /mspt commands"
+    assert body["performance"]["sampling_period_seconds"] == 60
+    assert body["performance"]["tps"]["one_minute"] == 20.0
+    assert body["performance"]["mspt"]["five_seconds"] == 2.0
+
+
+def test_world_care_reports_storage_and_recovery_evidence(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    profile_id = import_fixture(client, auth)
+    backup = client.post(f"/api/v1/profiles/{profile_id}/backups", headers=auth)
+    assert backup.status_code == 201
+    snapshot_root = client.app.state.settings.data_dir / "settings-snapshots" / profile_id
+    snapshot_root.mkdir(parents=True)
+    (snapshot_root / "server.properties.1").write_text("level-name=world\n", encoding="utf-8")
+
+    response = client.get(f"/api/v1/profiles/{profile_id}/world-care")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["world_size_bytes"] > 0
+    assert body["worlds"][0]["name"] == "world"
+    assert body["disk"]["state"] == "available"
+    assert body["last_verified_backup"]["status"] == "completed"
+    assert body["backup_destinations"][0]["stored_bytes"] > 0
+    assert body["recovery"]["total_bytes"] > 0
+    assert body["cleanup"]["available"] is False
 
 
 def test_overview_includes_backup_schedule_and_recent_profile_activity(

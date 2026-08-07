@@ -290,6 +290,40 @@ def test_restore_preview_and_roundtrip_preserves_previous_world(
     assert (preserved / "extra.dat").read_bytes() == b"newer chunk data"
 
 
+def test_recovery_drill_stages_verified_archive_without_touching_live_world(
+    owned_client: TestClient,
+) -> None:
+    auth = owned_auth(owned_client)
+    profile_id, server = import_writable_copy(owned_client, auth)
+    (server / "world" / "level.dat").write_bytes(b"protected")
+    backup = owned_client.post(f"/api/v1/profiles/{profile_id}/backups", headers=auth).json()
+
+    (server / "world" / "level.dat").write_bytes(b"still live")
+    response = owned_client.post(
+        f"/api/v1/profiles/{profile_id}/backups/{backup['id']}/recovery-drill",
+        headers=auth,
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["verified"] is True
+    assert result["staged_paths"] == ["world"]
+    assert result["staged_bytes"] > 0
+    assert result["duration_ms"] >= 0
+    assert "live world was not changed" in result["result"]
+    assert (server / "world" / "level.dat").read_bytes() == b"still live"
+    drill_root = owned_client.app.state.settings.data_dir / "recovery-drills"
+    assert drill_root.is_dir()
+    assert list(drill_root.iterdir()) == []
+    activity = owned_client.get("/api/v1/activity", headers=auth)
+    assert activity.status_code == 200
+    assert any(
+        event["category"] == "backup_recovery_drill"
+        and event["title"] == "Recovery drill"
+        for event in activity.json()["events"]
+    )
+
+
 def test_restore_is_refused_while_the_server_runs(owned_client: TestClient) -> None:
     auth = owned_auth(owned_client)
     profile_id, server = import_writable_copy(owned_client, auth)

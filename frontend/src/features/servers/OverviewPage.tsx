@@ -26,6 +26,10 @@ function operationTime(value: string): string {
   return `${day} at ${date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
 }
 
+function sampledTime(value: string | null): string {
+  return value ? new Date(value).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "not yet sampled";
+}
+
 function Sparkline({ values, label, percent = false }: { values: Array<number | null>; label: string; percent?: boolean }) {
   const present = values.filter((value): value is number => value != null);
   if (!present.length) return <div className="sparkline sparkline--empty"><span>No samples yet</span></div>;
@@ -128,7 +132,24 @@ export function OverviewPage() {
         <HistoryCard label="Data disk" value={`${current.disk_percent.toFixed(0)}%`} note={`${formatBytes(current.disk_used_bytes)} of ${formatBytes(current.disk_total_bytes)}`} points={data.metrics.history} field="disk_percent" percent />
         <HistoryCard label="World size" value={current.world_size_bytes != null ? formatBytes(current.world_size_bytes) : "—"} note="Recognized world folders" points={data.metrics.history} field="world_size_bytes" />
       </div>
-      <small className="muted-note">Blockstead keeps up to seven days of once-per-minute samples while a server is active. TPS and MSPT are omitted because this profile does not expose a reliable source.</small>
+      <small className="muted-note">Blockstead keeps up to seven days of once-per-minute host and world samples while a server is active. Tick evidence appears separately only when this profile exposes a supported source.</small>
+    </section>
+
+    <section className="card performance-panel" aria-labelledby="performance-heading">
+      <div className="section-heading"><div><p className="eyebrow">Evidence, not guesswork</p><h2 id="performance-heading">Tick performance</h2></div><Link to={`/servers/${scope.profile.id}/world-care`}>Open World Care</Link></div>
+      {data.performance.state === "unsupported"
+        ? <p className="empty-note">{data.performance.detail}</p>
+        : data.performance.tps || data.performance.mspt
+          ? <>
+            <div className="performance-grid">
+              <article><span>TPS · 1 minute</span><strong>{data.performance.tps?.one_minute?.toFixed(2) ?? "—"}</strong><small>Target is 20.00</small></article>
+              <article><span>TPS · 5 minutes</span><strong>{data.performance.tps?.five_minutes?.toFixed(2) ?? "—"}</strong><small>Longer trend</small></article>
+              <article><span>MSPT · 5 seconds</span><strong>{data.performance.mspt?.five_seconds?.toFixed(2) ?? "—"}</strong><small>Lower is better; under 50 ms supports 20 TPS</small></article>
+              <article><span>MSPT · 60 seconds</span><strong>{data.performance.mspt?.sixty_seconds?.toFixed(2) ?? "—"}</strong><small>Longer trend</small></article>
+            </div>
+            <small className="muted-note">Source: {data.performance.source}. Sampled every {data.performance.sampling_period_seconds} seconds; last response {sampledTime(data.performance.sampled_at)}. {data.performance.detail}</small>
+          </>
+          : <div className="warning performance-unavailable"><strong>Tick evidence is not available yet</strong><span>{data.performance.detail}</span></div>}
     </section>
 
     <div className="overview-columns">

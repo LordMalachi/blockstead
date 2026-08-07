@@ -44,6 +44,14 @@ Blockstead manages the process around them.
 - safely edits common server settings with validation, diff review, and recovery snapshots
 - reads player lists, with guided allowlist/operator/ban actions
 - shows host CPU, memory, disk use, and server uptime
+- shows labelled Paper TPS/MSPT evidence when the running profile supports the
+  bounded console source, and otherwise explains why those values are unavailable
+- includes a read-only World Care workspace for recognized world size, disk room,
+  backup destinations, and retained recovery copies; cleanup is not offered without
+  a reviewed reclaim plan
+- lets an owner run a recovery test against a completed backup: Blockstead
+  verifies and stages the archive privately, removes the staging copy, and
+  reports that the live world was left unchanged
 - keeps a private application log and recent-error view, and saves a redacted
   one-file diagnostic report to attach when asking for help
 - provides a filterable Activity timeline across every server, configurable

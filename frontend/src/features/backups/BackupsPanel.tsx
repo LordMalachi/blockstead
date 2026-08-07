@@ -6,6 +6,7 @@ import {
   type BackupPolicy,
   type BackupRecord,
   type ProcessState,
+  type RecoveryDrillResult,
   type RestorePreview,
   type RestoreResult,
 } from "../../api/client";
@@ -144,6 +145,8 @@ export function BackupsPanel({
   const [restoreTarget, setRestoreTarget] = useState<BackupRecord | null>(null);
   const [exportNotice, setExportNotice] = useState("");
   const [exportError, setExportError] = useState("");
+  const [recoveryNotice, setRecoveryNotice] = useState("");
+  const [recoveryError, setRecoveryError] = useState("");
   const [policyDraft, setPolicyDraft] = useState<PolicyDraft | null>(null);
   const [destinationInput, setDestinationInput] = useState("");
   const [guideOpen, setGuideOpen] = useState(false);
@@ -181,6 +184,12 @@ export function BackupsPanel({
       closeRestoreReview();
       void cache.invalidateQueries({ queryKey: ["backups", profileId] });
     },
+  });
+  const recoveryDrill = useMutation({
+    mutationFn: (backupId: string) => api<RecoveryDrillResult>(`/profiles/${profileId}/backups/${backupId}/recovery-drill`, { method: "POST" }),
+    onMutate: () => { setRecoveryNotice(""); setRecoveryError(""); },
+    onSuccess: result => setRecoveryNotice(result.result),
+    onError: error => setRecoveryError(error instanceof Error ? error.message : "The recovery drill could not be completed."),
   });
   const savePolicy = useMutation({
     mutationFn: (next: BackupPolicyUpdate) => api<BackupPolicy & { expired_now: number }>(`/profiles/${profileId}/backup-policy`, { method: "PUT", body: JSON.stringify(next) }),
@@ -298,6 +307,8 @@ export function BackupsPanel({
     {create.error && <p className="error" role="alert">{create.error.message}</p>}
     {exportNotice && <p className="success" role="status">{exportNotice}</p>}
     {exportError && <p className="error" role="alert">{exportError}</p>}
+    {recoveryNotice && <p className="success" role="status">{recoveryNotice}</p>}
+    {recoveryError && <p className="error" role="alert">{recoveryError}</p>}
     {restore.isSuccess && restore.data && <p className="success" role="status">
       {restore.data.result}{restore.data.preserved_paths.length > 0 && ` Previous folders: ${restore.data.preserved_paths.join(", ")}.`}
     </p>}
@@ -392,6 +403,7 @@ export function BackupsPanel({
                           }
                         })();
                       }}>Save a copy…</Button>
+                      <Button className="button--quiet button--small" aria-label={`Run recovery test from ${formatWhen(record.created_at)}`} disabled={recoveryDrill.isPending} onClick={() => recoveryDrill.mutate(record.id)}>{recoveryDrill.isPending ? "Testing…" : "Test recovery"}</Button>
                     </> : record.status === "completed" && !record.archive_available ? <small>The retained archive is no longer available.</small> : null}
                   </div>
                 </li>)}
