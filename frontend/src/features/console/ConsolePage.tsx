@@ -23,7 +23,14 @@ export function ConsolePage() {
     const socket = new WebSocket(`${protocol}://${location.host}/api/v1/server/logs/ws`);
     socket.onmessage = event => {
       const payload: unknown = event.data;
-      if (typeof payload === "string") setLogs(current => [...current.slice(-399), JSON.parse(payload) as LogEvent]);
+      if (typeof payload === "string") {
+        try {
+          const parsed = JSON.parse(payload) as LogEvent;
+          setLogs(current => [...current.slice(-399), parsed]);
+        } catch {
+          // Ignore invalid frames safely
+        }
+      }
     };
     return () => socket.close();
   }, []);

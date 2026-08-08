@@ -6584,7 +6584,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile = db.get(Profile, profile_id)
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
-        if payload.run_at <= datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M"):
+        run_at_dt = datetime.strptime(payload.run_at, "%Y-%m-%dT%H:%M")
+        if run_at_dt <= datetime.now().replace(second=0, microsecond=0):
             raise HTTPException(422, "Choose a maintenance time in the future.")
 
         fresh = await build_maintenance_plan(
@@ -7488,7 +7489,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile = db.get(Profile, profile_id)
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
-        if payload.run_at <= datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M"):
+        run_at_dt = datetime.strptime(payload.run_at, "%Y-%m-%dT%H:%M")
+        if run_at_dt <= datetime.now().replace(second=0, microsecond=0):
             raise HTTPException(422, "Choose a one-time maintenance time in the future.")
         if payload.power_off_after_stop and not scheduler.power_capable:
             raise HTTPException(

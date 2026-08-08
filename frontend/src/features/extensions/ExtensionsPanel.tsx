@@ -274,6 +274,14 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
       return null;
     }
   });
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(`blockstead_migration_${profileId}`);
+      setMigrationContext(raw ? JSON.parse(raw) as LoaderMigrationResult : null);
+    } catch {
+      setMigrationContext(null);
+    }
+  }, [profileId]);
   const guideTrigger = useRef<HTMLButtonElement>(null);
 
   const inventory = useQuery({

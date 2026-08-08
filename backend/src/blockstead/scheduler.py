@@ -24,7 +24,7 @@ from .models import (
     Schedule,
 )
 from .overview import minecraft_status, read_properties
-from .process import ProcessManager
+from .process import ProcessManager, ProcessState
 from .retention import enforce_retention
 
 logger = logging.getLogger(__name__)
@@ -36,9 +36,11 @@ POWER_HELPER_DETAIL_CHARS = 500
 
 
 def parse_weekdays(value: str) -> list[int]:
+    if not isinstance(value, str):
+        return list(range(7))
     try:
         days = sorted({int(item) for item in value.split(",") if item != ""})
-    except ValueError:
+    except (ValueError, AttributeError):
         return list(range(7))
     return days if days and all(0 <= day <= 6 for day in days) else list(range(7))
 
@@ -314,7 +316,8 @@ class Scheduler:
                         status = "skipped"
                         detail = f"Left the server running because {online} player(s) are online."
                 if status == "success":
-                    await self._maintenance_commands(db, profile, backup, now)
+                    is_running = state in {ProcessState.RUNNING, "RUNNING"}
+                    await self._maintenance_commands(db, profile, backup, now, is_running=is_running)
                     graceful = await self.manager.stop(timeout=60.0)
                     if not graceful:
                         raise RuntimeError("the graceful stop timed out")
@@ -329,8 +332,12 @@ class Scheduler:
         )
 
     async def _maintenance_commands(
-        self, db: Session, profile: Profile, backup: bool, now: datetime
+        self, db: Session, profile: Profile, backup: bool, now: datetime, *, is_running: bool = True
     ) -> None:
+        if not is_running:
+            if backup:
+                await self.backup(db, profile, now)
+            return
         await self.manager.command("say Server maintenance is starting now.")
         saving_suspended = False
         try:
