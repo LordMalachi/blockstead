@@ -19,7 +19,9 @@ Minecraft version and asks which target you want:
 This is a copy, not an in-place conversion. Blockstead requires the source
 server to be stopped and a verified backup made within the last 24 hours. It
 checks Java, free disk space, world size, loader availability, and extension
-compatibility before showing the final review.
+compatibility before showing the final review. That review names the complete
+source server folder, the complete new server folder, and every loader-aware
+world path mapping before the copy button is enabled.
 
 The copied world includes the configured overworld, Nether, End, builds, player
 inventories, advancements, statistics, and other world-contained data. The
@@ -27,6 +29,16 @@ source profile, source folder, and verified backup stay unchanged. Loader files,
 configuration, `mods`, `plugins`, and disabled-extension folders are not copied.
 Copying jars between loaders is unsafe, so the new profile receives a fresh
 extension checklist instead.
+
+Legacy Paper versions split Nether and End data into suffixed world folders;
+Blockstead translates those paths when copying from legacy Paper to a
+Vanilla-layout loader. When Paper is the destination, Blockstead keeps the
+source's complete Vanilla-layout world together so Paper can perform its own
+supported first-start import. [Paper 26.1 and newer use a unified Vanilla-like
+layout](https://docs.papermc.io/paper/migration/); for copies from those Paper
+versions, Blockstead relocates Paper's documented metadata files inside the new
+copy when the destination loader needs it. The source is never used as the
+conversion workspace.
 
 Worlds that have already stored blocks, entities, dimensions, or registries
 from mods need extra care. If equivalent target mods do not exist, that content
@@ -37,6 +49,27 @@ After creation, Blockstead opens the new profile's **Mods and plugins**
 workspace. The copy remains stopped until you review its loadout, accept the
 Minecraft EULA, and choose to start it. If anything is wrong, return to the
 untouched source profile or restore its retained backup.
+
+## Remove a copied server or world
+
+Whole world folders cannot be deleted from the Files workspace. This prevents a
+single file-browser click from erasing a live world. Open **Servers**, choose
+**Remove server**, and review the two distinct choices:
+
+- **Remove from Blockstead** removes the profile, schedule, and dashboard
+  history. The server folder and local backup archive files stay at the exact
+  paths shown. A server folder can be imported again, but retained backup
+  archives are not automatically attached to the new profile.
+- **Permanently delete server and worlds** deletes the complete server folder,
+  every world inside it, and that profile's local Blockstead backup folder.
+  The review lists each recognized world and requires both an explicit checkbox
+  and the exact profile name. Copies in separately configured backup
+  destinations are shown and are never deleted by this action.
+
+Blockstead refuses either removal while that server is active or a backup is in
+progress. It also refuses permanent deletion when the folder is outside the
+managed root or overlaps another profile; record-only removal remains the safe
+way to resolve those ownership problems.
 
 ## The Extension Workshop
 

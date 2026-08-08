@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, apiUpload, type ImportScan, type ImportUploadResult, type ImportUploadStartResult, type PlayersView, type ProcessState, type Profile, type ProfileDeleteResult, type Schedule } from "../../api/client";
+import { api, apiUpload, type ImportScan, type ImportUploadResult, type ImportUploadStartResult, type PlayersView, type ProcessState, type Profile, type ProfileDeleteResult, type ProfileRemovalReview, type Schedule } from "../../api/client";
 import { Button } from "../../components/Button";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatBytes } from "../../lib/format";
@@ -61,6 +61,14 @@ export function ServersPage() {
   const [removeConfirmation, setRemoveConfirmation] = useState("");
   const state = useQuery({ queryKey: ["state"], queryFn: () => api<ProcessState>("/server/state"), refetchInterval: 1000 });
   const profiles = useQuery({ queryKey: ["profiles"], queryFn: () => api<Profile[]>("/profiles") });
+  const removalReview = useQuery({
+    queryKey: ["profile-removal", removing?.id],
+    queryFn: () => {
+      if (!removing) throw new Error("Choose a server to review.");
+      return api<ProfileRemovalReview>(`/profiles/${removing.id}/removal-review`);
+    },
+    enabled: removing != null,
+  });
   const schedules = useQuery({ queryKey: ["schedules"], queryFn: () => api<Schedule[]>("/schedules") });
   const rosters = useQueries({
     queries: (profiles.data ?? []).map(profile => ({ queryKey: ["players", profile.id], queryFn: () => api<PlayersView>(`/profiles/${profile.id}/players`) })),
@@ -174,16 +182,23 @@ export function ServersPage() {
         <p className="eyebrow">Remove server</p>
         <h2 id="remove-server-heading">Review removal of “{removing.name}”</h2>
         <p>Nothing has changed yet. This server must stay stopped while it is removed.</p>
-        <dl>
-          <div><dt>Remove from Blockstead</dt><dd>Deletes this server’s profile and schedule. Its server folder and Blockstead backups stay on this computer and can be imported again.</dd></div>
-          <div><dt>Delete server files</dt><dd>Permanently deletes the server folder and Blockstead’s local backups for this server. Copies stored in any separate backup destination are not deleted.</dd></div>
-        </dl>
-        <label className="maintenance-booking-toggle"><input type="checkbox" checked={removeFiles} onChange={event => setRemoveFiles(event.target.checked)} /><span>Also permanently delete this server’s files and local backups.</span></label>
+        {removalReview.isLoading && <p className="empty-note">Checking the exact world and backup locations…</p>}
+        {removalReview.error && <p className="error" role="alert">{removalReview.error.message}</p>}
+        {removalReview.data && <>
+          <dl>
+            <div><dt>Server folder</dt><dd><code>{removalReview.data.server_directory}</code><small>{removeFiles ? "The entire folder will be permanently deleted." : "The folder stays exactly where it is and can be imported again."}</small></dd></div>
+            <div><dt>Recognized worlds</dt><dd>{removalReview.data.worlds.length ? <ul>{removalReview.data.worlds.map(world => <li key={world.path}><code>{world.path}</code> · {formatBytes(world.size_bytes ?? 0)}</li>)}</ul> : "No recognized world folder was found; permanent deletion still removes everything in the server folder."}</dd></div>
+            <div><dt>Local Blockstead backups</dt><dd><code>{removalReview.data.local_backup_directory}</code><small>{removeFiles ? "This local backup folder will also be permanently deleted." : "Archive files stay here, but their dashboard history is removed and they are not automatically reattached after a re-import."}</small></dd></div>
+            <div><dt>Separate backup copies</dt><dd>{removalReview.data.external_backup_directories.length ? <ul>{removalReview.data.external_backup_directories.map(path => <li key={path}><code>{path}</code></li>)}</ul> : "No separate backup destination is configured."}<small>Separate backup copies are never deleted by this action.</small></dd></div>
+          </dl>
+          {removalReview.data.delete_files_blockers.length > 0 && <div className="maintenance-blocked" role="alert"><strong>Permanent file deletion is unavailable</strong><ul>{removalReview.data.delete_files_blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul></div>}
+        </>}
+        <label className="maintenance-booking-toggle"><input type="checkbox" checked={removeFiles} disabled={!removalReview.data?.can_delete_files} onChange={event => setRemoveFiles(event.target.checked)} /><span>Also permanently delete the entire server folder, including every world inside it, and Blockstead’s local backups.</span></label>
         <label>Type <strong>{removing.name}</strong> to confirm<input value={removeConfirmation} onChange={event => setRemoveConfirmation(event.target.value)} autoComplete="off" /></label>
         {remove.error && <p className="error" role="alert">{remove.error.message}</p>}
         <div className="troubleshooting-actions">
           <Button className="button--secondary" disabled={remove.isPending} onClick={() => setRemoving(null)}>Cancel</Button>
-          <Button className="button--danger" disabled={remove.isPending || removeConfirmation !== removing.name} onClick={() => remove.mutate({ profile: removing, deleteFiles: removeFiles })}>{remove.isPending ? "Removing…" : removeFiles ? "Permanently delete server" : "Remove from Blockstead"}</Button>
+          <Button className="button--danger" disabled={remove.isPending || removalReview.isLoading || !removalReview.data?.can_remove_record || removeConfirmation !== removing.name} onClick={() => remove.mutate({ profile: removing, deleteFiles: removeFiles })}>{remove.isPending ? "Removing…" : removeFiles ? "Permanently delete server and worlds" : "Remove from Blockstead"}</Button>
         </div>
       </div>
     </div>}

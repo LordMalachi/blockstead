@@ -25,6 +25,7 @@ def source_folder(root: Path, name: str, distribution: str) -> Path:
         (folder / "plugins").mkdir()
         (folder / "plugins" / "source-only.jar").write_bytes(b"plugin")
         (folder / "world").mkdir()
+        (folder / "world" / "level.dat").write_bytes(b"overworld metadata")
         (folder / "world" / "owner-build.dat").write_bytes(b"overworld")
         (folder / "world_nether" / "DIM-1").mkdir(parents=True)
         (folder / "world_nether" / "DIM-1" / "level.dat").write_bytes(b"nether")
@@ -165,6 +166,9 @@ def test_every_recognized_source_to_target_loader_combination(
             assert reviewed.status_code == 200, reviewed.text
             review = reviewed.json()
             assert review["ready"] is True, review["blockers"]
+            assert review["source_directory"] == str(root / f"source-{slug}")
+            assert review["destination_root"] == str(root)
+            assert review["world_copy_operations"]
             applied = client.post(
                 f"/api/v1/profiles/{profile_id}/loader-migration/apply",
                 headers=headers,
@@ -179,11 +183,13 @@ def test_every_recognized_source_to_target_loader_combination(
                 },
             )
             assert applied.status_code == 201, applied.text
+            assert applied.json()["source_directory"] == str(root / f"source-{slug}")
+            assert applied.json()["destination_directory"] == str(root / f"target-{slug}")
             source_folder_path = root / f"source-{slug}"
             target_folder = root / f"target-{slug}"
             assert (source_folder_path / "world" / "owner-build.dat").read_bytes() == b"overworld"
             assert (target_folder / "world" / "owner-build.dat").read_bytes() == b"overworld"
-            if target == "paper":
+            if target == "paper" and source == "paper":
                 assert (target_folder / "world_nether" / "DIM-1" / "level.dat").is_file()
             else:
                 assert (target_folder / "world" / "DIM-1" / "level.dat").is_file()
@@ -216,6 +222,7 @@ def test_failed_world_copy_removes_partial_target_and_keeps_source(
         _level_name: str,
         _source_distribution: str,
         _target_distribution: str,
+        _minecraft_version: str,
     ) -> list[str]:
         (target / "partial-world").mkdir()
         raise OSError("simulated copy failure")
@@ -284,3 +291,34 @@ def test_migration_discovers_a_live_world_after_stale_properties(
     assert applied.status_code == 201, applied.text
     copied_world = root / "friends-paper" / "friends-world" / "owner-build.dat"
     assert copied_world.read_bytes() == b"overworld"
+
+
+def test_review_requires_the_backup_to_cover_the_current_world_paths(
+    migration_api: tuple[TestClient, Path, dict[str, str]],
+) -> None:
+    client, root, headers = migration_api
+    profile_id, _backup_id = create_source(
+        client,
+        root,
+        headers,
+        name="changed-after-backup",
+        distribution="vanilla",
+    )
+    folder = root / "changed-after-backup"
+    (folder / "world").rename(folder / "replacement-world")
+    (folder / "server.properties").write_text(
+        "level-name=replacement-world\n", encoding="utf-8"
+    )
+
+    reviewed = client.post(
+        f"/api/v1/profiles/{profile_id}/loader-migration/review",
+        headers=headers,
+        json={"target_distribution": "fabric"},
+    )
+
+    assert reviewed.status_code == 200, reviewed.text
+    review = reviewed.json()
+    assert review["worlds"] == ["replacement-world"]
+    assert review["protection"]["verified"] is False
+    assert "does not contain" in review["protection"]["detail"]
+    assert any("Create a fresh verified backup" in blocker for blocker in review["blockers"])

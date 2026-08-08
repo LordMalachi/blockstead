@@ -637,7 +637,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
         <div>
           <p className="eyebrow">Modded copy created</p>
           <h3>{migrationContext.name} is ready for its loadout</h3>
-          <p>Copied {migrationContext.worlds_copied.join(", ")}. The source server is unchanged. Reinstall compatible extensions here, review the EULA, and inspect the first startup console before inviting players.</p>
+          <p>Copied {migrationContext.worlds_copied.join(", ")} from <code>{migrationContext.source_directory}</code> into <code>{migrationContext.destination_directory}</code>. The source server is unchanged. Reinstall compatible extensions here, review the EULA, and inspect the first startup console before inviting players.</p>
         </div>
         {migrationContext.extensions.length > 0 && <ul>{migrationContext.extensions.map(extension => <li key={extension.file_name}>
           <strong>{extension.name}</strong>

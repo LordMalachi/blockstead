@@ -1,7 +1,28 @@
 export interface ApiError { error: { code: string; message: string; recovery?: string } }
 export interface Session { username: string; csrf_token?: string }
 export interface Profile { id: string; name: string; server_directory: string; distribution: string; minecraft_version: string | null; loader_version: string | null; is_fixture: boolean }
-export interface ProfileDeleteResult { id: string; name: string; files_deleted: boolean; detail: string }
+export interface ProfileRemovalReview {
+  id: string;
+  name: string;
+  server_directory: string;
+  worlds: Array<{ name: string; path: string; size_bytes: number | null }>;
+  local_backup_directory: string;
+  local_backups_present: boolean;
+  external_backup_directories: string[];
+  can_remove_record: boolean;
+  can_delete_files: boolean;
+  blockers: string[];
+  delete_files_blockers: string[];
+}
+export interface ProfileDeleteResult {
+  id: string;
+  name: string;
+  files_deleted: boolean;
+  server_directory: string;
+  local_backup_directory: string;
+  external_backup_directories: string[];
+  detail: string;
+}
 export interface ProcessState { state: "STOPPED" | "STARTING" | "RUNNING" | "STOPPING" | "CRASHED" | "DEGRADED" | "UNKNOWN"; pid: number | null; exit_code: number | null; reason: string; started_at?: string | null; profile_id?: string | null }
 export interface LogEvent { sequence: number; timestamp: string; line: string; profile_id: string | null }
 export interface ImportScan { canonical_path: string; distribution: string; minecraft_version: string | null; detected_files: string[]; is_fixture: boolean; plan: string[] }
@@ -164,6 +185,9 @@ export interface LoaderMigrationReview {
   loader_version: string | null;
   level_name: string;
   worlds: string[];
+  source_directory: string;
+  destination_root: string;
+  world_copy_operations: Array<{ source_path: string; destination_relative_path: string; detail: string }>;
   world_size_bytes: number | null;
   disk_free_bytes: number;
   required_java_major: number | null;
@@ -182,6 +206,9 @@ export interface LoaderMigrationResult {
   minecraft_version: string;
   loader_version: string | null;
   worlds_copied: string[];
+  source_directory: string;
+  destination_directory: string;
+  world_copy_operations: Array<{ source_path: string; destination_relative_path: string; detail: string }>;
   source_profile_id: string;
   source_unchanged: boolean;
   extensions: LoaderMigrationExtension[];

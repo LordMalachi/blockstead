@@ -178,6 +178,7 @@ from .loader_migration import (
     discover_world_roots,
     review_fingerprint,
     safe_level_name,
+    world_copy_operations,
 )
 from .loader_migration import (
     world_roots as migration_world_roots,
@@ -1615,6 +1616,75 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for p in db.scalars(select(Profile).order_by(Profile.created_at)).all()
         ]
 
+    def profile_removal_payload(profile: Profile, db: Session) -> dict[str, object]:
+        """Show the exact local data affected by record-only or permanent removal."""
+
+        blockers: list[str] = []
+        if app.state.active_profile_id == profile.id:
+            blockers.append("Stop this server before removing it.")
+        pending_backup = db.scalar(
+            select(BackupRecord).where(
+                BackupRecord.profile_id == profile.id,
+                BackupRecord.status == "in_progress",
+            )
+        )
+        if pending_backup is not None:
+            blockers.append("Wait for the current backup to finish before removing it.")
+
+        delete_files_blockers = list(blockers)
+        worlds: list[dict[str, object]] = []
+        try:
+            directory = canonical_child(Path(profile.server_directory), config.server_root)
+        except (ValueError, OSError):
+            directory = Path(profile.server_directory).resolve(strict=False)
+            delete_files_blockers.append(
+                "The recorded server folder is not a safe individual folder inside the "
+                "managed server root. Only remove the Blockstead record."
+            )
+        else:
+            if overlapping_profiles(directory, db, exclude_profile_id=profile.id):
+                delete_files_blockers.append(
+                    "This server folder overlaps another managed profile. Only remove the "
+                    "Blockstead record so shared files are not deleted."
+                )
+            worlds = [
+                {
+                    "name": root.name,
+                    "path": str(root),
+                    "size_bytes": tree_size(root),
+                }
+                for root in backup_world_roots(directory)
+            ]
+
+        local_backups = backup_directory(config.data_dir, profile.id).resolve(strict=False)
+        external_backups = [
+            str((Path(root) / "blockstead-backups" / profile.id).resolve(strict=False))
+            for root in configured_backup_destinations(profile)
+        ]
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            "server_directory": str(directory),
+            "worlds": worlds,
+            "local_backup_directory": str(local_backups),
+            "local_backups_present": local_backups.is_dir(),
+            "external_backup_directories": external_backups,
+            "can_remove_record": not blockers,
+            "can_delete_files": not delete_files_blockers,
+            "blockers": blockers,
+            "delete_files_blockers": delete_files_blockers,
+        }
+
+    @app.get("/api/v1/profiles/{profile_id}/removal-review")
+    def profile_removal_review(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        current(request, db)
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That server was not found.")
+        return profile_removal_payload(profile, db)
+
     @app.delete("/api/v1/profiles/{profile_id}")
     def remove_profile(
         profile_id: str, payload: ProfileDeleteRequest, request: Request, db: Db
@@ -1630,20 +1700,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile = db.get(Profile, profile_id)
         if profile is None:
             raise HTTPException(404, "That server was not found.")
+        removal = profile_removal_payload(profile, db)
         if payload.confirm_name.strip() != profile.name:
             raise HTTPException(422, "Type this server's exact name to confirm removal.")
-        if app.state.active_profile_id == profile.id:
-            raise HTTPException(409, "Stop this server before removing it.")
-        pending_backup = db.scalar(
-            select(BackupRecord).where(
-                BackupRecord.profile_id == profile.id,
-                BackupRecord.status == "in_progress",
-            )
-        )
-        if pending_backup is not None:
-            raise HTTPException(409, "Wait for the current backup to finish before removing it.")
+        blockers = cast(list[str], removal["blockers"])
+        if blockers:
+            raise HTTPException(409, blockers[0])
 
         if payload.delete_files:
+            delete_blockers = cast(list[str], removal["delete_files_blockers"])
+            if delete_blockers:
+                raise HTTPException(409, delete_blockers[0])
             try:
                 directory = canonical_child(Path(profile.server_directory), config.server_root)
             except (ValueError, OSError) as exc:
@@ -1661,12 +1728,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             try:
                 shutil.rmtree(directory, onexc=remove_readonly)
-                shutil.rmtree(backup_directory(config.data_dir, profile.id), ignore_errors=True)
+                local_backups = backup_directory(config.data_dir, profile.id)
+                if local_backups.exists():
+                    shutil.rmtree(local_backups, onexc=remove_readonly)
             except OSError as exc:
                 raise HTTPException(
                     409,
-                    "The server files could not be fully deleted. The profile record and local "
-                    "backups were kept; inspect the server folder before retrying.",
+                    "The server folder or local backup folder could not be fully deleted. The "
+                    "profile record was kept; inspect both reviewed paths before retrying.",
                 ) from exc
 
         db.add(
@@ -1683,15 +1752,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         )
         db.delete(profile)
-        db.commit()
+        try:
+            db.commit()
+        except SQLAlchemyError as exc:
+            db.rollback()
+            detail = (
+                "The server files were deleted, but Blockstead could not remove the profile "
+                "record. Retry Remove from Blockstead without file deletion."
+                if payload.delete_files
+                else "Blockstead could not remove the profile record; nothing on disk changed."
+            )
+            raise HTTPException(409, detail) from exc
+        server_directory = cast(str, removal["server_directory"])
+        local_backup_directory = cast(str, removal["local_backup_directory"])
+        external_backup_directories = cast(list[str], removal["external_backup_directories"])
+        external_note = (
+            " Separate backup copies were kept at "
+            + ", ".join(external_backup_directories)
+            + "."
+            if external_backup_directories
+            else ""
+        )
         return {
             "id": profile_id,
             "name": profile.name,
             "files_deleted": payload.delete_files,
+            "server_directory": server_directory,
+            "local_backup_directory": local_backup_directory,
+            "external_backup_directories": external_backup_directories,
             "detail": (
-                "The profile, server folder, and Blockstead's local backups were deleted."
+                f"Permanently deleted the server folder at {server_directory}, including its "
+                f"world data, and local backups at {local_backup_directory}." + external_note
                 if payload.delete_files
-                else "The profile was removed; its server folder and local backups were kept."
+                else (
+                    f"Removed the profile from Blockstead. The server folder was kept at "
+                    f"{server_directory}, and local backup archives were kept at "
+                    f"{local_backup_directory}. Their dashboard history was removed, so retained "
+                    "archives are not automatically attached if the server is imported again."
+                    + external_note
+                )
             ),
         }
 
@@ -2428,6 +2527,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except RestoreError as exc:
                 backup_detail = str(exc)
 
+        if backup_verified and newest_backup is not None:
+            try:
+                protected_paths = set(json.loads(newest_backup.included_paths or "[]"))
+            except (TypeError, json.JSONDecodeError):
+                protected_paths = set()
+            missing_paths = [root.name for root in roots if root.name not in protected_paths]
+            if missing_paths:
+                backup_verified = False
+                backup_detail = (
+                    "The newest verified backup does not contain the reviewed world folder"
+                    f"{'s' if len(missing_paths) != 1 else ''}: {', '.join(missing_paths)}."
+                )
+
         measured_roots = [tree_size(root.source) for root in roots]
         measured_world = (
             sum(size for size in measured_roots if size is not None)
@@ -2443,7 +2555,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not stopped:
             blockers.append("Stop the active Minecraft server before creating a modded copy.")
         if not roots:
-            blockers.append("No supported world folders were found to copy.")
+            blockers.append(
+                "Blockstead could not identify one unambiguous generated world to copy."
+            )
         if not backup_verified:
             blockers.append("Create a fresh verified backup before migrating.")
         if required_java is not None and runtime is None:
@@ -2466,6 +2580,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             entries=view.entries,
             backup_id=backup_id,
         )
+        operations = world_copy_operations(
+            roots,
+            level_name,
+            profile.distribution,
+            target_distribution,
+            profile.minecraft_version,
+        )
         return {
             "review_id": review_id,
             "profile_id": profile.id,
@@ -2475,6 +2596,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "loader_version": provision_plan.loader_version,
             "level_name": level_name,
             "worlds": [root.name for root in roots],
+            "source_directory": str(source),
+            "destination_root": str(config.server_root.resolve()),
+            "world_copy_operations": [operation.__dict__ for operation in operations],
             "world_size_bytes": measured_world,
             "disk_free_bytes": disk_free,
             "required_java_major": required_java,
@@ -2549,6 +2673,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if runtime is not None and payload.target_distribution in {"forge", "quilt", "neoforge"}
             else None
         )
+        source = profile_directory(profile.id, db)
+        reviewed_worlds = cast(list[str], fresh["worlds"])
+        roots = tuple(
+            root
+            for root in migration_world_roots(source, cast(str, fresh["level_name"]))
+            if root.name in reviewed_worlds
+        )
+        if [root.name for root in roots] != reviewed_worlds:
+            raise HTTPException(
+                409, "The reviewed world folders changed. Review the migration again."
+            )
         try:
             provisioned = await provision_profile(
                 http_client,
@@ -2565,8 +2700,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, "The new server folder could not be created.") from exc
 
         target = Path(provisioned.directory)
-        source = profile_directory(profile.id, db)
-        roots = migration_world_roots(source, cast(str, fresh["level_name"]))
         try:
             copied = await asyncio.to_thread(
                 copy_worlds,
@@ -2575,13 +2708,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 cast(str, fresh["level_name"]),
                 profile.distribution,
                 payload.target_distribution,
+                cast(str, fresh["minecraft_version"]),
             )
         except (OSError, ValueError) as exc:
             await asyncio.to_thread(shutil.rmtree, target, True)
+            cleanup_detail = (
+                "The incomplete target was removed"
+                if not target.exists()
+                else f"The incomplete target remains at {target} and must be inspected manually"
+            )
             raise HTTPException(
                 409,
-                "The world copy did not complete. The incomplete target was removed and "
-                "the source was not changed.",
+                f"The world copy did not complete. {cleanup_detail}; the source was not changed.",
             ) from exc
 
         created = Profile(
@@ -2592,33 +2730,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             loader_version=provisioned.plan.loader_version,
             is_fixture=False,
         )
-        db.add(created)
-        db.flush()
-        db.add_all(
-            [
-                AuditEvent(
-                    admin_id=admin.id,
-                    profile_id=profile.id,
-                    category="loader_migration",
-                    result="source_retained",
-                    safe_detail=(
-                        f"Created protected {payload.target_distribution} copy "
-                        f"{created.name}; source profile retained"
+        try:
+            db.add(created)
+            db.flush()
+            db.add_all(
+                [
+                    AuditEvent(
+                        admin_id=admin.id,
+                        profile_id=profile.id,
+                        category="loader_migration",
+                        result="source_retained",
+                        safe_detail=(
+                            f"Created protected {payload.target_distribution} copy "
+                            f"{created.name}; source profile retained"
+                        ),
                     ),
-                ),
-                AuditEvent(
-                    admin_id=admin.id,
-                    profile_id=created.id,
-                    category="loader_migration",
-                    result="success",
-                    safe_detail=(
-                        f"Copied {', '.join(copied)} from {profile.name} using verified "
-                        f"backup {payload.backup_id}"
+                    AuditEvent(
+                        admin_id=admin.id,
+                        profile_id=created.id,
+                        category="loader_migration",
+                        result="success",
+                        safe_detail=(
+                            f"Copied {', '.join(copied)} from {profile.name} using verified "
+                            f"backup {payload.backup_id}"
+                        ),
                     ),
-                ),
-            ]
-        )
-        db.commit()
+                ]
+            )
+            db.commit()
+        except SQLAlchemyError as exc:
+            db.rollback()
+            await asyncio.to_thread(shutil.rmtree, target, True)
+            cleanup_detail = (
+                "The new folder was removed"
+                if not target.exists()
+                else f"The unregistered new folder remains at {target} and must be inspected"
+            )
+            raise HTTPException(
+                409,
+                f"The copied world could not be registered. {cleanup_detail}; the source was "
+                "not changed.",
+            ) from exc
         return {
             "id": created.id,
             "name": created.name,
@@ -2626,6 +2778,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "minecraft_version": created.minecraft_version,
             "loader_version": created.loader_version,
             "worlds_copied": copied,
+            "source_directory": str(source),
+            "destination_directory": str(target),
+            "world_copy_operations": fresh["world_copy_operations"],
             "source_profile_id": profile.id,
             "source_unchanged": True,
             "extensions": fresh["extensions"],

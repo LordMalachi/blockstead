@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { vi } from "vitest";
 import type {
   FileContent,
@@ -95,7 +96,7 @@ function renderPanel({ stopped = true }: { stopped?: boolean } = {}) {
     return Promise.resolve(respond(configListing));
   }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><FilesPanel profileId="profile-1" distribution="fabric" stopped={stopped} /></QueryClientProvider>);
+  return render(<MemoryRouter><QueryClientProvider client={client}><FilesPanel profileId="profile-1" distribution="fabric" stopped={stopped} /></QueryClientProvider></MemoryRouter>);
 }
 
 test("lists entries for the default config category", async () => {
@@ -214,6 +215,7 @@ test("warns and locks mutations when a stopped server is required", async () => 
   fireEvent.click(screen.getByRole("button", { name: "World" }));
 
   expect(await screen.findByText(/Stop the server before uploading, renaming, deleting, or extracting/)).toBeVisible();
+  expect(screen.getByText(/To permanently delete this server and all of its worlds/)).toBeVisible();
   expect(screen.queryByRole("button", { name: "Rename" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
 });

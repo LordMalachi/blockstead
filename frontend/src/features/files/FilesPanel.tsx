@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import {
   api,
   apiBlob,
@@ -178,6 +179,7 @@ export function FilesPanel({
       {visibleCategories.map(item => <button key={item.value} type="button" className={category === item.value ? "active" : ""} aria-pressed={category === item.value} onClick={() => setCategory(item.value)}>{item.label}</button>)}
     </div>
     <p className="muted-note">{CATEGORIES.find(item => item.value === category)?.hint}</p>
+    {category === "world" && path === "" && <p className="muted-note">Whole world folders cannot be renamed or deleted from the file browser. To permanently delete this server and all of its worlds, open <Link to="/servers">Servers</Link>, choose <strong>Remove server</strong>, and review the exact folders first.</p>}
 
     <nav className="file-breadcrumb" aria-label="Folder path">
       <button type="button" aria-label={`${category[0].toUpperCase() + category.slice(1)} root folder`} onClick={() => setPath("")} disabled={!path}>{category[0].toUpperCase() + category.slice(1)}</button>

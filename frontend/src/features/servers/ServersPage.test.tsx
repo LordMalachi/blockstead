@@ -48,8 +48,22 @@ test("requires a clear confirmation before removing a server", async () => {
           ? []
           : url.endsWith("/players")
             ? { allowlist: { readable: false, players: [] } }
+            : url.endsWith("/profiles/server-1/removal-review")
+              ? {
+                  id: "server-1",
+                  name: "Family",
+                  server_directory: "/srv/minecraft/family",
+                  worlds: [{ name: "world", path: "/srv/minecraft/family/world", size_bytes: 2048 }],
+                  local_backup_directory: "/var/lib/blockstead/backups/server-1",
+                  local_backups_present: true,
+                  external_backup_directories: ["/mnt/safe/blockstead-backups/server-1"],
+                  can_remove_record: true,
+                  can_delete_files: true,
+                  blockers: [],
+                  delete_files_blockers: [],
+                }
             : url.endsWith("/profiles/server-1") && init?.method === "DELETE"
-              ? { id: "server-1", name: "Family", files_deleted: true, detail: "The profile, server folder, and Blockstead's local backups were deleted." }
+              ? { id: "server-1", name: "Family", files_deleted: true, server_directory: "/srv/minecraft/family", local_backup_directory: "/var/lib/blockstead/backups/server-1", external_backup_directories: ["/mnt/safe/blockstead-backups/server-1"], detail: "Permanently deleted the server folder." }
               : url.includes("/provision/versions/")
                 ? { distribution: "vanilla", versions: ["1.21.1"] }
                 : {};
@@ -63,10 +77,13 @@ test("requires a clear confirmation before removing a server", async () => {
   await user.click(await screen.findByRole("button", { name: "Remove server" }));
   const dialog = screen.getByRole("dialog", { name: /Review removal of “Family”/ });
   expect(dialog).toHaveTextContent("Nothing has changed yet");
+  expect(await within(dialog).findByText("/srv/minecraft/family/world")).toBeVisible();
+  expect(within(dialog).getByText("/var/lib/blockstead/backups/server-1")).toBeVisible();
+  expect(within(dialog).getByText("/mnt/safe/blockstead-backups/server-1")).toBeVisible();
   expect(within(dialog).getByRole("button", { name: "Remove from Blockstead" })).toBeDisabled();
   await user.click(within(dialog).getByRole("checkbox"));
   await user.type(within(dialog).getByLabelText(/Type Family to confirm/), "Family");
-  await user.click(within(dialog).getByRole("button", { name: "Permanently delete server" }));
+  await user.click(within(dialog).getByRole("button", { name: "Permanently delete server and worlds" }));
 
   await waitFor(() => expect(fetch).toHaveBeenCalledWith(
     "/api/v1/profiles/server-1",

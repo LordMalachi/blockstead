@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .extensions import ExtensionEntry
 
@@ -35,6 +36,13 @@ class MigrationApplyRequest(MigrationReviewRequest):
     )
     acknowledge_modded_world: bool = False
 
+    @field_validator("name")
+    @classmethod
+    def usable_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("The new profile name cannot be blank.")
+        return value
+
 
 class MigrationExtension(BaseModel):
     file_name: str
@@ -50,6 +58,24 @@ class MigrationExtension(BaseModel):
 class WorldRoot:
     name: str
     source: Path
+
+
+@dataclass(frozen=True)
+class WorldCopyOperation:
+    """One owner-visible source/destination pair in a migration plan."""
+
+    source_path: str
+    destination_relative_path: str
+    detail: str
+
+
+_MODERN_PAPER_METADATA = (
+    "game_rules.dat",
+    "scheduled_events.dat",
+    "wandering_trader.dat",
+    "weather.dat",
+    "world_gen_settings.dat",
+)
 
 
 def _has_world_evidence(path: Path) -> bool:
@@ -120,8 +146,77 @@ def discover_world_roots(
         level_name = candidates[0].name
         return level_name, world_roots(directory, level_name)
     # Preserve the configured name and its ordinary roots when discovery is
-    # ambiguous. The review will block rather than guess which world to copy.
-    return configured, world_roots(directory, configured)
+    # ambiguous, but return no roots. An empty configured folder or an orphaned
+    # Paper dimension folder is not enough evidence to approve a migration.
+    return configured, ()
+
+
+def uses_modern_paper_layout(minecraft_version: str) -> bool:
+    """Paper 26.1+ uses the unified Vanilla-like world layout."""
+
+    match = re.match(r"^(\d+)(?:\.(\d+))?", minecraft_version)
+    if match is None:
+        return False
+    version = (int(match.group(1)), int(match.group(2) or 0))
+    return version >= (26, 1)
+
+
+def world_copy_operations(
+    roots: tuple[WorldRoot, ...],
+    level_name: str,
+    source_distribution: str,
+    target_distribution: str,
+    minecraft_version: str,
+) -> tuple[WorldCopyOperation, ...]:
+    """Describe the actual loader-aware paths copied into the new server."""
+
+    by_name = {root.name: root.source for root in roots}
+    base = by_name.get(level_name)
+    if base is None:
+        return ()
+    operations: list[WorldCopyOperation] = []
+    modern_paper = uses_modern_paper_layout(minecraft_version)
+    split_paper = any(
+        name in by_name for name in (f"{level_name}_nether", f"{level_name}_the_end")
+    )
+    if source_distribution == "paper" and target_distribution != "paper" and split_paper:
+        operations.append(
+            WorldCopyOperation(str(base), level_name, "Overworld and shared world data")
+        )
+        for source_name, dimension, label in (
+            (f"{level_name}_nether", "DIM-1", "Nether dimension data"),
+            (f"{level_name}_the_end", "DIM1", "End dimension data"),
+        ):
+            source_root = by_name.get(source_name)
+            dimension_source = source_root / dimension if source_root is not None else None
+            if (
+                dimension_source is not None
+                and dimension_source.is_dir()
+                and not dimension_source.is_symlink()
+            ):
+                operations.append(
+                    WorldCopyOperation(
+                        str(dimension_source), f"{level_name}/{dimension}", label
+                    )
+                )
+    else:
+        operations.extend(
+            WorldCopyOperation(str(root.source), root.name, "Complete world folder")
+            for root in roots
+        )
+    if source_distribution == "paper" and target_distribution != "paper" and modern_paper:
+        metadata = base / "dimensions" / "minecraft" / "overworld" / "data" / "minecraft"
+        for name in _MODERN_PAPER_METADATA:
+            source = metadata / name
+            if source.is_file() and not source.is_symlink():
+                operations.append(
+                    WorldCopyOperation(
+                        str(source),
+                        f"{level_name}/data/minecraft/{name}",
+                        "Paper metadata moved inside the new copy for Vanilla-compatible loaders.",
+                    )
+                )
+    return tuple(operations)
 
 
 def classify_extensions(
@@ -232,16 +327,50 @@ def _assert_no_links(root: Path) -> None:
         raise ValueError(f"{root.name} contains a symbolic link and cannot be migrated safely.")
 
 
-def _copy_tree(source: Path, destination: Path, *, ignore_dimensions: bool = False) -> None:
+def _copy_tree(source: Path, destination: Path) -> None:
     if destination.exists() or destination.is_symlink():
         raise ValueError(f"The new profile already contains {destination.name}.")
     _assert_no_links(source)
-    ignore = (
-        (lambda _directory, names: [name for name in names if name in {"DIM-1", "DIM1"}])
-        if ignore_dimensions
-        else None
+    shutil.copytree(source, destination, symlinks=False)
+
+
+def _move_modern_paper_metadata(destination_base: Path) -> None:
+    source_root = (
+        destination_base / "dimensions" / "minecraft" / "overworld" / "data" / "minecraft"
     )
-    shutil.copytree(source, destination, symlinks=False, ignore=ignore)
+    destination_root = destination_base / "data" / "minecraft"
+    for name in _MODERN_PAPER_METADATA:
+        source = source_root / name
+        if not source.is_file() or source.is_symlink():
+            continue
+        destination_root.mkdir(parents=True, exist_ok=True)
+        source.replace(destination_root / name)
+
+
+def _write_level_name(properties: Path, level_name: str) -> None:
+    """Set level-name without discarding properties an installer may have created."""
+
+    try:
+        lines = properties.read_text(encoding="utf-8").splitlines() if properties.is_file() else []
+    except OSError as exc:
+        raise ValueError("The new server properties could not be read.") from exc
+    replacement = f"level-name={level_name}"
+    updated: list[str] = []
+    replaced = False
+    for line in lines:
+        key, separator, _value = line.partition("=")
+        if separator and key.strip() == "level-name":
+            if not replaced:
+                updated.append(replacement)
+                replaced = True
+            continue
+        updated.append(line)
+    if not replaced:
+        updated.append(replacement)
+    try:
+        properties.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise ValueError("The new server properties could not be written.") from exc
 
 
 def copy_worlds(
@@ -250,25 +379,20 @@ def copy_worlds(
     level_name: str,
     source_distribution: str,
     target_distribution: str,
+    minecraft_version: str,
 ) -> list[str]:
-    """Copy reviewed worlds, translating Paper's split dimension layout."""
+    """Copy reviewed worlds, translating the Paper layout for this game version."""
 
     by_name = {root.name: root.source for root in roots}
     base = by_name.get(level_name)
     if base is None:
         raise ValueError("The reviewed overworld is no longer available.")
     copied: list[str] = []
-    if source_distribution != "paper" and target_distribution == "paper":
-        _copy_tree(base, target / level_name, ignore_dimensions=True)
-        copied.append(level_name)
-        for dimension, suffix in (("DIM-1", "_nether"), ("DIM1", "_the_end")):
-            source = base / dimension
-            if source.is_dir() and not source.is_symlink():
-                destination_root = target / f"{level_name}{suffix}"
-                destination_root.mkdir(mode=0o755)
-                _copy_tree(source, destination_root / dimension)
-                copied.append(destination_root.name)
-    elif source_distribution == "paper" and target_distribution != "paper":
+    modern_paper = uses_modern_paper_layout(minecraft_version)
+    split_paper = any(
+        name in by_name for name in (f"{level_name}_nether", f"{level_name}_the_end")
+    )
+    if source_distribution == "paper" and target_distribution != "paper" and split_paper:
         _copy_tree(base, target / level_name)
         copied.append(level_name)
         destination_base = target / level_name
@@ -287,6 +411,7 @@ def copy_worlds(
         for root in roots:
             _copy_tree(root.source, target / root.name)
             copied.append(root.name)
-    properties = target / "server.properties"
-    properties.write_text(f"level-name={level_name}\n", encoding="utf-8")
+    if source_distribution == "paper" and target_distribution != "paper" and modern_paper:
+        _move_modern_paper_metadata(target / level_name)
+    _write_level_name(target / "server.properties", level_name)
     return copied

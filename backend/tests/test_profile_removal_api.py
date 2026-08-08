@@ -55,6 +55,14 @@ def test_removing_a_profile_keeps_the_server_and_backups(
     profile_id, directory = imported_server(removal_client, auth, root)
     backup = removal_client.post(f"/api/v1/profiles/{profile_id}/backups", headers=auth)
     assert backup.status_code == 201, backup.text
+    review = removal_client.get(
+        f"/api/v1/profiles/{profile_id}/removal-review", headers=auth
+    )
+    assert review.status_code == 200, review.text
+    assert review.json()["server_directory"] == str(directory)
+    assert review.json()["worlds"][0]["path"] == str(directory / "world")
+    assert review.json()["local_backups_present"] is True
+    assert review.json()["can_delete_files"] is True
 
     removed = removal_client.request(
         "DELETE",
@@ -65,6 +73,8 @@ def test_removing_a_profile_keeps_the_server_and_backups(
 
     assert removed.status_code == 200, removed.text
     assert removed.json()["files_deleted"] is False
+    assert removed.json()["server_directory"] == str(directory)
+    assert "not automatically attached" in removed.json()["detail"]
     assert directory.is_dir()
     assert (removal_client.app.state.settings.data_dir / "backups" / profile_id).is_dir()
     assert removal_client.get("/api/v1/profiles", headers=auth).json() == []
@@ -76,8 +86,24 @@ def test_permanent_removal_requires_the_exact_name_and_deletes_local_data(
     auth = headers(removal_client)
     root = removal_client.app.state.settings.server_root
     profile_id, directory = imported_server(removal_client, auth, root)
+    external = root.parent / "external-backups"
+    external.mkdir()
+    policy = removal_client.put(
+        f"/api/v1/profiles/{profile_id}/backup-policy",
+        headers=auth,
+        json={
+            "keep_count": None,
+            "keep_days": None,
+            "max_total_mb": None,
+            "redundancy_enabled": True,
+            "destinations": [str(external)],
+        },
+    )
+    assert policy.status_code == 200, policy.text
     backup = removal_client.post(f"/api/v1/profiles/{profile_id}/backups", headers=auth)
     assert backup.status_code == 201
+    external_profile_backups = external / "blockstead-backups" / profile_id
+    assert external_profile_backups.is_dir()
 
     refused = removal_client.request(
         "DELETE",
@@ -97,8 +123,12 @@ def test_permanent_removal_requires_the_exact_name_and_deletes_local_data(
 
     assert removed.status_code == 200, removed.text
     assert removed.json()["files_deleted"] is True
+    assert removed.json()["server_directory"] == str(directory)
+    assert "including its world data" in removed.json()["detail"]
+    assert removed.json()["external_backup_directories"] == [str(external_profile_backups)]
     assert not directory.exists()
     assert not (removal_client.app.state.settings.data_dir / "backups" / profile_id).exists()
+    assert external_profile_backups.is_dir()
 
 
 def test_server_root_profile_can_never_delete_managed_servers(
@@ -172,6 +202,15 @@ def test_overlapping_profile_folders_block_file_deletion(
         child_id = child_profile.id
 
     for profile_id, name in ((parent_id, "Parent"), (child_id, "Child")):
+        review = removal_client.get(
+            f"/api/v1/profiles/{profile_id}/removal-review", headers=auth
+        )
+        assert review.status_code == 200
+        assert review.json()["can_remove_record"] is True
+        assert review.json()["can_delete_files"] is False
+        assert any(
+            "overlaps" in blocker for blocker in review.json()["delete_files_blockers"]
+        )
         refused = removal_client.request(
             "DELETE",
             f"/api/v1/profiles/{profile_id}",

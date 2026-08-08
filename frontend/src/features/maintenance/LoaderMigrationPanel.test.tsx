@@ -13,6 +13,11 @@ const review = {
   loader_version: null,
   level_name: "family",
   worlds: ["family", "family_nether", "family_the_end"],
+  source_directory: "/servers/family",
+  destination_root: "/servers",
+  world_copy_operations: [
+    { source_path: "/servers/family/family", destination_relative_path: "family", detail: "Complete world folder" },
+  ],
   world_size_bytes: 4096,
   disk_free_bytes: 1_000_000_000,
   required_java_major: 21,
@@ -39,7 +44,7 @@ test("reviews and creates a protected loader copy", async () => {
       ? [{ id: "profile-1", name: "Family", server_directory: "/servers/family", distribution: "fabric", minecraft_version: "1.21.1", loader_version: "1", is_fixture: false }]
       : url.includes("/loader-migration/review")
         ? review
-        : { id: "profile-2", name: "Family · Paper", distribution: "paper", minecraft_version: "1.21.1", loader_version: null, worlds_copied: review.worlds, source_profile_id: "profile-1", source_unchanged: true, extensions: review.extensions, next_route: "/servers/profile-2/mods?migration=1", eula_accepted: false };
+        : { id: "profile-2", name: "Family · Paper", distribution: "paper", minecraft_version: "1.21.1", loader_version: null, worlds_copied: review.worlds, source_directory: "/servers/family", destination_directory: "/servers/family-paper", world_copy_operations: review.world_copy_operations, source_profile_id: "profile-1", source_unchanged: true, extensions: review.extensions, next_route: "/servers/profile-2/mods?migration=1", eula_accepted: false };
     return Promise.resolve(new Response(JSON.stringify(body), { status: url.includes("/apply") ? 201 : 200, headers: { "Content-Type": "application/json" } }));
   });
   vi.stubGlobal("fetch", fetch);
@@ -52,6 +57,8 @@ test("reviews and creates a protected loader copy", async () => {
 
   fireEvent.click(screen.getByRole("button", { name: "Review modded copy" }));
   expect(await screen.findByText("Extension rebuild checklist")).toBeVisible();
+  expect(screen.getAllByText("/servers/family-paper")).toHaveLength(2);
+  expect(screen.getByText("/servers/family/family")).toBeVisible();
   fireEvent.click(screen.getByRole("checkbox"));
   fireEvent.click(screen.getByRole("button", { name: "Create Paper copy" }));
 

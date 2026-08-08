@@ -22,6 +22,11 @@ function folderFrom(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "modded-server";
 }
 
+function childPath(parent: string, child: string) {
+  const separator = parent.includes("\\") ? "\\" : "/";
+  return `${parent.replace(/[\\/]+$/, "")}${separator}${child}`;
+}
+
 export function LoaderMigrationPanel({ profileId }: { profileId: string }) {
   const navigate = useNavigate();
   const client = useQueryClient();
@@ -41,6 +46,8 @@ export function LoaderMigrationPanel({ profileId }: { profileId: string }) {
     onMutate: () => setAcknowledge(false),
   });
   const plan = review.data?.target_distribution === target ? review.data : null;
+  const chosenDirectory = directory.trim() || folderFrom(suggestedName);
+  const destinationDirectory = plan ? childPath(plan.destination_root, chosenDirectory) : "";
   const apply = useMutation({
     mutationFn: () => api<LoaderMigrationResult>(`/profiles/${profileId}/loader-migration/apply`, {
       method: "POST",
@@ -95,6 +102,18 @@ export function LoaderMigrationPanel({ profileId }: { profileId: string }) {
         <span>{plan.java_ready ? `Java ${plan.required_java_major ?? "ready"} available` : `Java ${plan.required_java_major} needed`}</span>
         <span className={plan.protection.verified ? "success" : "warning"}>{plan.protection.detail}</span>
       </div>
+      <div className="migration-review__locations" aria-label="World copy locations">
+        <h4>Where the world data goes</h4>
+        <dl>
+          <div><dt>Source server</dt><dd><code>{plan.source_directory}</code><small>This folder stays in place and is not changed.</small></dd></div>
+          <div><dt>New server</dt><dd><code>{destinationDirectory}</code><small>A separate folder created under Blockstead’s managed server root.</small></dd></div>
+        </dl>
+        {plan.world_copy_operations.length > 0 && <ul>{plan.world_copy_operations.map(operation => <li key={`${operation.source_path}:${operation.destination_relative_path}`}>
+          <code>{operation.source_path}</code><span aria-hidden="true"> → </span><code>{childPath(destinationDirectory, operation.destination_relative_path)}</code>
+          <small>{operation.detail}</small>
+        </li>)}</ul>}
+        <p className="muted-note">Only the reviewed world paths above are copied. Loader files, mods, plugins, and source configuration are not moved.</p>
+      </div>
       {plan.blockers.length > 0 && <div className="maintenance-blocked" role="alert">
         <strong>Resolve before creating the copy</strong>
         <ul>{plan.blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul>
@@ -112,6 +131,7 @@ export function LoaderMigrationPanel({ profileId }: { profileId: string }) {
       {plan.ready && <div className="migration-create">
         <label>New profile name<input value={name} placeholder={suggestedName} maxLength={80} onChange={event => setName(event.target.value)} /></label>
         <label>New server folder<input value={directory} placeholder={folderFrom(suggestedName)} pattern="[a-z0-9][a-z0-9_-]*" maxLength={64} onChange={event => setDirectory(event.target.value)} /></label>
+        <small>The complete destination will be <code>{destinationDirectory}</code>.</small>
         {plan.modded_world_warning && <label className="maintenance-booking-toggle">
           <input type="checkbox" checked={acknowledge} onChange={event => setAcknowledge(event.target.checked)} />
           <span>I understand unavailable source mods may leave custom world content unreadable in the new loader.</span>
