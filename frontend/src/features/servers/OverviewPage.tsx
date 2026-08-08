@@ -1,30 +1,12 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api, type DiagnosticCapture, type OverviewMetricPoint, type ProfileOverview } from "../../api/client";
+import { api, type DailySummaryFact, type DiagnosticCapture, type OverviewMetricPoint, type ProfileOverview } from "../../api/client";
 import { Button } from "../../components/Button";
-import { formatBytes, formatUptime } from "../../lib/format";
+import { Tooltip } from "../../components/Tooltip";
+import { formatBytes } from "../../lib/format";
 import { PrerequisitesPanel } from "../extensions/PrerequisitesPanel";
 import { useServerScope } from "./scope";
-
-function relativeDate(value: string): string {
-  const date = new Date(value);
-  const days = Math.floor((Date.now() - date.getTime()) / 86_400_000);
-  if (days <= 0) return "Today";
-  if (days === 1) return "Yesterday";
-  if (days < 7) return `${days} days ago`;
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function operationTime(value: string): string {
-  const date = new Date(value);
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const day = date.toDateString() === new Date().toDateString()
-    ? "Today"
-    : date.toDateString() === tomorrow.toDateString() ? "Tomorrow" : date.toLocaleDateString(undefined, { weekday: "short" });
-  return `${day} at ${date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
-}
 
 function sampledTime(value: string | null): string {
   return value ? new Date(value).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "not yet sampled";
@@ -55,13 +37,25 @@ function HistoryCard({ label, value, note, points, field, percent = false }: {
   return <article className="health-card"><div><span>{label}</span><strong>{value}</strong><small>{note}</small></div><Sparkline values={points.map(point => typeof point[field] === "number" ? point[field] : null)} label={`${label} recent history`} percent={percent} /></article>;
 }
 
+function DailyFact({ title, fact, value = fact.label, detail = fact.detail }: { title: string; fact: DailySummaryFact; value?: string; detail?: string }) {
+  return <article className="daily-summary__fact">
+    <span>{title}</span>
+    <strong>{value}</strong>
+    <p>{detail}</p>
+    <small><b>Evidence:</b> {fact.evidence}</small>
+  </article>;
+}
+
 export function OverviewPage() {
   const scope = useServerScope();
   const [copied, setCopied] = useState(false);
   const [connectionHelpOpen, setConnectionHelpOpen] = useState(false);
   const [captureDuration, setCaptureDuration] = useState(30);
   const overview = useQuery({
-    queryKey: ["overview", scope.profile.id],
+    // A lifecycle request is accepted before Minecraft finishes transitioning.
+    // Key the evidence view by the observed state so the daily summary cannot
+    // remain on its pre-start or pre-stop snapshot while the hero has moved on.
+    queryKey: ["overview", scope.profile.id, scope.state],
     queryFn: () => api<ProfileOverview>(`/profiles/${scope.profile.id}/overview`),
     refetchInterval: 10_000,
   });
@@ -97,15 +91,22 @@ export function OverviewPage() {
   if (!data) return <section className="card"><p className="empty-note">Building the server overview…</p>{overview.error && <p className="error">{overview.error.message}</p>}</section>;
 
   const current = data.metrics.current;
-  const playerValue = data.players.online == null ? `— / ${data.players.max}` : `${data.players.online} / ${data.players.max}`;
-  const backupNote = data.last_backup?.archive_available ? "Verified and ready to restore" : data.last_backup ? "Archive is no longer on disk" : "Create the first backup";
+  const daily = data.daily_summary;
 
   return <>
-    <section className="overview-summary" aria-label="Server summary">
-      <article><span>Players online</span><strong>{playerValue}</strong><small>{data.players.available ? data.players.sample.length ? data.players.sample.join(", ") : "Server responded; nobody is online" : data.players.status_outcome === "disabled" ? "Player count is intentionally hidden by enable-status=false" : data.players.status_outcome === "closed_early" ? "Minecraft accepted the local connection but withheld status data" : scope.running ? "Live status is not responding" : "Available when the server is running"}</small></article>
-      <article><span>Uptime</span><strong>{data.state.uptime_seconds != null ? formatUptime(data.state.uptime_seconds) : "—"}</strong><small>{scope.running ? "Since this server started" : "Server is not running"}</small></article>
-      <article><span>Last backup</span><strong>{data.last_backup ? relativeDate(data.last_backup.created_at) : "Never"}</strong><small className={!data.last_backup?.archive_available ? "metric-warning" : undefined}>{backupNote}</small></article>
-      <article><span>Next operation</span><strong>{data.next_operation?.label ?? "None"}</strong><small>{data.next_operation ? operationTime(data.next_operation.at) : "No daily schedule is enabled"}</small></article>
+    <section className="card daily-summary" aria-labelledby="daily-summary-heading">
+      <div className="section-heading"><div><p className="eyebrow">At a glance</p><div className="heading-with-help"><h2 id="daily-summary-heading">Today on this server</h2><Tooltip label="How this summary chooses what to show">Each item names the recorded evidence behind it. The focus area shows only the most relevant warning or safe next task; detailed work stays in the linked workspace.</Tooltip></div></div><span>Live summary</span></div>
+      <div className="daily-summary__facts">
+        <DailyFact title="Playable state" fact={daily.playable} />
+        <DailyFact title="Join address" fact={daily.join} value={daily.join.address ?? daily.join.label} detail={daily.join.address ? `${daily.join.label}. ${daily.join.detail}` : daily.join.detail} />
+        <DailyFact title="Player capacity" fact={daily.players} />
+        <DailyFact title="Last verified backup" fact={daily.backup} detail={daily.backup.created_at ? `${new Date(daily.backup.created_at).toLocaleString()}. ${daily.backup.detail}` : daily.backup.detail} />
+        <DailyFact title="Next operation" fact={daily.next_operation} detail={daily.next_operation.at ? `${new Date(daily.next_operation.at).toLocaleString()}. ${daily.next_operation.detail}` : daily.next_operation.detail} />
+      </div>
+      <div className={`daily-summary__focus daily-summary__focus--${daily.focus.severity}`}>
+        <div><span>{daily.focus.kind === "warning" ? "Most relevant warning" : "Recommended next step"}</span><strong>{daily.focus.title}</strong><p>{daily.focus.detail}</p><small><b>Evidence:</b> {daily.focus.evidence}</small></div>
+        <Link className="button button--secondary button--small" to={daily.focus.to}>{daily.focus.kind === "warning" ? "Review warning" : "Open next step"}</Link>
+      </div>
     </section>
 
     <section className="join-card card" aria-labelledby="join-heading">
@@ -186,7 +187,7 @@ export function OverviewPage() {
 
       <section className="card overview-activity" aria-labelledby="activity-heading">
         <div className="section-heading"><div><p className="eyebrow">Latest changes</p><h2 id="activity-heading">Recent activity</h2></div><span>{data.activity.length || "Quiet"}</span></div>
-        {data.activity.length ? <ul className="overview-list">{data.activity.map(event => <li key={event.id}><div><strong>{event.category.replaceAll("_", " ")}</strong><p>{event.detail}</p><small>{new Date(event.created_at).toLocaleString()}</small></div><Link to={event.to}>View</Link></li>)}</ul> : <p className="overview-clear">No recent activity has been recorded for this server.</p>}
+        {data.activity.length ? <ul className="overview-list">{data.activity.map(event => <li key={event.id}><div><strong>{event.category.replaceAll("_", " ")}</strong><p>{event.detail}</p><small>{new Date(event.created_at).toLocaleString()}</small></div><Link to={`/activity?profile_id=${encodeURIComponent(scope.profile.id)}&incident=${encodeURIComponent(event.id)}#incident-story`}>View story</Link></li>)}</ul> : <p className="overview-clear">No recent activity has been recorded for this server.</p>}
       </section>
     </div>
 

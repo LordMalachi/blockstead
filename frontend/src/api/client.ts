@@ -257,6 +257,15 @@ export interface UpdateStatus {
 export interface OverviewMetricPoint { at: string; cpu_percent: number; memory_percent: number; disk_percent: number; process_memory_bytes: number | null; world_size_bytes: number | null }
 export interface OverviewWarning { code: string; title: string; detail: string; to: string; severity: "warning" | "danger" }
 export interface OverviewActivity { id: string; category: string; result: string; detail: string; created_at: string; to: string }
+export interface DailySummaryFact { label: string; detail: string; evidence: string }
+export interface DailySummary {
+  playable: DailySummaryFact & { state: string };
+  join: DailySummaryFact & { address: string | null };
+  players: DailySummaryFact & { online: number | null; max: number };
+  backup: DailySummaryFact & { state: string; created_at: string | null; to: string };
+  next_operation: DailySummaryFact & { at: string | null; to: string };
+  focus: { kind: string; title: string; detail: string; to: string; severity: "success" | "warning" | "danger"; evidence: string };
+}
 export interface PerformanceEvidence {
   state: "available" | "partial" | "waiting" | "not_running" | "unsupported";
   available: boolean;
@@ -269,6 +278,15 @@ export interface PerformanceEvidence {
 }
 export interface ActivityEvent { id: string; category: string; group: string; title: string; result: string; severity: "success" | "warning" | "danger"; detail: string; actor: string; profile: { id: string; name: string } | null; created_at: string; recovery_to: string; report_url: string }
 export interface ActivityFeed { events: ActivityEvent[]; total: number; limit: number; offset: number }
+export interface IncidentLogEntry { at: string; level: string; logger: string; message: string }
+export interface ActivityIncident {
+  anchor: ActivityEvent;
+  recorded_facts: ActivityEvent[];
+  observed_timing: { label: string; detail: string };
+  possible_explanation: { state: string; detail: string };
+  log_context: { state: string; detail: string; entries: IncidentLogEntry[] };
+  safe_next_action: { label: string; detail: string; to: string };
+}
 export interface NotificationPreferences { server_crashes: boolean; failed_backups: boolean; failed_automations: boolean; low_disk_space: boolean; completed_updates: boolean; show_player_avatars: boolean; last_seen_at: string | null }
 export interface LocalAlert { id: string; kind?: string; title: string; detail: string; severity: "success" | "warning" | "danger"; created_at: string; recovery_to: string }
 export interface LocalNotifications { alerts: LocalAlert[]; unread_count: number }
@@ -304,6 +322,7 @@ export interface ProfileOverview {
   warnings: OverviewWarning[];
   activity: OverviewActivity[];
   capabilities: { tps: boolean; mspt: boolean; distribution_label: string };
+  daily_summary: DailySummary;
 }
 export interface WorldCareStorageDisk { state: "available" | "missing" | "unavailable"; path: string; total_bytes: number | null; free_bytes: number | null; used_bytes: number | null; used_percent: number | null }
 export interface BackupDestinationCheck { state: "available" | "missing" | "unavailable"; write_verified: boolean; read_verified: boolean; detail: string; checked_at: string }

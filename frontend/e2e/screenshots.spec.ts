@@ -151,6 +151,14 @@ test("captures documentation screenshots @docs", async ({ page }) => {
   await page.screenshot({ path: out("14-guided-tour-spotlight") });
   await page.getByRole("button", { name: "Exit tour" }).click();
 
+  await page.locator('nav[aria-label="Main navigation"] a[href="/activity"]').click();
+  await expect(page.getByRole("heading", { name: "Activity", level: 1 })).toBeVisible();
+  await page.getByRole("link", { name: "View incident story" }).first().click();
+  await expect(page.locator("#incident-story")).toBeVisible();
+  await page.setViewportSize({ width: 1360, height: 1100 });
+  await page.screenshot({ path: out("18-incident-story"), fullPage: true });
+  await page.setViewportSize({ width: 1360, height: 850 });
+
   await page.getByRole("link", { name: "Servers" }).click();
   await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
   await page.screenshot({ path: out("08-servers") });

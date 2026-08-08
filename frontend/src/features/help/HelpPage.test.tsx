@@ -56,7 +56,7 @@ test("searches common synonyms and clears an empty result", () => {
   expect(document.querySelector("#password-recovery")).toHaveAttribute("open");
 
   fireEvent.change(search, { target: { value: "notification report" } });
-  const activityGuide = screen.getByRole("heading", { name: "Understand activity, alerts, and support reports" }).closest("article");
+  const activityGuide = screen.getByRole("heading", { name: "Understand activity, incidents, and support reports" }).closest("article");
   expect(activityGuide).not.toBeNull();
   expect(activityGuide!.querySelector("a")).toHaveTextContent("Open Activity");
   expect(activityGuide!.querySelector("a")).toHaveAttribute("href", "/activity");
@@ -73,6 +73,20 @@ test("searches common synonyms and clears an empty result", () => {
   fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
   expect(search).toHaveValue("");
   expect(screen.getByRole("heading", { name: "Help friends join" })).toBeVisible();
+});
+
+test("links file safety help to the selected server and explains recovery boundaries", () => {
+  renderHelp();
+
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search help" }), { target: { value: "archive zip recovery" } });
+
+  const filesGuide = screen.getByRole("heading", { name: "Work safely with server files" }).closest("article");
+  expect(filesGuide).not.toBeNull();
+  expect(filesGuide!.querySelector("a")).toHaveAttribute("href", "/servers/profile-1/files");
+
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search help" }), { target: { value: "" } });
+  expect(screen.getByText(/Renames do not create a snapshot/)).toBeInTheDocument();
+  expect(screen.getByText(/observed timing only describes when they happened/)).toBeInTheDocument();
 });
 
 test("offers focused recovery paths when a crash search has no task match", () => {

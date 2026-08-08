@@ -39,6 +39,7 @@ from starlette.types import Scope
 
 from . import __version__, updates
 from .activity import (
+    incident_payload,
     list_activity,
     preferences_for,
     preferences_payload,
@@ -77,13 +78,14 @@ from .curseforge import (
 from .curseforge import (
     search as curseforge_search,
 )
+from .daily_summary import build_daily_summary
 from .db import Base, create_session_factory
 from .diagnostic_captures import (
     DiagnosticCaptureError,
     resolve_capture_path,
     write_transcript,
 )
-from .diagnostics import attach_logging, build_report
+from .diagnostics import attach_logging, build_report, redact
 from .distributions import (
     DISTRIBUTIONS,
     LaunchPlanError,
@@ -1154,9 +1156,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # A host can start before DNS or Wi-Fi is ready. Retry promptly, then
             # back off to the normal cadence if the network remains unavailable.
             retry_number = min(int(app.state.update_check_failures) - 1, 6)
-            return min(
-                config.update_check_hours * 3600,
-                config.update_wait_minutes * 60 * (2**retry_number),
+            return float(
+                min(
+                    config.update_check_hours * 3600,
+                    config.update_wait_minutes * 60 * (2**retry_number),
+                )
             )
         status = helper_status()
         if (
@@ -5238,7 +5242,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "schedule_update": "schedule",
             "extension_install": "mods",
             "extension_toggle": "mods",
-            "extension_delete": "mods",
+            "extension_remove": "mods",
             "extension_upload": "mods",
             "shared_map_profile": "mods",
             "mod_config_update": "mods",
@@ -5307,12 +5311,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "disk_total_bytes": disk.total,
             }
         )
+        state_payload = {
+            "value": state,
+            "reason": snapshot["reason"] if active else "This server is not running.",
+            "uptime_seconds": uptime,
+        }
+        daily_summary = build_daily_summary(
+            profile={"id": profile.id, "name": profile.name},
+            state=state_payload,
+            join=join,
+            players=players,
+            backup=backup_payload_value,
+            next_operation=next_operation,
+            warnings=warnings,
+        )
         return {
-            "state": {
-                "value": state,
-                "reason": snapshot["reason"] if active else "This server is not running.",
-                "uptime_seconds": uptime,
-            },
+            "state": state_payload,
             "join": join,
             "players": players,
             "metrics": {
@@ -5358,6 +5372,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "mspt": performance_supported,
                 "distribution_label": info.label,
             },
+            "daily_summary": daily_summary,
         }
 
     def destination_check_payload(record: BackupDestinationCheck) -> dict[str, object]:
@@ -7020,6 +7035,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
+    @app.get("/api/v1/activity/{event_id}/incident")
+    def activity_incident(event_id: str, request: Request, db: Db) -> dict[str, object]:
+        """Connect one durable event to bounded same-profile evidence around its time."""
+
+        current(request, db)
+        event = db.get(AuditEvent, event_id)
+        if event is None:
+            raise HTTPException(404, "That activity event was not found.")
+        log_entries = [
+            {
+                "at": entry.get("at"),
+                "level": entry.get("level"),
+                "logger": redact(str(entry.get("logger") or "blockstead")),
+                "message": redact(str(entry.get("message") or "")),
+            }
+            for entry in diagnostics.window(event.created_at)
+        ]
+        return incident_payload(db, anchor=event, log_entries=log_entries)
+
     @app.get("/api/v1/notification-preferences")
     def notification_preferences(request: Request, db: Db) -> dict[str, object]:
         admin, _ = current(request, db)
@@ -7439,7 +7473,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile_id: str, payload: ScheduleRequest, request: Request, db: Db
     ) -> dict[str, object]:
         admin = mutation(request, db)
-        if payload.profile_id != profile_id or db.get(Profile, profile_id) is None:
+        profile = db.get(Profile, profile_id)
+        if payload.profile_id != profile_id or profile is None:
             raise HTTPException(404, "That profile was not found.")
         if payload.power_off_after_stop and not payload.stop_time:
             raise HTTPException(422, "A computer shutdown needs a server stop time.")
@@ -7462,7 +7497,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 profile_id=payload.profile_id,
                 category="schedule_update",
                 result="success",
-                safe_detail=f"Updated schedule for profile {profile_id}",
+                safe_detail=f"Updated the schedule for {profile.name}",
             )
         )
         db.commit()

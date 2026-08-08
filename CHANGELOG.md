@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Complete Milestone 11 with a compact, evidence-labelled Today summary and
+  deep-linkable incident stories. The summary shows the observed playable
+  state, actual local join address, player capacity, last recorded verified
+  backup whose archive remains available, next operation, and exactly one
+  prioritized warning or safe next step. An incident story keeps the durable
+  symptom, same-server nearby facts,
+  observed timing, explicitly unconfirmed explanations, redacted log context,
+  raw support report, and recovery route separate so correlation is never
+  presented as cause. Activity and Files also gain contextual task help with
+  precise recovery wording for edits, renames, deletes, uploads, and archives.
+
+- Close Milestone 11.5 with a real-backend browser flow that reviews and
+  installs a local recognized provider, proves a PID-changing restart before
+  its guided commands appear, then stops the server, disables the provider,
+  and proves those commands disappear. The test now creates isolated runtime
+  fixtures and can run alone or after the broader milestone workflow.
+
 - Complete Milestone 10 with capability-gated Paper TPS/MSPT evidence and World
   Care safeguards. Paper samples are sourced from labelled `/tps` and `/mspt`
   console responses at a bounded cadence and expose their source, sampling period,

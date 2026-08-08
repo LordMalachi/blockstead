@@ -102,6 +102,11 @@ test("lists entries for the default config category", async () => {
   renderPanel();
   expect(await screen.findByText("server.properties")).toBeVisible();
   expect(screen.getByRole("button", { name: "Config" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByText(/Uploads refuse existing names/)).toBeVisible();
+  expect(screen.queryByText(/always create a recovery point/)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /How the Files workspace protects changes/ })).toBeVisible();
+  expect(screen.getByRole("button", { name: /What an upload can replace/ })).toBeVisible();
+  expect(screen.getByRole("button", { name: /How archive extraction avoids overwrites/ })).toBeVisible();
 });
 
 test("switching category reloads the listing for that category", async () => {
@@ -122,6 +127,7 @@ test("opens a file, checks changes, and saves with a recovery snapshot", async (
   fireEvent.click(await screen.findByRole("button", { name: /server\.properties/ }));
 
   const textarea = await screen.findByLabelText("Content of server.properties");
+  expect(screen.getByRole("button", { name: /How Check changes and Save file work/ })).toBeVisible();
   fireEvent.change(textarea, { target: { value: "motd=Bye\n" } });
   fireEvent.click(screen.getByRole("button", { name: "Check changes" }));
 
@@ -164,6 +170,8 @@ test("deletes an entry only after a second confirming click", async () => {
 
   fireEvent.click(screen.getByRole("button", { name: "Delete" }));
   const confirm = screen.getByRole("button", { name: "Confirm delete" });
+  expect(screen.getByRole("group", { name: "Confirm deletion of server.properties" })).toBeVisible();
+  expect(screen.getByRole("button", { name: /What happens if server.properties is deleted/ })).toBeVisible();
   expect(fetch).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ method: "DELETE" }));
 
   fireEvent.click(confirm);
@@ -173,6 +181,18 @@ test("deletes an entry only after a second confirming click", async () => {
     expect.objectContaining({ method: "DELETE" }),
   ));
   expect(await screen.findByText(/Recovery snapshot 20260722-120000-cc33dd44-server\.properties/)).toBeVisible();
+});
+
+test("lets the owner cancel a file deletion without changing anything", async () => {
+  renderPanel();
+  await screen.findByText("server.properties");
+
+  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+  expect(screen.queryByRole("button", { name: "Confirm delete" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Delete" })).toBeVisible();
+  expect(fetch).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ method: "DELETE" }));
 });
 
 test("hides mutation controls for a read-only category", async () => {

@@ -73,6 +73,11 @@ def test_overview_reports_join_address_health_and_protection(
     assert body["capabilities"]["mspt"] is False
     assert body["performance"]["state"] == "unsupported"
     assert body["performance"]["available"] is False
+    assert body["daily_summary"]["playable"]["state"] == "stopped"
+    assert body["daily_summary"]["players"]["online"] is None
+    assert body["daily_summary"]["backup"]["state"] == "missing"
+    assert body["daily_summary"]["focus"]["kind"] == "warning"
+    assert "cause" in body["daily_summary"]["focus"]["evidence"]
 
     # Refreshing faster than the sampling interval does not manufacture a trend.
     refreshed = client.get(f"/api/v1/profiles/{profile_id}/overview").json()
@@ -208,6 +213,8 @@ def test_overview_includes_backup_schedule_and_recent_profile_activity(
     body = client.get(f"/api/v1/profiles/{profile_id}/overview").json()
 
     assert body["last_backup"]["status"] == "completed"
+    assert body["daily_summary"]["backup"]["state"] == "verified"
+    assert body["daily_summary"]["backup"]["created_at"] is not None
     assert body["next_operation"]["label"] in {"Start server", "Maintenance stop"}
     assert "backup-missing" not in {warning["code"] for warning in body["warnings"]}
     assert [event["category"] for event in body["activity"]][:2] == [

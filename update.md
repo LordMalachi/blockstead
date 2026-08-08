@@ -1,6 +1,6 @@
 # Blockstead upgrade plan and progress
 
-Last updated: 2026-08-07
+Last updated: 2026-08-08
 
 This document explains the next Blockstead UI and product upgrades and tracks
 their implementation. The full product specification lives in
@@ -41,12 +41,12 @@ remain available without dominating normal server care.
 | 4. Owner-focused overview | Complete | Live player capacity, join address, sampled health trends, protection and schedule status, warnings, and recent activity |
 | 5. Automation upgrade | Complete | Weekly schedules, one-time maintenance, readable action sequences, previews, and execution history |
 | 6. Activity and notifications | Complete | Human-readable audit history, local operational alerts, and event-focused support reports |
-| 7. Safe file workspace | Complete | Category-scoped browsing, editing, uploads, downloads, and archive extraction with recovery snapshots |
+| 7. Safe file workspace | Complete | Category-scoped browsing, editing, uploads, downloads, and archive extraction with operation-specific recovery handling |
 | 8. Player and mobile improvements | Complete | Merged player roster with best-effort session history, search, filters, opt-in avatars, quicker actions, PWA installability, and clearer mobile navigation |
 | 9. Maintenance and Upgrade Center | Complete | Reviewed extension updates with retained rollback bundles plus stopped-server Vanilla, Paper, and Fabric upgrades that preserve the prior launch artifact |
 | 10. World Care and performance insight | Complete | Honest performance evidence, private diagnostic capture, guarded storage care, and recovery cleanup |
-| 11. Calm daily operations | Planned | A task-first daily summary and incident story that connect the evidence already collected |
-| 11.5. Extension-aware command packs | In progress | Curated extension recommendations and guided commands gated by active, readable providers |
+| 11. Calm daily operations | Complete | A task-first daily summary and evidence-safe incident story that connect the facts already collected |
+| 11.5. Extension-aware command packs | Complete | Curated extension recommendations and guided commands gated by active, readable providers |
 | 12. Saved setups and trusted connections | Deferred | Explicit profile switching plus narrowly scoped sharing and notifications, after the local workflows are proven |
 
 ## Release status
@@ -58,13 +58,11 @@ and scheduling workspaces, extensions and modpacks, account recovery,
 diagnostics, in-app help, and Linux Mint installation and upkeep. See
 [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
-Milestone 9 is complete: maintenance preflight, reviewed change plans, exact
-extension-update impact reviews, retained rollback bundles, official upgrade
-discovery, reviewed window booking, and bounded Vanilla, Paper, and Fabric
-upgrade execution are shipped. The later milestones below are ordered so that
-Blockstead improves the confidence of everyday care before it adds optional
-sharing or integrations. The two
-remaining shared-map refinements are tracked separately below.
+Milestones 10, 11, and 11.5 are complete: Blockstead now adds evidence-labelled
+performance and world care, a task-first daily summary, evidence-safe incident
+stories, and extension-aware command packs to the released owner-focused
+baseline. The remaining saved-setup and trusted-connection work is deferred
+until the local workflows have been proven further.
 
 ## Current baseline
 
@@ -91,9 +89,9 @@ Blockstead already provides:
   uptime, backup and schedule status, health history, actionable warnings, and
   recent activity;
 - a safe, category-scoped file workspace covering config, logs, extensions,
-  world, and backup archive paths, with recovery snapshots before every risky
-  write, stopped-server enforcement for world and extension changes, and
-  validated, size-limited zip archive extraction;
+  world, and backup archive paths. Edits and file deletes create private
+  snapshots, folder deletes preserve the folder, uploads refuse existing
+  names, and validated archive extraction preserves conflicts;
 - a merged player roster combining the allowlist, operator, and ban lists with
   live status when reachable and best-effort join/leave session history,
   search, filters, an opt-in avatar preference, and a quicker kick action; an
@@ -118,6 +116,12 @@ Blockstead already provides:
   installer workstream, while the guided command catalog retains safe vanilla
   commands for every profile. Extension command packs appear only when
   Blockstead identifies an active, readable, compatible provider.
+- a compact Today summary now names playable-state evidence, the local join
+  address, player capacity, the last verified backup, the next operation, and
+  exactly one prioritized warning or next step. Activity can open a bounded
+  same-server incident story that keeps recorded facts, nearby timing,
+  unconfirmed explanations, redacted log context, and the safe next action
+  visibly separate.
 
 The main limitations to address are:
 
@@ -127,8 +131,6 @@ The main limitations to address are:
 - TPS/MSPT remain unavailable for profiles without a supported capability; Paper
   profiles now expose labelled samples, while update availability remains hidden
   until a reliable source supplies it.
-- extension-specific guided commands and installer recommendations are in
-  active rollout and still need the final end-to-end validation described below.
 
 ## Focused enhancement: shared browser map
 
@@ -155,13 +157,13 @@ client mod.
 
 ## Focused enhancement: in-app guidance
 
-**Status: Complete (initial slice)**
+**Status: Complete**
 
 - [x] Add a central searchable Help workspace with task-oriented links.
 - [x] Add an opt-in walkthrough that can be replayed without changing server state.
 - [x] Add keyboard- and pointer-accessible tooltips for technical concepts.
 - [x] Include local recovery commands and a direct path to diagnostics.
-- [ ] Expand contextual help as the Activity and Files workspaces are built.
+- [x] Expand contextual help as the Activity and Files workspaces are built.
 
 ## Milestone 1: server workspace navigation
 
@@ -359,7 +361,8 @@ questions.
 - [x] Show save status and file-operation progress.
 - [x] Validate extracted archive paths and enforce size limits.
 - [x] Require stopped-server state where file consistency demands it.
-- [x] Create a recovery snapshot before risky writes.
+- [x] Snapshot edits and file deletes, preserve folder deletes and archive
+      conflicts, and refuse overwrite during upload or rename.
 - [x] Keep arbitrary host filesystem access outside the product boundary.
 
 ### Acceptance criteria
@@ -369,9 +372,11 @@ questions.
   symlink out of it.
 - The config category cannot reach into the world, logs, or extension
   folders that have their own dedicated categories and protections.
-- A file edit, upload, rename, delete, or archive extraction always leaves a
-  way back: a copied-out snapshot for single files, or the previous folder
-  preserved beside the new one for whole-subtree changes.
+- A text edit or single-file delete copies the original into private recovery
+  storage first; a folder delete preserves the folder under a timestamped name.
+  Uploads and renames refuse an existing destination, and archive extraction
+  stages and validates the archive before preserving name conflicts rather than
+  overwriting them. A rename itself does not create a snapshot.
 - World and extension mutations refuse to run against a server that is not
   stopped; config text edits do not require it, matching the guided
   settings editor.
@@ -511,7 +516,7 @@ or consuming its recovery space.
 
 ## Milestone 11: Calm daily operations
 
-**Status: In progress**
+**Status: Complete**
 
 ### Why
 
@@ -521,15 +526,15 @@ owner to correlate logs, schedules, backups, and extension history manually.
 
 ### Work checklist
 
-- [ ] Add a compact “Today on this server” summary: playable state, join
+- [x] Add a compact “Today on this server” summary: playable state, join
       address, player capacity, last verified backup, next operation, and the
       one most relevant action or warning.
-- [ ] Add a friendly incident timeline that merges lifecycle, backup,
+- [x] Add a friendly incident timeline that merges lifecycle, backup,
       settings, extension, schedule, and meaningful diagnostic events while
       preserving links to raw evidence.
-- [ ] Add contextual task help at risky or unfamiliar controls, including the
+- [x] Add contextual task help at risky or unfamiliar controls, including the
       Files and Activity workspaces.
-- [ ] Preserve evidence language: separate recorded facts, observed timing,
+- [x] Preserve evidence language: separate recorded facts, observed timing,
       and Blockstead's possible explanations.
 
 ### Acceptance criteria
@@ -540,7 +545,7 @@ owner to correlate logs, schedules, backups, and extension history manually.
 
 ## Milestone 11.5: Extension-aware command packs
 
-**Status: In progress**
+**Status: Complete**
 
 ### Why
 
@@ -599,7 +604,7 @@ while keeping the first command implementation focused on console-safe providers
       duplicate jar where that capability is present.
 - [x] Refresh extension recommendations and command catalogs after every
       install, update, enable, disable, removal, and bulk loadout change.
-- [ ] Complete the end-to-end install → restart → command visibility → disable
+- [x] Complete the end-to-end install → restart → command visibility → disable
       flow and run the full backend/frontend regression suites.
 
 ### Acceptance criteria
@@ -692,15 +697,34 @@ These rules apply to every milestone:
 
 Before marking any milestone complete:
 
-- [ ] Backend and frontend behavior is covered in proportion to risk.
-- [ ] The production frontend builds successfully.
-- [ ] End-to-end workflows pass against the real local backend.
+- [x] Backend and frontend behavior is covered in proportion to risk.
+- [x] The production frontend builds successfully.
+- [x] End-to-end workflows pass against the real local backend.
 - [x] `git diff --check` passes.
 - [x] Documentation and screenshots reflect the implemented experience.
 - [x] Security boundaries and failure recovery have been reviewed.
 - [x] The progress summary and progress log below are updated.
 
 ## Progress log
+
+- **2026-08-08 — Milestones 11 and 11.5 complete.** Overview now begins with a
+  compact Today summary that distinguishes managed-process observation from
+  Minecraft status evidence, shows the actual local join address and player
+  capacity, calls a backup verified only while its checksum and archive are
+  available, names the next operation, and selects exactly one warning or safe
+  next step. Activity adds deep-linkable incident stories around one durable
+  event: same-server lifecycle, backup, settings, extension, automation,
+  maintenance, and diagnostic facts are ordered within a bounded time window,
+  while observed timing, unconfirmed cause language, redacted nearby logs, the
+  focused report, and the next recovery route remain separate. Files and Help
+  now explain the exact recovery behavior of edits, renames, deletes, uploads,
+  and archive extraction. The extension-command browser test is self-contained
+  and proves local install, PID-changing restart, provider command visibility,
+  stop, disable, and command removal without touching a tracked fixture.
+  Verification: 583 backend tests passed with one intentionally skipped
+  publisher-backed loader test; 139 frontend tests, backend lint and strict
+  typing, frontend lint, production build, all three real-backend Playwright
+  flows, the documentation screenshot flow, and `git diff --check` passed.
 
 - **2026-08-07 — Milestone 10 complete.** The Overview can now request a
   bounded, opt-in local Spark profile for a running supported Paper server. It

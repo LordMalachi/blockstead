@@ -59,9 +59,10 @@ window booking, and bounded Vanilla, Paper, and Fabric upgrade execution
 compose the existing backup, compatibility, extension, scheduling, and
 activity boundaries into one reversible workflow. Until a source and rollback
 boundary can be verified, an upgrade is reported as blocked rather than
-offered. World-care/performance insight and calm daily-operation refinements
-follow; saved setups, helper access, and outbound notifications remain deferred
-until those local workflows have been proven in normal use. The detailed
+offered. World-care/performance insight, calm daily-operation composition, and
+extension-aware command packs are complete. Saved setups, helper access, and
+outbound notifications remain deferred until those local workflows have been
+proven in normal use. The detailed
 post-1.0 roadmap and decision gates live in [update.md](../update.md).
 
 Multi-host management and public remote access remain outside the current

@@ -1,11 +1,13 @@
 import json
-from datetime import UTC, datetime
+import logging
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from blockstead.activity import event_payload
-from blockstead.models import AuditEvent, AutomationRun, Profile
+from blockstead.models import Administrator, AuditEvent, AutomationRun, Profile
 
 FIXTURE = Path(__file__).parents[2] / "fixtures" / "servers" / "vanilla-fixture"
 
@@ -16,6 +18,18 @@ def test_skipped_activity_is_a_warning_instead_of_success() -> None:
         category="automation_start",
         result="skipped",
         safe_detail="Another server is already running on this host.",
+        created_at=datetime.now(UTC),
+    )
+
+    assert event_payload(event)["severity"] == "warning"
+
+
+def test_refused_activity_is_a_warning_instead_of_success() -> None:
+    event = AuditEvent(
+        admin_id="admin-1",
+        category="maintenance_schedule",
+        result="refused",
+        safe_detail="The reviewed evidence changed before scheduling.",
         created_at=datetime.now(UTC),
     )
 
@@ -98,6 +112,7 @@ def test_local_notification_preferences_can_be_changed_and_acknowledged(
 
 def test_activity_endpoints_require_authentication(client: TestClient) -> None:
     assert client.get("/api/v1/activity").status_code == 401
+    assert client.get("/api/v1/activity/not-here/incident").status_code == 401
     assert client.get("/api/v1/notification-preferences").status_code == 401
     assert client.get("/api/v1/notifications").status_code == 401
 
@@ -133,3 +148,105 @@ def test_failed_automation_and_unsafe_profile_directory_raise_local_alerts(
     kinds = {alert["kind"] for alert in alerts}
     assert "failed_automation" in kinds
     assert "unsafe_profile_directory" in kinds
+
+
+def test_incident_requires_an_existing_anchor(client: TestClient, auth: dict[str, str]) -> None:
+    assert client.get("/api/v1/activity/not-here/incident").status_code == 404
+
+
+def test_incident_is_chronological_profile_scoped_and_cautious(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    profile_id = import_fixture(client, auth)
+    now = datetime.now(UTC)
+    logging.getLogger("blockstead.incident-test").warning(
+        "Nearby test warning password=not-for-the-incident"
+    )
+    with client.app.state.session_factory() as db:
+        admin_id = db.scalar(select(Administrator.id))
+        assert admin_id is not None
+        imported = db.scalar(
+            select(AuditEvent).where(
+                AuditEvent.profile_id == profile_id,
+                AuditEvent.category == "profile_import",
+            )
+        )
+        assert imported is not None
+        imported.created_at = now - timedelta(minutes=30)
+        other = Profile(
+            name="Other world",
+            server_directory=str(FIXTURE.parent / "other-incident-world"),
+            distribution="vanilla",
+            minecraft_version="1.21.8",
+        )
+        db.add(other)
+        db.flush()
+        before = AuditEvent(
+            admin_id=admin_id,
+            profile_id=profile_id,
+            category="schedule_update",
+            result="success",
+            safe_detail="Recorded a schedule before the symptom",
+            created_at=now - timedelta(minutes=5),
+        )
+        anchor = AuditEvent(
+            admin_id=admin_id,
+            profile_id=profile_id,
+            category="server_crash",
+            result="failed",
+            safe_detail="The managed process exited unexpectedly",
+            created_at=now,
+        )
+        after = AuditEvent(
+            admin_id=admin_id,
+            profile_id=profile_id,
+            category="settings_update",
+            result="success",
+            safe_detail="Recorded settings after the symptom",
+            created_at=now + timedelta(minutes=5),
+        )
+        db.add_all(
+            [
+                before,
+                anchor,
+                after,
+                AuditEvent(
+                    admin_id=admin_id,
+                    profile_id=profile_id,
+                    category="player_action",
+                    result="accepted",
+                    safe_detail="Excluded player activity",
+                    created_at=now + timedelta(minutes=1),
+                ),
+                AuditEvent(
+                    admin_id=admin_id,
+                    profile_id=other.id,
+                    category="manual_backup",
+                    result="success",
+                    safe_detail="Excluded other-profile backup",
+                    created_at=now + timedelta(minutes=2),
+                ),
+            ]
+        )
+        db.commit()
+        anchor_id = anchor.id
+
+    response = client.get(f"/api/v1/activity/{anchor_id}/incident")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["anchor"]["id"] == anchor_id
+    assert body["anchor"]["report_url"].endswith(f"/{anchor_id}/report")
+    assert [event["category"] for event in body["recorded_facts"]] == [
+        "schedule_update",
+        "settings_update",
+    ]
+    assert all(event["profile"]["id"] == profile_id for event in body["recorded_facts"])
+    assert "proximity does not establish" in body["observed_timing"]["detail"]
+    assert body["possible_explanation"]["state"] == "unconfirmed"
+    assert "not proof of causation" in body["possible_explanation"]["detail"]
+    assert body["log_context"]["state"] == "available"
+    messages = [entry["message"] for entry in body["log_context"]["entries"]]
+    assert any("password=[redacted]" in message for message in messages)
+    assert all("not-for-the-incident" not in message for message in messages)
+    assert body["safe_next_action"]["to"].endswith(f"/{profile_id}/console")

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { vi } from "vitest";
@@ -60,6 +60,14 @@ const overview: ProfileOverview = {
   warnings: [{ code: "backup-missing", title: "This world has not been backed up", detail: "Create a verified backup.", to: "/servers/profile-1/backups", severity: "warning" }],
   activity: [{ id: "event-1", category: "server_start", result: "accepted", detail: "Started Paper profile Home", created_at: "2026-07-19T14:00:00Z", to: "/servers/profile-1/console" }],
   capabilities: { tps: false, mspt: false, distribution_label: "Paper" },
+  daily_summary: {
+    playable: { state: "playable", label: "Playable now", detail: "Minecraft answered the local status check.", evidence: "Observed local status response" },
+    join: { address: "192.168.1.24:25570", label: "192.168.1.24:25570", detail: "For devices on this local network.", evidence: "Detected local address and configured port" },
+    players: { online: 2, max: 20, label: "2 of 20 online", detail: "Alex and Steve are connected.", evidence: "Observed local status response" },
+    backup: { state: "missing", label: "No verified backup", detail: "Create the first recovery point.", created_at: null, to: "/servers/profile-1/backups", evidence: "No completed backup record" },
+    next_operation: { label: "Back up and stop", detail: "Scheduled for tomorrow at 10:00 PM.", at: "2026-07-20T03:00:00Z", to: "/servers/profile-1/schedule", evidence: "Recorded automation schedule" },
+    focus: { kind: "warning", title: "Protect this world first", detail: "Create a verified backup before making important changes.", to: "/servers/profile-1/backups", severity: "warning", evidence: "No completed backup record" },
+  },
 };
 
 test("shows owner health, join address, trends, warnings, and diagnostics", async () => {
@@ -70,7 +78,15 @@ test("shows owner health, join address, trends, warnings, and diagnostics", asyn
 
   render(<MemoryRouter><QueryClientProvider client={client}><OverviewPage /></QueryClientProvider></MemoryRouter>);
 
-  expect(await screen.findByText("2 / 20")).toBeVisible();
+  const daily = await screen.findByRole("region", { name: "Today on this server" });
+  expect(within(daily).getByText("Playable now")).toBeVisible();
+  expect(within(daily).getByText("192.168.1.24:25570")).toBeVisible();
+  expect(within(daily).getByText("2 of 20 online")).toBeVisible();
+  expect(within(daily).getByText("No verified backup")).toBeVisible();
+  expect(within(daily).getByText("Back up and stop")).toBeVisible();
+  expect(within(daily).getByText("Protect this world first")).toBeVisible();
+  expect(within(daily).getAllByRole("link")).toHaveLength(1);
+  expect(within(daily).getByRole("link", { name: "Review warning" })).toHaveAttribute("href", "/servers/profile-1/backups");
   expect(screen.getByText("192.168.1.24")).toBeVisible();
   expect(screen.getByText("Public IP detected:")).toBeVisible();
   expect(screen.getByText("8.8.8.8")).toBeVisible();

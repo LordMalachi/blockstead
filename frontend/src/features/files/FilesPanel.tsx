@@ -17,6 +17,7 @@ import {
 } from "../../api/client";
 import { Button } from "../../components/Button";
 import { NavIcon } from "../../components/NavIcon";
+import { Tooltip } from "../../components/Tooltip";
 import { formatBytes } from "../../lib/format";
 
 const CATEGORIES: { value: FileCategory; label: string; hint: string }[] = [
@@ -169,9 +170,9 @@ export function FilesPanel({
 
   return <section className="card files-workspace" id="files">
     <div className="section-heading">
-      <div><p className="eyebrow">Safe file workspace</p><h2>Files</h2></div>
+      <div><p className="eyebrow">Safe file workspace</p><div className="heading-with-help"><h2>Files</h2><Tooltip label="How the Files workspace protects changes">Browsing and downloading do not change the server. File edits and file deletions create private recovery snapshots; deleted folders are preserved under a timestamped name. Uploads add only new names, and archive extraction preserves name conflicts.</Tooltip></div></div>
     </div>
-    <p className="muted-note">Browse only the approved server folders. Uploads, edits, and archive extraction always create a recovery point first.</p>
+    <p className="muted-note">Browse only approved server folders. Edits and file deletions create recovery snapshots; folder deletions preserve the folder. Uploads refuse existing names, and archive extraction preserves conflicts instead of overwriting them.</p>
 
     <div className="history-filter" role="group" aria-label="File category">
       {visibleCategories.map(item => <button key={item.value} type="button" className={category === item.value ? "active" : ""} aria-pressed={category === item.value} onClick={() => setCategory(item.value)}>{item.label}</button>)}
@@ -203,12 +204,17 @@ export function FilesPanel({
                 {writable && !locked && !isTopLevelWorldEntry(entry.path) && (renaming === entry.path
                   ? <form className="file-row__rename" onSubmit={event => { event.preventDefault(); if (renameValue.trim()) rename.mutate({ path: entry.path, new_name: renameValue.trim() }); }}>
                       <input aria-label={`New name for ${entry.name}`} value={renameValue} onChange={event => setRenameValue(event.target.value)} autoFocus />
+                      <Tooltip label={`What happens when ${entry.name} is renamed?`}>The name changes immediately and no recovery snapshot is made. Anything configured to use the old name may stop working; an existing name is always refused.</Tooltip>
                       <Button className="button--secondary button--small" disabled={rename.isPending}>Save</Button>
                       <Button type="button" className="button--quiet button--small" onClick={() => setRenaming(null)}>Cancel</Button>
                     </form>
                   : <Button className="button--quiet button--small" onClick={() => { setRenaming(entry.path); setRenameValue(entry.name); }}>Rename</Button>)}
                 {writable && !locked && !isTopLevelWorldEntry(entry.path) && (confirmDelete === entry.path
-                  ? <Button className="button--danger button--small" disabled={remove.isPending} onClick={() => remove.mutate(entry.path)}>{remove.isPending ? "Deleting…" : "Confirm delete"}</Button>
+                  ? <div className="file-row__confirm" role="group" aria-label={`Confirm deletion of ${entry.name}`}>
+                      <Tooltip label={`What happens if ${entry.name} is deleted?`}>{entry.is_dir ? "The folder is not erased immediately. Blockstead renames and preserves it beside the original location so it can be recovered on the host computer." : "Blockstead copies the current file into its private recovery snapshots before deleting it. Restoring that snapshot currently requires access to the host computer."}</Tooltip>
+                      <Button className="button--danger button--small" disabled={remove.isPending} onClick={() => remove.mutate(entry.path)}>{remove.isPending ? "Deleting…" : "Confirm delete"}</Button>
+                      <Button className="button--quiet button--small" disabled={remove.isPending} onClick={() => setConfirmDelete(null)}>Cancel</Button>
+                    </div>
                   : <Button className="button--quiet button--small" onClick={() => setConfirmDelete(entry.path)}>Delete</Button>)}
               </div>
             </li>)}
@@ -217,7 +223,7 @@ export function FilesPanel({
     {remove.error && <p className="error" role="alert">{remove.error.message}</p>}
 
     {openFile && <section className="file-editor" aria-label={`View ${openFile}`}>
-      <div className="section-heading"><div><p className="eyebrow">{openFile}</p><h3>{fileValue?.editable ? "Edit file" : "View file"}</h3></div><Button className="button--quiet button--small" onClick={() => setOpenFile(null)}>Close</Button></div>
+      <div className="section-heading"><div><p className="eyebrow">{openFile}</p><div className="heading-with-help"><h3>{fileValue?.editable ? "Edit file" : "View file"}</h3>{fileValue?.editable && <Tooltip label="How Check changes and Save file work">Check changes validates the current draft without writing it. Save file is enabled only after a valid check, then creates a recovery snapshot and replaces the file safely.</Tooltip>}</div></div><Button className="button--quiet button--small" onClick={() => setOpenFile(null)}>Close</Button></div>
       {content.isLoading ? <p className="empty-note">Loading file…</p>
         : content.error ? <p className="error" role="alert">{content.error.message}</p>
           : fileValue && (fileValue.editable
@@ -235,7 +241,7 @@ export function FilesPanel({
     </section>}
 
     {writable && <section className="file-upload" aria-label="Upload files">
-      <div className="section-heading"><div><p className="eyebrow">Add files</p><h3>Upload into this folder</h3></div></div>
+      <div className="section-heading"><div><p className="eyebrow">Add files</p><div className="heading-with-help"><h3>Upload into this folder</h3><Tooltip label="What an upload can replace">Nothing. Uploads only add files with new names. If a name already exists, Blockstead refuses the upload so the existing item stays unchanged.</Tooltip></div></div></div>
       <p className="muted-note">A file with an existing name is refused; rename or delete it first.</p>
       <div className="inline-form">
         <label>Choose files<input ref={uploadInput} type="file" multiple disabled={locked || upload.isPending} onChange={event => { if (event.target.files?.length) upload.mutate(event.target.files); }} /></label>
@@ -245,7 +251,7 @@ export function FilesPanel({
     </section>}
 
     {writable && <section className="file-upload" aria-label="Extract an archive">
-      <div className="section-heading"><div><p className="eyebrow">Bulk add</p><h3>Extract a .zip archive here</h3></div></div>
+      <div className="section-heading"><div><p className="eyebrow">Bulk add</p><div className="heading-with-help"><h3>Extract a .zip archive here</h3><Tooltip label="How archive extraction avoids overwrites">Blockstead stages and checks the .zip first. New items are moved into this folder; existing items with matching names are preserved beside them instead of being overwritten.</Tooltip></div></div></div>
       <p className="muted-note">New files are added to this folder. Anything with a matching name is preserved beside it rather than overwritten.</p>
       <div className="inline-form">
         <label>Choose a .zip file<input ref={extractInput} type="file" accept=".zip" disabled={locked || extract.isPending} onChange={event => { const file = event.target.files?.[0]; if (file) extract.mutate(file); }} /></label>

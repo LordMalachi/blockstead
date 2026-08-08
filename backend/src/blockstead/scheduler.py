@@ -317,7 +317,9 @@ class Scheduler:
                         detail = f"Left the server running because {online} player(s) are online."
                 if status == "success":
                     is_running = state in {ProcessState.RUNNING, "RUNNING"}
-                    await self._maintenance_commands(db, profile, backup, now, is_running=is_running)
+                    await self._maintenance_commands(
+                        db, profile, backup, now, is_running=is_running
+                    )
                     graceful = await self.manager.stop(timeout=60.0)
                     if not graceful:
                         raise RuntimeError("the graceful stop timed out")

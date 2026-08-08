@@ -62,18 +62,32 @@ function buildStoredZip(entries: { name: string; data: Buffer }[]): Buffer {
   return Buffer.concat([...localParts, centralBuffer, end]);
 }
 
-const commandPackFixture = resolve(process.cwd(), "../fixtures/servers/e2e-command-paper");
-test.afterEach(() => rmSync(commandPackFixture, { recursive: true, force: true }));
+const commandPackFixture = resolve(process.cwd(), "../fixtures/servers/e2e-command-paper-runtime");
+const uploadedNotePaths = ["note.txt", "renamed-note.txt"].map(name =>
+  resolve(process.cwd(), "../fixtures/servers/vanilla-fixture", name),
+);
+test.afterEach(() => {
+  rmSync(commandPackFixture, { recursive: true, force: true });
+  for (const path of uploadedNotePaths) rmSync(path, { force: true });
+});
 
 async function signInAsOwner(page: import("@playwright/test").Page) {
   await page.goto("/");
+  const createAdmin = page.getByRole("button", { name: "Create administrator" });
   const signIn = page.getByRole("button", { name: "Sign in" });
+  const servers = page.getByRole("heading", { name: "Servers", level: 1 });
+  await expect(createAdmin.or(signIn).or(servers)).toBeVisible();
+  if (await createAdmin.isVisible().catch(() => false)) {
+    await page.getByLabel("Username").fill("owner");
+    await page.getByLabel("Password").fill("correct horse battery staple");
+    await createAdmin.click();
+  }
   if (await signIn.isVisible().catch(() => false)) {
     await page.getByLabel("Username").fill("owner");
     await page.getByLabel("Password").fill("correct horse battery staple");
     await signIn.click();
   }
-  await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
+  await expect(servers).toBeVisible();
 }
 
 test("first admin imports and controls the owned fixture", async ({ page }) => {
@@ -166,8 +180,8 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
 
   await noteRow.getByRole("button", { name: /note\.txt/ }).click();
   await page.getByLabel("Content of note.txt").fill("hello from the browser test, edited\n");
-  await page.getByRole("button", { name: "Check changes" }).click();
-  const saveFile = page.getByRole("button", { name: "Save file" });
+  await page.getByRole("button", { name: "Check changes", exact: true }).click();
+  const saveFile = page.getByRole("button", { name: "Save file", exact: true });
   await expect(saveFile).toBeEnabled();
   await saveFile.click();
   await expect(page.getByText(/Recovery snapshot/)).toBeVisible();
@@ -205,6 +219,8 @@ test("first admin imports and controls the owned fixture", async ({ page }) => {
   // Lifecycle stays one interaction away from every server page.
   await page.getByRole("link", { name: "Overview" }).click();
   const pidTile = page.getByText("Process ID").locator("..");
+  const dailySummary = page.getByRole("region", { name: "Today on this server" });
+  await expect(dailySummary).not.toContainText("The server is stopped");
   const pidBefore = (await pidTile.textContent()) ?? "";
   await page.getByRole("button", { name: "Restart" }).click();
   await expect(pidTile).not.toHaveText(pidBefore, { timeout: 10_000 });
@@ -263,12 +279,20 @@ test("an installed provider pack appears after restart and disappears when disab
 
   await signInAsOwner(page);
 
-  // The first test already imported a profile, so the add-server form is
-  // available directly instead of behind the first-server chooser.
-  await page.getByLabel("Profile name").fill("Paper command pack fixture");
-  await page.getByText("The folder is already inside /srv/minecraft").click();
-  await page.getByLabel("Full path").fill("fixtures/servers/e2e-command-paper");
-  await page.getByRole("button", { name: "Scan folder" }).click();
+  const importCard = page.locator("#import-server");
+  const existingServer = page.getByRole("button", { name: /Use an existing server/ });
+  await expect(importCard.or(existingServer)).toBeVisible();
+  if (!(await importCard.isVisible())) {
+    // The first-server chooser can disappear while the profiles query settles.
+    // If that happens, the normal import card replaces it and is already the
+    // destination we need.
+    await existingServer.click({ timeout: 3_000 }).catch(() => undefined);
+  }
+  await expect(importCard).toBeVisible();
+  await importCard.getByLabel("Profile name").fill("Paper command pack fixture");
+  await importCard.getByText("The folder is already inside /srv/minecraft").click();
+  await importCard.getByLabel("Full path").fill("fixtures/servers/e2e-command-paper-runtime");
+  await importCard.getByRole("button", { name: "Scan folder" }).click();
   await expect(page.getByRole("heading", { name: "Import plan" })).toBeVisible();
   await page.getByRole("button", { name: "Confirm profile record" }).click();
   await expect(page).toHaveURL(/\/servers\/[^/]+\/overview$/);
@@ -298,12 +322,18 @@ test("an installed provider pack appears after restart and disappears when disab
 
   await page.getByRole("button", { name: "Start server" }).click();
   await expect(page.getByText("Running", { exact: true })).toBeVisible({ timeout: 5_000 });
+
+  await page.getByRole("link", { name: "Overview" }).click();
+  const pidTile = page.getByText("Process ID").locator("..");
+  const pidBefore = (await pidTile.textContent()) ?? "";
+  await page.getByRole("button", { name: "Restart" }).click();
+  await expect(pidTile).not.toHaveText(pidBefore, { timeout: 10_000 });
+  await expect(page.getByText("Running", { exact: true })).toBeVisible({ timeout: 10_000 });
+
   await page.getByRole("link", { name: "Console" }).click();
   await expect(page.getByRole("button", { name: "Send a player to spawn" })).toBeVisible();
 
   await page.getByRole("link", { name: "Overview" }).click();
-  await page.getByRole("button", { name: "Restart" }).click();
-  await expect(page.getByText("Running", { exact: true })).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Stop safely" }).click();
   await expect(page.getByText("Stopped", { exact: true })).toBeVisible({ timeout: 5_000 });
 
@@ -318,9 +348,10 @@ test("an installed provider pack appears after restart and disappears when disab
 
 test("a server folder from anywhere on the computer imports through the browser", async ({ page }) => {
   // A previous run may have left the copied folder behind in the fixtures root.
-  rmSync(resolve(process.cwd(), "../fixtures/servers/e2e-upload-world"), { recursive: true, force: true });
+  const uploadedFixture = resolve(process.cwd(), "../fixtures/servers/e2e-upload-world-runtime");
+  rmSync(uploadedFixture, { recursive: true, force: true });
   const staging = mkdtempSync(join(tmpdir(), "blockstead-e2e-"));
-  const world = join(staging, "e2e-upload-world");
+  const world = join(staging, "e2e-upload-world-runtime");
   mkdirSync(join(world, "world"), { recursive: true });
   writeFileSync(join(world, "server.properties"), "motd=Uploaded\n");
   writeFileSync(join(world, "server.jar"), "jar");
@@ -342,5 +373,6 @@ test("a server folder from anywhere on the computer imports through the browser"
     await expect(page.getByRole("heading", { name: "E2E Upload World", level: 1 })).toBeVisible();
   } finally {
     rmSync(staging, { recursive: true, force: true });
+    rmSync(uploadedFixture, { recursive: true, force: true });
   }
 });

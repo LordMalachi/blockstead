@@ -29,8 +29,10 @@ Blockstead manages the process around them.
 | System health | Every server on this computer |
 | ![Weekly automation plan](docs/screenshots/09-automation.png) | ![Searchable Help workspace](docs/screenshots/12-help.png) |
 | Weekly automation plan | Searchable Help workspace |
-| ![Safe file workspace with recovery snapshots](docs/screenshots/16-files.png) | ![World Care with verified backup destination](docs/screenshots/17-world-care.png) |
-| Safe file workspace with recovery snapshots | World Care with verified backup destination |
+| ![Safe file workspace with operation-specific recovery guidance](docs/screenshots/16-files.png) | ![World Care with verified backup destination](docs/screenshots/17-world-care.png) |
+| Safe file workspace with operation-specific recovery guidance | World Care with verified backup destination |
+| ![Evidence-safe Activity incident story](docs/screenshots/18-incident-story.png) | ![Keyboard-friendly contextual help](docs/screenshots/15-contextual-help.png) |
+| Evidence-safe Activity incident story | Keyboard-friendly contextual help |
 
 ## What it does today
 
@@ -58,11 +60,18 @@ Blockstead manages the process around them.
   reports that the live world was left unchanged
 - keeps a private application log and recent-error view, and saves a redacted
   one-file diagnostic report to attach when asking for help
+- opens each server with a compact Today summary of playable-state evidence,
+  local join details, player capacity, verified protection, the next operation,
+  and one prioritized warning or safe next step
 - provides a filterable Activity timeline across every server, configurable
-  local alerts for important failures and changes, and event-focused support
-  reports that include the nearby application-log window
+  local alerts, and deep-linkable incident stories that keep recorded facts,
+  observed timing, unconfirmed explanations, nearby redacted logs, focused
+  support reports, and safe recovery actions clearly separate
 - includes a searchable Help workspace, keyboard-friendly contextual tooltips,
   recovery shortcuts, and an optional guided tour that can be replayed anytime
+- limits file work to approved categories; edits and file deletes create private
+  snapshots, folder deletes preserve the folder, uploads refuse existing names,
+  and validated archive extraction preserves conflicts instead of overwriting
 - saves weekday-aware start and maintenance schedules, plus one-time events;
   ordered maintenance runs announce, flush saves, optionally back up, and stop
   safely, with previews and result history
