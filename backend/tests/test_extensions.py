@@ -108,7 +108,7 @@ def test_neoforge_and_plugin_metadata(tmp_path: Path) -> None:
     assert plugin.kind == "paper-plugin"
     assert plugin.identifier == "Essentials"
     assert plugin.version == "5.7.0"
-    assert plugin.minecraft_constraint == "1.21"
+    assert plugin.minecraft_constraint == ">=1.21"
     assert plugin.dependencies == ["Vault"]
 
 

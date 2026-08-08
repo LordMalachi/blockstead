@@ -214,7 +214,15 @@ def _parse_plugin_yml(raw: bytes, found: _Metadata) -> None:
     version = data.get("version")
     found.fill("version", _clean(str(version)) if version is not None else None)
     api = data.get("api-version")
-    found.fill("minecraft_constraint", _clean(str(api)) if api is not None else None)
+    # Bukkit's api-version is the oldest API a plugin targets, not an exact
+    # Minecraft release. Paper continues loading that plugin on newer APIs.
+    # Preserve that minimum-version meaning so command packs do not disappear
+    # for long-lived plugins such as EssentialsX and LuckPerms.
+    cleaned_api = _clean(str(api)) if api is not None else None
+    found.fill(
+        "minecraft_constraint",
+        f">={cleaned_api}" if cleaned_api is not None else None,
+    )
     depend = data.get("depend")
     if isinstance(depend, list) and not found.dependencies:
         found.dependencies = sorted(str(item)[:100] for item in depend if isinstance(item, str))

@@ -63,6 +63,13 @@ def test_catalog_origin_can_identify_a_renamed_jar() -> None:
     )
 
 
+def test_older_paper_api_version_remains_compatible_with_current_minecraft() -> None:
+    installed = entry("Essentials", loaders=["paper"])
+    installed.minecraft_constraint = ">=1.13"
+
+    assert "essentialsx" in active_provider_ids("paper", [installed], "1.21.11")
+
+
 def test_catalog_filters_extension_commands_and_labels_provider() -> None:
     catalog = catalog_payload({"geyser"})
     ids = {command["id"] for command in catalog["commands"]}
