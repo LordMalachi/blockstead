@@ -289,7 +289,10 @@ test("an installed provider pack appears after restart and disappears when disab
     await existingServer.click({ timeout: 3_000 }).catch(() => undefined);
   }
   await expect(importCard).toBeVisible();
-  await importCard.getByLabel("Profile name").fill("Paper command pack fixture");
+  const importForm = importCard.locator("form", {
+    has: page.getByRole("button", { name: "Copy folder in" }),
+  });
+  await importForm.getByLabel("Profile name").fill("Paper command pack fixture");
   await importCard.getByText("The folder is already inside /srv/minecraft").click();
   await importCard.getByLabel("Full path").fill("fixtures/servers/e2e-command-paper-runtime");
   await importCard.getByRole("button", { name: "Scan folder" }).click();
