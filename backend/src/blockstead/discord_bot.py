@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import httpx
-from websockets.asyncio.client import connect
+from websockets.asyncio.client import ClientConnection, connect
 
 from .config import Settings
 
@@ -138,6 +138,12 @@ def parse_interaction(payload: Mapping[str, object]) -> DiscordInteraction:
         )
     ):
         raise DiscordConfigurationError("The Discord interaction was missing a required ID.")
+    assert isinstance(guild_id, str)
+    assert isinstance(channel_id, str)
+    assert isinstance(interaction_id, str)
+    assert isinstance(token, str)
+    assert isinstance(application_id, str)
+    assert isinstance(user_id, str)
     roles = member.get("roles", []) if isinstance(member, dict) else []
     role_ids = (
         tuple(item for item in roles if isinstance(item, str)) if isinstance(roles, list) else ()
@@ -215,9 +221,11 @@ class DiscordRestClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
+    async def _request(
+        self, method: str, path: str, *, json: object | None = None
+    ) -> httpx.Response:
         try:
-            response = await self._client.request(method, path, **kwargs)
+            response = await self._client.request(method, path, json=json)
             response.raise_for_status()
             return response
         except httpx.HTTPError as exc:
@@ -281,7 +289,7 @@ class DiscordGateway:
         self._log = logger or logging.getLogger(__name__)
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
-        self._socket: object | None = None
+        self._socket: ClientConnection | None = None
         self._connected = False
         self._sequence: int | None = None
 
@@ -298,8 +306,8 @@ class DiscordGateway:
     async def stop(self) -> None:
         self._stop.set()
         socket = self._socket
-        if socket is not None and hasattr(socket, "close"):
-            await socket.close()  # type: ignore[union-attr]
+        if socket is not None:
+            await socket.close()
         if self._task is not None:
             self._task.cancel()
             try:
@@ -333,8 +341,8 @@ class DiscordGateway:
                     delay = min(60.0, delay * 2)
         self._connected = False
 
-    async def _session(self, socket: object) -> None:
-        hello = json.loads(await socket.recv())  # type: ignore[union-attr]
+    async def _session(self, socket: ClientConnection) -> None:
+        hello = json.loads(await socket.recv())
         if not isinstance(hello, dict) or hello.get("op") != 10:
             raise DiscordApiError("Discord Gateway did not send a valid hello.")
         hello_data = hello.get("d")
@@ -343,7 +351,7 @@ class DiscordGateway:
             raise DiscordApiError("Discord Gateway did not provide a heartbeat interval.")
         heartbeat = asyncio.create_task(self._heartbeat(socket, float(interval_ms) / 1000))
         await self._identify(socket)
-        async for raw in socket:  # type: ignore[union-attr]
+        async for raw in socket:
             event = json.loads(raw)
             if not isinstance(event, dict):
                 continue
@@ -353,7 +361,7 @@ class DiscordGateway:
             if op == 0:
                 await self._dispatch(event)
             elif op == 1:
-                await socket.send(json.dumps({"op": 1, "d": self._sequence}))  # type: ignore[union-attr]
+                await socket.send(json.dumps({"op": 1, "d": self._sequence}))
             elif op in {7, 9}:
                 break
         heartbeat.cancel()
@@ -362,7 +370,7 @@ class DiscordGateway:
         except asyncio.CancelledError:
             pass
 
-    async def _identify(self, socket: object) -> None:
+    async def _identify(self, socket: ClientConnection) -> None:
         await socket.send(
             json.dumps(
                 {
@@ -378,13 +386,13 @@ class DiscordGateway:
                     },
                 }
             )
-        )  # type: ignore[union-attr]
+        )
         self._connected = True
 
-    async def _heartbeat(self, socket: object, interval: float) -> None:
+    async def _heartbeat(self, socket: ClientConnection, interval: float) -> None:
         while True:
             await asyncio.sleep(interval)
-            await socket.send(json.dumps({"op": 1, "d": self._sequence}))  # type: ignore[union-attr]
+            await socket.send(json.dumps({"op": 1, "d": self._sequence}))
 
     async def _dispatch(self, event: Mapping[str, object]) -> None:
         name = event.get("t")
@@ -445,7 +453,11 @@ def discord_configuration(settings: Settings) -> dict[str, object]:
         "public_key_configured": public_key is not None and public_key_error is None,
         "bot_token_configured": legacy_token_configured,
         "bot_ready": valid_application and (relay_configured or legacy_token_configured),
-        "install_url": discord_install_url(application_id) if valid_application else None,
+        "install_url": (
+            discord_install_url(application_id)
+            if valid_application and isinstance(application_id, str)
+            else None
+        ),
         "application_error": application_error,
         "public_key_error": public_key_error,
         "mode": (

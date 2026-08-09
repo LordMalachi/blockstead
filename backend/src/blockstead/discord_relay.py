@@ -91,9 +91,11 @@ class RelayClient:
     def close(self) -> None:
         self._client.close()
 
-    def _request(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
+    def _request(
+        self, method: str, path: str, *, json: object | None = None
+    ) -> dict[str, object]:
         try:
-            response = self._client.request(method, path, **kwargs)
+            response = self._client.request(method, path, json=json)
             response.raise_for_status()
             body = response.json()
         except (httpx.HTTPError, ValueError) as exc:
