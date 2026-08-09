@@ -945,6 +945,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return DiscordReply("This Discord application is not authorized for Blockstead.")
 
         command = interaction.subcommand
+        if command == "setup":
+            return DiscordReply(
+                "**Blockstead first-time setup**\n"
+                "1. The Blockstead owner opens **System → Discord server status**.\n"
+                "2. They select this channel's Minecraft profile and create a pairing code.\n"
+                "3. Run `/blockstead pair code:<code>` here.\n"
+                "4. The owner confirms the exact guild, channel, and Discord user in "
+                "Blockstead.\n\n"
+                "For multiple Minecraft servers, use one Discord channel and one pairing per "
+                "profile. The bot will keep each status message and command scope separate.",
+                ephemeral=False,
+            )
+        if command == "help":
+            return DiscordReply(
+                "Use `/blockstead setup` for first-time setup. After pairing, available "
+                "read-only commands are `/blockstead status`, `players`, `address`, "
+                "and `refresh`."
+            )
         if command == "pair":
             raw_code = str(interaction.options.get("code", "")).strip()
             if not raw_code or len(raw_code) > 64:
@@ -958,7 +976,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             DiscordPairing.status == "pending",
                         )
                     )
-                    if pairing is None or pairing.expires_at <= now:
+                    expires_at = pairing.expires_at if pairing is not None else None
+                    if expires_at is not None and expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=timezone.utc)  # noqa: UP017
+                    if pairing is None or (expires_at is not None and expires_at <= now):
                         if pairing is not None:
                             pairing.status = "expired"
                             db.commit()
@@ -8671,6 +8692,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         connection = db.scalar(
             select(DiscordConnection).where(DiscordConnection.profile_id == profile.id)
         )
+        channel_connection = db.scalar(
+            select(DiscordConnection).where(
+                DiscordConnection.application_id == pairing.claimed_application_id,
+                DiscordConnection.guild_id == pairing.claimed_guild_id,
+                DiscordConnection.channel_id == pairing.claimed_channel_id,
+            )
+        )
+        if channel_connection is not None and channel_connection.profile_id != profile.id:
+            raise HTTPException(
+                409,
+                "That Discord channel is already assigned to another Blockstead profile. "
+                "Use a separate channel for each Minecraft server.",
+            )
         if connection is None:
             connection = DiscordConnection(
                 admin_id=owner.id,

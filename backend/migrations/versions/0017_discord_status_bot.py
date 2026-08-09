@@ -68,6 +68,12 @@ def upgrade() -> None:
     )
     op.create_index("ix_discord_connections_guild_id", "discord_connections", ["guild_id"])
     op.create_index("ix_discord_connections_channel_id", "discord_connections", ["channel_id"])
+    op.create_index(
+        "uq_discord_connection_channel",
+        "discord_connections",
+        ["application_id", "guild_id", "channel_id"],
+        unique=True,
+    )
     op.create_table(
         "discord_command_audits",
         sa.Column("id", sa.String(36), primary_key=True),
@@ -99,6 +105,7 @@ def downgrade() -> None:
     op.drop_table("discord_command_audits")
     op.drop_index("ix_discord_connections_channel_id", table_name="discord_connections")
     op.drop_index("ix_discord_connections_guild_id", table_name="discord_connections")
+    op.drop_index("uq_discord_connection_channel", table_name="discord_connections")
     op.drop_table("discord_connections")
     op.drop_index("ix_discord_pairings_profile_id", table_name="discord_pairings")
     op.drop_table("discord_pairings")

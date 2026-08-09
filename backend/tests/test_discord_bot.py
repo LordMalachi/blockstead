@@ -56,7 +56,9 @@ def test_gateway_interaction_parser_keeps_only_command_identity() -> None:
 def test_command_definition_is_read_only_and_does_not_request_privileged_intents() -> None:
     command = blockstead_command_definition()
     names = {item["name"] for item in command["options"] if isinstance(item, dict)}
-    assert names == {"status", "players", "address", "refresh", "pair", "unpair", "help"}
+    assert names == {
+        "status", "players", "address", "refresh", "pair", "unpair", "help", "setup"
+    }
     pair = next(item for item in command["options"] if item["name"] == "pair")
     assert pair["options"][0]["required"] is True
 

@@ -1,7 +1,17 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -347,6 +357,11 @@ class DiscordConnection(Base):
     """A confirmed one-profile to one-Discord-channel status connection."""
 
     __tablename__ = "discord_connections"
+    __table_args__ = (
+        UniqueConstraint(
+            "application_id", "guild_id", "channel_id", name="uq_discord_connection_channel"
+        ),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     admin_id: Mapped[str] = mapped_column(ForeignKey("administrators.id", ondelete="CASCADE"))
     profile_id: Mapped[str] = mapped_column(

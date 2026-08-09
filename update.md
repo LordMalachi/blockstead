@@ -799,7 +799,8 @@ criteria live in [the Discord server status bot project brief](discord-status-bo
   current address when explicitly enabled, and honest `port_unverified`,
   `local_only`, `unavailable`, and `stale` states.
 - Start with read-only `/blockstead status`, `players`, `address`, `refresh`,
-  `pair`, `unpair`, and `help` commands.
+  `pair`, `unpair`, `help`, and `setup` commands. `/blockstead setup` explains
+  the first-time flow in the current channel.
 - Keep start/stop, console, files, settings, backups, restores, moderation,
   raw logs, and arbitrary Minecraft commands out of this milestone.
 

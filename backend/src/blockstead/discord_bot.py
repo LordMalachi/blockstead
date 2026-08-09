@@ -162,6 +162,7 @@ def blockstead_command_definition() -> dict[str, object]:
         ("refresh", "Refresh the host public-IP observation."),
         ("unpair", "Revoke this Discord connection."),
         ("help", "Show the commands available for this connection."),
+        ("setup", "Walk through first-time Blockstead channel setup."),
     ]
     options: list[dict[str, object]] = [
         {"type": 1, "name": name, "description": description} for name, description in subcommands

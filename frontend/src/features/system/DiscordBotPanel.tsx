@@ -50,7 +50,7 @@ export function DiscordBotPanel() {
       {data.install_url && <p><a className="button button--secondary" href={data.install_url} target="_blank" rel="noreferrer">Install bot in Discord</a></p>}
       {data.bot_ready && <>
         <h3>Pair a server profile</h3>
-        <p className="muted-note">Create a short-lived code, then run <code>/blockstead pair code:…</code> in the Discord channel that should receive status updates. Confirm the claimed channel here.</p>
+        <p className="muted-note">In a new Discord channel, run <code>/blockstead setup</code> for the walkthrough. Then create a short-lived code here and run <code>/blockstead pair code:…</code> in that channel. Confirm the claimed channel here. Use one channel per Minecraft profile when a guild hosts multiple servers.</p>
         <form className="inline-form" onSubmit={event => { event.preventDefault(); createPairing.mutate(); }}>
           <label>Blockstead profile<select value={profileId} onChange={event => setProfileId(event.target.value)} required><option value="">Choose a profile…</option>{profiles.data?.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
           <Button disabled={createPairing.isPending || !profileId}>{createPairing.isPending ? "Creating…" : "Create pairing code"}</Button>

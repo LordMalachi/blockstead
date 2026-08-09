@@ -78,6 +78,13 @@ The bot does not yet need an interactions endpoint URL because the host uses
 the outbound Gateway. The public key remains configured for future signed HTTP
 interaction support, but it is not a substitute for the bot token.
 
+### Avatar asset
+
+The project avatar is a 1024×1024 pixel-art portrait of the cat-maid mascot,
+prepared for Discord's application icon upload:
+
+`frontend/public/icons/cheese-maid-discord.png`
+
 ### Why self-hosted first
 
 - The host already owns the authoritative server state and public-IP lookup.
@@ -127,6 +134,13 @@ Discord user IDs and optionally approved role IDs
    accidentally exposed pairing code.
 7. Blockstead creates a connection credential, sends one initial status update,
    and records the pairing in Activity. The code is then unusable.
+
+Anyone can run `/blockstead setup` in a bot-visible channel before pairing. The
+bot posts a short walkthrough explaining where the owner creates the code, how
+to claim it, and why the owner must confirm the exact guild/channel/user. A
+guild may host multiple Minecraft servers, but each profile should use its own
+Discord channel; this keeps status messages and command authorization
+unambiguous.
 
 The default policy should authorize only the Discord user who completed the
 pairing. The owner may later add specific Discord user IDs or role IDs. Guild
@@ -233,6 +247,7 @@ The first command set should be read-only and server-scoped:
 | `/blockstead pair` | Starts the one-time pairing claim | Unpaired guild only, then owner confirmation required |
 | `/blockstead unpair` | Revokes the connection and stops updates | Pairing owner or Blockstead owner |
 | `/blockstead help` | Explains pairing and read-only scope | Safe generic response |
+| `/blockstead setup` | Posts the first-time setup walkthrough in the current channel | Unpaired channel; no server data |
 
 Do not include start, stop, restart, console, backup, restore, file, settings,
 ban, kick, or arbitrary Minecraft command actions in this project. A future
