@@ -1,2 +1,15 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Force LF regardless of a checkout's core.autocrlf setting. These scripts are
+# baked into the Linux Docker image (docker-entrypoint.sh) or executed as
+# Linux shell scripts (packaging/, scripts/*.sh); a Windows clone with
+# core.autocrlf=true would otherwise check them out as CRLF, breaking the
+# "#!/bin/sh" shebang the container execs directly.
+*.sh text eol=lf
+*.ps1 text eol=lf
+Dockerfile text eol=lf
+docker/docker-entrypoint.sh text eol=lf
+packaging/bin/blockstead text eol=lf
+packaging/blockstead-power text eol=lf
+packaging/blockstead-update text eol=lf

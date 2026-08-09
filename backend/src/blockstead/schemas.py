@@ -79,6 +79,15 @@ class NotificationIntegrationToggleRequest(BaseModel):
     enabled: bool
 
 
+class DiscordPairingCreateRequest(BaseModel):
+    profile_id: str = Field(min_length=1, max_length=36)
+
+
+class DiscordConnectionUpdateRequest(BaseModel):
+    enabled: bool | None = None
+    publish_address: bool | None = None
+
+
 class ImportRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
 

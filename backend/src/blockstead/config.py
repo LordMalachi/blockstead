@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     #: Once an update is waiting for players to leave, check frequently instead
     #: of waiting for the normal six-hour channel interval.
     update_wait_minutes: float = Field(default=5.0, ge=0.1, le=60)
+    #: Discord application configuration. The bot token is deliberately not
+    #: given a default and must be supplied through a protected host secret.
+    discord_application_id: str | None = None
+    discord_public_key: str | None = None
+    discord_bot_token: str | None = Field(default=None, repr=False)
 
     @field_validator("bind_host")
     @classmethod

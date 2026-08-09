@@ -8,7 +8,7 @@ import shutil
 import stat
 import sys
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta, timezone
@@ -86,6 +86,14 @@ from .diagnostic_captures import (
     write_transcript,
 )
 from .diagnostics import attach_logging, build_report, redact
+from .discord_bot import (
+    DiscordConfigurationError,
+    DiscordGateway,
+    DiscordInteraction,
+    DiscordReply,
+    discord_configuration,
+    validate_application_id,
+)
 from .distributions import (
     DISTRIBUTIONS,
     LaunchPlanError,
@@ -230,6 +238,9 @@ from .models import (
     BackupDestinationCheck,
     BackupRecord,
     DiagnosticCapture,
+    DiscordCommandAudit,
+    DiscordConnection,
+    DiscordPairing,
     LoginSession,
     MetricSample,
     NotificationDelivery,
@@ -332,6 +343,8 @@ from .schemas import (
     Credentials,
     CurseForgeKeyRequest,
     DiagnosticCaptureRequest,
+    DiscordConnectionUpdateRequest,
+    DiscordPairingCreateRequest,
     EulaRequest,
     FileEditRequest,
     FileRenameRequest,
@@ -536,9 +549,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     update_task: asyncio.Task[None] | None = None
     player_session_task: asyncio.Task[None] | None = None
     notification_task: asyncio.Task[None] | None = None
+    discord_status_task: asyncio.Task[None] | None = None
+    discord_task: asyncio.Task[None] | None = None
+    discord_gateway: DiscordGateway | None = None
     update_wakeup = asyncio.Event()
     update_lock = asyncio.Lock()
     performance_lock = asyncio.Lock()
+    discord_pairing_lock = asyncio.Lock()
+    discord_refresh_times: dict[str, float] = {}
 
     def record_player_session_line(profile_id: str, line: str) -> None:
         with factory() as db:
@@ -729,9 +747,363 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 log.exception("Could not process queued notification deliveries")
             await asyncio.sleep(2)
 
+    def utc_timestamp(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)  # noqa: UP017
+        return value.astimezone(timezone.utc).isoformat()  # noqa: UP017
+
+    def discord_json_list(value: str) -> list[str]:
+        try:
+            decoded = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            return []
+        return (
+            [item for item in decoded if isinstance(item, str)]
+            if isinstance(decoded, list)
+            else []
+        )
+
+    def discord_pairing_payload(
+        pairing: DiscordPairing, profile: Profile | None
+    ) -> dict[str, object]:
+        expires_at = pairing.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)  # noqa: UP017
+        status = pairing.status
+        if status == "pending" and expires_at <= datetime.now(UTC):
+            status = "expired"
+        return {
+            "id": pairing.id,
+            "profile_id": pairing.profile_id,
+            "profile_name": profile.name if profile else "Unknown profile",
+            "status": status,
+            "expires_at": expires_at.astimezone(UTC).isoformat(),  # noqa: UP017
+            "claimed": pairing.claimed_at is not None,
+            "claimed_guild_id": pairing.claimed_guild_id,
+            "claimed_channel_id": pairing.claimed_channel_id,
+            "claimed_user_id": pairing.claimed_user_id,
+            "claimed_at": utc_timestamp(pairing.claimed_at),
+            "confirmed_at": utc_timestamp(pairing.confirmed_at),
+        }
+
+    def discord_connection_payload(
+        connection: DiscordConnection, profile: Profile | None
+    ) -> dict[str, object]:
+        return {
+            "id": connection.id,
+            "profile_id": connection.profile_id,
+            "profile_name": profile.name if profile else "Unknown profile",
+            "application_id": connection.application_id,
+            "guild_id": connection.guild_id,
+            "channel_id": connection.channel_id,
+            "owner_user_id": connection.owner_user_id,
+            "enabled": connection.enabled,
+            "publish_address": connection.publish_address,
+            "status_message_configured": connection.status_message_id is not None,
+            "last_heartbeat_at": utc_timestamp(connection.last_heartbeat_at),
+            "created_at": utc_timestamp(connection.created_at),
+            "updated_at": utc_timestamp(connection.updated_at),
+        }
+
+    def discord_state(snapshot: Mapping[str, object], active: bool) -> str:
+        if not active:
+            return "stopped"
+        state = str(snapshot.get("state", "STOPPED"))
+        return state.removeprefix("ProcessState.").lower()
+
+    async def discord_profile_status(
+        profile: Profile, *, include_address: bool = False
+    ) -> dict[str, object]:
+        try:
+            directory = canonical_child(Path(profile.server_directory), config.server_root)
+        except (OSError, ValueError):
+            return {
+                "profile_name": profile.name,
+                "state": "unavailable",
+                "online": False,
+                "players": {"online": None, "max": None, "available": False},
+                "status_detail": "Blockstead could not safely resolve this profile folder.",
+                "public": {"state": "unavailable", "detail": "No address is being shown."},
+            }
+        properties = read_properties(directory)
+        active = app.state.active_profile_id == profile.id
+        state = discord_state(manager.snapshot(), active)
+        public_ip = await public_ip_discovery.discover()
+        join = join_details(properties, public_ip)
+        probe = await minecraft_status_probe(properties) if active and state == "running" else None
+        status = probe.get("status") if probe else None
+        if not isinstance(status, dict):
+            status = None
+        result: dict[str, object] = {
+            "profile_name": profile.name,
+            "state": state,
+            "online": state == "running",
+            "players": {
+                "online": status.get("online") if status else None,
+                "max": status.get("max") if status else None,
+                "available": status is not None,
+            },
+            "status_detail": (
+                str(probe.get("detail")) if probe else "The Minecraft server is not running."
+            ),
+            "public": {
+                "state": join["public"]["state"],
+                "detail": join["public"]["detail"],
+            },
+        }
+        if include_address:
+            public = join["public"]
+            detected = public["detected_ip"]
+            port = public["server_port"]
+            result["public"] = {
+                "state": public["state"],
+                "detail": public["detail"],
+                "address": f"{detected}:{port}" if detected else None,
+                "port": port,
+            }
+        return result
+
+    def discord_status_message(
+        connection: DiscordConnection, profile: Profile, status: Mapping[str, object]
+    ) -> str:
+        players = status.get("players") if isinstance(status.get("players"), dict) else {}
+        online = players.get("online") if isinstance(players, dict) else None
+        maximum = players.get("max") if isinstance(players, dict) else None
+        state = str(status.get("state", "unknown"))
+        icon = "🟢" if state == "running" else "🔴"
+        lines = [f"**Blockstead · {profile.name}**", f"{icon} Status: **{state.title()}**"]
+        if online is not None and maximum is not None:
+            lines.append(f"Players: **{online}/{maximum}**")
+        else:
+            lines.append("Players: unavailable while the server is stopped or not responding.")
+        if connection.publish_address:
+            public = status.get("public")
+            if isinstance(public, dict) and public.get("address"):
+                lines.append(f"Detected address: `{public['address']}` ({public['state']})")
+            elif isinstance(public, dict):
+                lines.append(f"Address: unavailable ({public.get('state', 'unknown')})")
+        lines.append("Use `/blockstead help` for read-only commands.")
+        return "\n".join(lines)
+
+    async def discord_status_loop() -> None:
+        """Keep one owner-approved status message fresh in each paired channel."""
+
+        while True:
+            try:
+                if discord_gateway is not None and discord_gateway.connected:
+                    with factory() as db:
+                        connections = db.scalars(
+                            select(DiscordConnection).where(DiscordConnection.enabled.is_(True))
+                        ).all()
+                        for connection in connections:
+                            profile = db.get(Profile, connection.profile_id)
+                            if profile is None:
+                                continue
+                            status = await discord_profile_status(
+                                profile, include_address=connection.publish_address
+                            )
+                            content = discord_status_message(connection, profile, status)
+                            try:
+                                if connection.status_message_id:
+                                    await discord_gateway.rest.edit_message(
+                                        connection.channel_id, connection.status_message_id, content
+                                    )
+                                else:
+                                    connection.status_message_id = (
+                                        await discord_gateway.rest.create_message(
+                                            connection.channel_id, content
+                                        )
+                                    )
+                                connection.last_sequence += 1
+                                connection.last_heartbeat_at = datetime.now(UTC)
+                                connection.last_status_payload = json.dumps(
+                                    status, separators=(",", ":")
+                                )
+                                connection.updated_at = datetime.now(UTC)
+                            except Exception:
+                                log.warning("Could not publish one Discord status message safely.")
+                        db.commit()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Could not process Discord status publishing")
+            await asyncio.sleep(60)
+
+    async def handle_discord_interaction(interaction: DiscordInteraction) -> DiscordReply:
+        """Authenticate every command against a confirmed profile connection."""
+
+        configured_app = config.discord_application_id
+        if not configured_app:
+            return DiscordReply("The Blockstead host has not configured a Discord application.")
+        try:
+            configured_app = validate_application_id(configured_app)
+        except DiscordConfigurationError:
+            return DiscordReply("The Blockstead Discord application is not configured correctly.")
+        if interaction.application_id != configured_app:
+            return DiscordReply("This Discord application is not authorized for Blockstead.")
+
+        command = interaction.subcommand
+        if command == "pair":
+            raw_code = str(interaction.options.get("code", "")).strip()
+            if not raw_code or len(raw_code) > 64:
+                return DiscordReply("That pairing code is not valid or has expired.")
+            now = datetime.now(UTC)
+            async with discord_pairing_lock:
+                with factory() as db:
+                    pairing = db.scalar(
+                        select(DiscordPairing).where(
+                            DiscordPairing.code_hash == digest(raw_code),
+                            DiscordPairing.status == "pending",
+                        )
+                    )
+                    if pairing is None or pairing.expires_at <= now:
+                        if pairing is not None:
+                            pairing.status = "expired"
+                            db.commit()
+                        return DiscordReply("That pairing code is not valid or has expired.")
+                    if pairing.claimed_at is not None:
+                        return DiscordReply("That pairing code has already been claimed.")
+                    pairing.claimed_application_id = interaction.application_id
+                    pairing.claimed_guild_id = interaction.guild_id
+                    pairing.claimed_channel_id = interaction.channel_id
+                    pairing.claimed_user_id = interaction.user_id
+                    pairing.claimed_role_ids = json.dumps(list(interaction.role_ids))
+                    pairing.claimed_at = now
+                    db.add(
+                        DiscordCommandAudit(
+                            profile_id=pairing.profile_id,
+                            guild_id=interaction.guild_id,
+                            channel_id=interaction.channel_id,
+                            user_id=interaction.user_id,
+                            command="pair",
+                            result="claimed",
+                            safe_detail="A one-time Discord pairing code was claimed.",
+                        )
+                    )
+                    db.commit()
+            return DiscordReply(
+                "Pairing request received. Confirm this Discord server in the Blockstead dashboard."
+            )
+
+        with factory() as db:
+            connection = db.scalar(
+                select(DiscordConnection).where(
+                    DiscordConnection.application_id == interaction.application_id,
+                    DiscordConnection.guild_id == interaction.guild_id,
+                    DiscordConnection.channel_id == interaction.channel_id,
+                    DiscordConnection.enabled.is_(True),
+                )
+            )
+            if connection is None:
+                return DiscordReply(
+                    "This channel is not paired with Blockstead. Start a pairing from the "
+                    "dashboard."
+                )
+            authorized_users = set(discord_json_list(connection.authorized_user_ids))
+            authorized_roles = set(discord_json_list(connection.authorized_role_ids))
+            is_authorized = interaction.user_id in authorized_users or bool(
+                authorized_roles.intersection(interaction.role_ids)
+            )
+            if not is_authorized:
+                return DiscordReply("You are not authorized for this Blockstead connection.")
+            profile = db.get(Profile, connection.profile_id)
+            if profile is None:
+                return DiscordReply("The paired Blockstead profile is no longer available.")
+            if command == "help":
+                reply = DiscordReply(
+                    "Read-only commands: `/blockstead status`, `/blockstead players`, "
+                    "`/blockstead address`, and `/blockstead refresh`. Use the Blockstead "
+                    "dashboard to change pairing or address-sharing settings."
+                )
+            elif command == "unpair":
+                connection.enabled = False
+                connection.updated_at = datetime.now(UTC)
+                db.add(
+                    DiscordCommandAudit(
+                        connection_id=connection.id,
+                        profile_id=profile.id,
+                        guild_id=interaction.guild_id,
+                        channel_id=interaction.channel_id,
+                        user_id=interaction.user_id,
+                        command=command,
+                        result="revoked",
+                        safe_detail="The Discord connection was revoked by its owner.",
+                    )
+                )
+                db.commit()
+                reply = DiscordReply("This Blockstead connection has been revoked.")
+            elif command == "refresh":
+                if interaction.user_id != connection.owner_user_id:
+                    reply = DiscordReply(
+                        "Only the owner who paired this connection can refresh it."
+                    )
+                elif time.monotonic() - discord_refresh_times.get(connection.id, 0) < 30:
+                    reply = DiscordReply("Please wait a few seconds before refreshing again.")
+                else:
+                    discord_refresh_times[connection.id] = time.monotonic()
+                    public = await public_ip_discovery.discover(force=True)
+                    reply = DiscordReply(
+                        str(public.get("detail", "The public-IP check completed."))
+                    )
+            else:
+                status = await discord_profile_status(
+                    profile, include_address=command == "address" and connection.publish_address
+                )
+                if command == "status":
+                    players = status["players"]
+                    count = (
+                        f" {players['online']}/{players['max']} players."
+                        if isinstance(players, dict)
+                        and players.get("online") is not None
+                        and players.get("max") is not None
+                        else " Player count is currently unavailable."
+                    )
+                    reply = DiscordReply(f"**{profile.name}** is **{status['state']}**.{count}")
+                elif command == "players":
+                    players = status["players"]
+                    reply = DiscordReply(
+                        f"**{profile.name}** players: **{players['online']}/{players['max']}**."
+                        if isinstance(players, dict)
+                        and players.get("online") is not None
+                        and players.get("max") is not None
+                        else f"**{profile.name}** player count is currently unavailable."
+                    )
+                elif command == "address":
+                    if not connection.publish_address:
+                        reply = DiscordReply("Address sharing is disabled for this connection.")
+                    else:
+                        public = status["public"]
+                        reply = DiscordReply(
+                            f"Join address: `{public['address']}` ({public['state']})."
+                            if isinstance(public, dict) and public.get("address")
+                            else (
+                                "A public join address is unavailable "
+                                f"({public.get('state', 'unknown')})."
+                            )
+                        )
+                else:
+                    reply = DiscordReply("That Blockstead command is not available.")
+            db.add(
+                DiscordCommandAudit(
+                    connection_id=connection.id,
+                    profile_id=profile.id,
+                    guild_id=interaction.guild_id,
+                    channel_id=interaction.channel_id,
+                    user_id=interaction.user_id,
+                    command=command,
+                    result="accepted",
+                    safe_detail="A read-only Discord command completed.",
+                )
+            )
+            db.commit()
+            return reply
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         nonlocal metrics_task, update_task, player_session_task, notification_task
+        nonlocal discord_status_task, discord_task, discord_gateway
         engine = factory.kw["bind"]
         Base.metadata.create_all(engine)
         with factory() as db:
@@ -778,6 +1150,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         metrics_task = asyncio.create_task(metrics_loop())
         player_session_task = asyncio.create_task(manager.subscribe(track_player_sessions))
         notification_task = asyncio.create_task(notification_loop())
+        configuration = discord_configuration(config)
+        if configuration["bot_ready"]:
+            try:
+                assert config.discord_application_id is not None
+                assert config.discord_bot_token is not None
+                discord_gateway = DiscordGateway(
+                    validate_application_id(config.discord_application_id),
+                    config.discord_bot_token,
+                    handle_discord_interaction,
+                    logger=log,
+                )
+                discord_task = discord_gateway.start()
+                discord_status_task = asyncio.create_task(discord_status_loop())
+                log.info("Discord status bridge started in outbound Gateway mode.")
+            except DiscordConfigurationError:
+                log.warning("Discord status bridge is configured but could not start safely.")
         # A first-ever start has nothing to announce, so the build that is
         # already running is recorded quietly. Anything different arriving later
         # is a real update and is announced once the owner sees it.
@@ -799,7 +1187,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             config.port,
         )
         yield
-        for task in (metrics_task, update_task, player_session_task, notification_task):
+        for task in (
+            metrics_task,
+            update_task,
+            player_session_task,
+            notification_task,
+            discord_status_task,
+        ):
             if task is None:
                 continue
             task.cancel()
@@ -811,6 +1205,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         update_task = None
         player_session_task = None
         notification_task = None
+        discord_status_task = None
+        if discord_gateway is not None:
+            await discord_gateway.stop()
+        discord_gateway = None
+        discord_task = None
         await scheduler.close()
         await manager.close()
         await http_client.aclose()
@@ -8148,6 +8547,217 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 .order_by(NotificationIntegration.created_at)
             ).all()
         ]
+
+    @app.get("/api/v1/discord/status")
+    def discord_bot_status(request: Request, db: Db) -> dict[str, object]:
+        """Expose safe Discord app readiness without returning the bot token."""
+
+        owner = require_role(current(request, db)[0])
+        configuration = discord_configuration(config)
+        pairings = db.scalars(
+            select(DiscordPairing)
+            .where(DiscordPairing.admin_id == owner.id)
+            .order_by(DiscordPairing.created_at.desc())
+            .limit(10)
+        ).all()
+        connections = db.scalars(
+            select(DiscordConnection)
+            .where(DiscordConnection.admin_id == owner.id)
+            .order_by(DiscordConnection.created_at)
+        ).all()
+        return {
+            **configuration,
+            "pairings": [
+                discord_pairing_payload(item, db.get(Profile, item.profile_id))
+                for item in pairings
+            ],
+            "connections": [
+                discord_connection_payload(item, db.get(Profile, item.profile_id))
+                for item in connections
+            ],
+        }
+
+    @app.post("/api/v1/discord/pairings", status_code=201)
+    def create_discord_pairing(
+        payload: DiscordPairingCreateRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        owner = mutation(request, db)
+        configuration = discord_configuration(config)
+        if not configuration["bot_ready"]:
+            raise HTTPException(
+                409,
+                "Configure the Discord application ID and bot token before creating a pairing.",
+            )
+        profile = db.get(Profile, payload.profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        existing = db.scalar(
+            select(DiscordConnection).where(
+                DiscordConnection.admin_id == owner.id,
+                DiscordConnection.profile_id == profile.id,
+                DiscordConnection.enabled.is_(True),
+            )
+        )
+        if existing is not None:
+            raise HTTPException(409, "That profile already has an active Discord connection.")
+        now = datetime.now(UTC)
+        for previous in db.scalars(
+            select(DiscordPairing).where(
+                DiscordPairing.admin_id == owner.id,
+                DiscordPairing.profile_id == profile.id,
+                DiscordPairing.status == "pending",
+            )
+        ).all():
+            previous.status = "replaced"
+        code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(12))
+        pairing = DiscordPairing(
+            admin_id=owner.id,
+            profile_id=profile.id,
+            code_hash=digest(code),
+            expires_at=now + timedelta(minutes=10),
+        )
+        db.add(pairing)
+        db.add(
+            AuditEvent(
+                admin_id=owner.id,
+                profile_id=profile.id,
+                category="discord_pairing",
+                result="created",
+                safe_detail="Created a short-lived Discord pairing code.",
+            )
+        )
+        db.commit()
+        return {
+            **discord_pairing_payload(pairing, profile),
+            "code": code,
+            "detail": (
+                "Enter this code with /blockstead pair in the Discord channel you want to connect."
+            ),
+        }
+
+    @app.post("/api/v1/discord/pairings/{pairing_id}/confirm")
+    def confirm_discord_pairing(
+        pairing_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        owner = mutation(request, db)
+        pairing = db.get(DiscordPairing, pairing_id)
+        if pairing is None or pairing.admin_id != owner.id:
+            raise HTTPException(404, "That Discord pairing was not found.")
+        expires_at = pairing.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)  # noqa: UP017
+        if pairing.status != "pending" or expires_at <= datetime.now(UTC):
+            if pairing.status == "pending":
+                pairing.status = "expired"
+                db.commit()
+            raise HTTPException(409, "That pairing is no longer awaiting confirmation.")
+        configured_app = config.discord_application_id
+        if not configured_app or pairing.claimed_application_id != configured_app.strip():
+            raise HTTPException(409, "The pairing was claimed by a different Discord application.")
+        if not all(
+            isinstance(value, str) and value
+            for value in (
+                pairing.claimed_guild_id,
+                pairing.claimed_channel_id,
+                pairing.claimed_user_id,
+            )
+        ):
+            raise HTTPException(
+                409, "Use /blockstead pair in Discord before confirming this pairing."
+            )
+        profile = db.get(Profile, pairing.profile_id)
+        if profile is None:
+            raise HTTPException(404, "The paired Blockstead profile no longer exists.")
+        connection = db.scalar(
+            select(DiscordConnection).where(DiscordConnection.profile_id == profile.id)
+        )
+        if connection is None:
+            connection = DiscordConnection(
+                admin_id=owner.id,
+                profile_id=profile.id,
+                application_id=pairing.claimed_application_id,
+                guild_id=pairing.claimed_guild_id,
+                channel_id=pairing.claimed_channel_id,
+                owner_user_id=pairing.claimed_user_id,
+                authorized_user_ids=json.dumps([pairing.claimed_user_id]),
+                authorized_role_ids=pairing.claimed_role_ids or "[]",
+            )
+            db.add(connection)
+            db.flush()
+        else:
+            connection.admin_id = owner.id
+            connection.application_id = pairing.claimed_application_id
+            connection.guild_id = pairing.claimed_guild_id
+            connection.channel_id = pairing.claimed_channel_id
+            connection.owner_user_id = pairing.claimed_user_id
+            connection.authorized_user_ids = json.dumps([pairing.claimed_user_id])
+            connection.authorized_role_ids = pairing.claimed_role_ids or "[]"
+            connection.enabled = True
+            connection.updated_at = datetime.now(UTC)
+        pairing.status = "confirmed"
+        pairing.confirmed_at = datetime.now(UTC)
+        db.add(
+            AuditEvent(
+                admin_id=owner.id,
+                profile_id=profile.id,
+                category="discord_pairing",
+                result="confirmed",
+                safe_detail="Confirmed a Discord channel pairing.",
+            )
+        )
+        db.commit()
+        return discord_connection_payload(connection, profile)
+
+    @app.post("/api/v1/discord/connections/{connection_id}/status")
+    def update_discord_connection(
+        connection_id: str,
+        payload: DiscordConnectionUpdateRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        owner = mutation(request, db)
+        connection = db.get(DiscordConnection, connection_id)
+        if connection is None or connection.admin_id != owner.id:
+            raise HTTPException(404, "That Discord connection was not found.")
+        if payload.enabled is None and payload.publish_address is None:
+            raise HTTPException(422, "Provide an enabled or publish_address change.")
+        if payload.enabled is not None:
+            connection.enabled = payload.enabled
+        if payload.publish_address is not None:
+            connection.publish_address = payload.publish_address
+        connection.updated_at = datetime.now(UTC)
+        profile = db.get(Profile, connection.profile_id)
+        db.add(
+            AuditEvent(
+                admin_id=owner.id,
+                profile_id=connection.profile_id,
+                category="discord_connection",
+                result="updated",
+                safe_detail="Updated Discord connection sharing settings.",
+            )
+        )
+        db.commit()
+        return discord_connection_payload(connection, profile)
+
+    @app.delete("/api/v1/discord/connections/{connection_id}")
+    def revoke_discord_connection(connection_id: str, request: Request, db: Db) -> Response:
+        owner = mutation(request, db)
+        connection = db.get(DiscordConnection, connection_id)
+        if connection is None or connection.admin_id != owner.id:
+            raise HTTPException(404, "That Discord connection was not found.")
+        connection.enabled = False
+        connection.updated_at = datetime.now(UTC)
+        db.add(
+            AuditEvent(
+                admin_id=owner.id,
+                profile_id=connection.profile_id,
+                category="discord_connection",
+                result="revoked",
+                safe_detail="Revoked a Discord status connection.",
+            )
+        )
+        db.commit()
+        return Response(status_code=204)
 
     @app.post("/api/v1/notification-integrations", status_code=201)
     def create_notification_integration(

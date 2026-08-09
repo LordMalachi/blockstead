@@ -3,6 +3,7 @@ import { SystemPanel } from "./SystemPanel";
 import { UpdatePanel } from "./UpdatePanel";
 import { AccountAccessPanel } from "./AccountAccessPanel";
 import { DiscordIntegrationPanel } from "./DiscordIntegrationPanel";
+import { DiscordBotPanel } from "./DiscordBotPanel";
 
 export function SystemPage() {
   return <>
@@ -10,6 +11,7 @@ export function SystemPage() {
     <SystemPanel />
     <AccountAccessPanel />
     <DiscordIntegrationPanel />
+    <DiscordBotPanel />
     <UpdatePanel />
     <DiagnosticsPanel />
   </>;

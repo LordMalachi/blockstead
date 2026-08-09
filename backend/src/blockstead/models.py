@@ -321,3 +321,70 @@ class NotificationDelivery(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DiscordPairing(Base):
+    """Short-lived owner-created claim waiting for a Discord confirmation."""
+
+    __tablename__ = "discord_pairings"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    admin_id: Mapped[str] = mapped_column(ForeignKey("administrators.id", ondelete="CASCADE"))
+    profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    claimed_application_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    claimed_guild_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    claimed_channel_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    claimed_user_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    claimed_role_ids: Mapped[str] = mapped_column(Text, default="[]")
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DiscordConnection(Base):
+    """A confirmed one-profile to one-Discord-channel status connection."""
+
+    __tablename__ = "discord_connections"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    admin_id: Mapped[str] = mapped_column(ForeignKey("administrators.id", ondelete="CASCADE"))
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), unique=True
+    )
+    application_id: Mapped[str] = mapped_column(String(32))
+    guild_id: Mapped[str] = mapped_column(String(32))
+    channel_id: Mapped[str] = mapped_column(String(32))
+    owner_user_id: Mapped[str] = mapped_column(String(32))
+    authorized_user_ids: Mapped[str] = mapped_column(Text, default="[]")
+    authorized_role_ids: Mapped[str] = mapped_column(Text, default="[]")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    publish_address: Mapped[bool] = mapped_column(Boolean, default=False)
+    status_message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_status_payload: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DiscordCommandAudit(Base):
+    """Safe audit metadata for a Discord command, never the full message payload."""
+
+    __tablename__ = "discord_command_audits"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    connection_id: Mapped[str | None] = mapped_column(
+        ForeignKey("discord_connections.id", ondelete="SET NULL"), nullable=True
+    )
+    profile_id: Mapped[str | None] = mapped_column(
+        ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True
+    )
+    guild_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    channel_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    user_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    command: Mapped[str] = mapped_column(String(64))
+    result: Mapped[str] = mapped_column(String(24))
+    safe_detail: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

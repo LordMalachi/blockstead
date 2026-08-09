@@ -51,7 +51,7 @@ remain available without dominating normal server care.
 | 11.5. Extension-aware command packs | Complete | Curated extension recommendations and guided commands gated by active, readable providers |
 | 12. Saved setups, trusted helpers, and Discord alerts | In progress | Isolated profile variants, owner/viewer accounts, one-time recovery, and redacted outbound local-alert delivery |
 | 13. Trusted household access | Proposed | Future LAN enrollment, device/session naming, and broader household access controls after the scoped helper foundation |
-| 14. Discord server status bot | Next | Paired host-published Discord status, player counts, and owner-approved join address with read-only slash commands |
+| 14. Discord server status bot | In progress | Paired host-published Discord status, player counts, and owner-approved join address with read-only slash commands |
 | 15. Player-ready sharing and status | Proposed | A privacy-safe read-only join/status surface that stays disabled by default |
 | 16. Curated recipes and reproducible loadouts | Proposed | Versioned, compatibility-aware setup recipes built on existing installers and lockfiles |
 | 17. Portable migration and off-host recovery | Proposed | Verifiable export/import and owner-controlled recovery destinations |
@@ -76,7 +76,10 @@ setups use isolated profile variants, trusted helpers are scoped owner/viewer
 accounts, and Discord is an owner-configured outbound alert destination with a
 durable redacted queue. It remains **in progress** until the clean Linux Mint
 22.3 acceptance checklist is run; release notes must wait for that gate. The
-paired, host-published Discord status bot remains the next focused project.
+The paired, host-published Discord status bot is now the active focused project;
+its first host bridge, pairing records, read-only Gateway commands, and
+dashboard controls are implemented in the working tree. The clean Linux Mint
+acceptance gate and first real guild pairing remain before marking it complete.
 
 ## Current baseline
 
@@ -770,8 +773,8 @@ should adopt the boundary, not the hosting-panel complexity.
 
 ## Milestone 14: Discord server status bot
 
-**Status: Next — begin after the current notification/webhook foundation is
-complete.**
+**Status: In progress — the host bridge and Discord app setup are implemented;
+live guild installation and acceptance testing remain.**
 
 ### Why
 
@@ -802,15 +805,18 @@ criteria live in [the Discord server status bot project brief](discord-status-bo
 
 ### Decision gates
 
-- Confirm the self-hosted bridge deployment model and native/Docker packaging.
-- Define a new connection/pairing record instead of overloading the generic
-  webhook record with bot identity or command authorization.
-- Decide whether the current public address appears in the persistent status
-  message or only in an authorized ephemeral command response; command-only is
-  the safer default.
-- Require tests for pairing expiry, copied-code confirmation, unauthorized
-  users, connection revocation, stale IP/status, Discord outages, and profile
-  deletion before implementation is marked complete.
+- [x] Confirm the self-hosted bridge deployment model; the first pass runs in
+  the host process and keeps the outbound Gateway local.
+- [x] Define new connection, pairing, and command-audit records instead of
+  overloading the generic webhook record.
+- [x] Keep address sharing disabled by default and owner-controlled for the
+  persistent status message.
+- [x] Add tests for token redaction, pairing confirmation, migrations, and
+  command parsing; the full backend and frontend suites pass.
+- [ ] Install the bot in the intended guild and confirm the first channel
+  pairing through the dashboard.
+- [ ] Add stale-heartbeat evidence and complete the clean Linux Mint
+  acceptance gate before marking the milestone complete.
 
 ## Milestone 15: Player-ready sharing and status
 

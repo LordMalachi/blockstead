@@ -1,3 +1,5 @@
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -5,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from blockstead.app import create_app
 from blockstead.config import Settings
+from blockstead.models import DiscordPairing
 from blockstead.notification_integrations import (
     WebhookValidationError,
     safe_payload,
@@ -157,6 +160,64 @@ def test_discord_integration_is_masked_and_owner_only(
         == 403
     )
     assert viewer.status_code == 201
+
+
+def test_discord_pairing_requires_confirmation_and_masks_code(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    client.app.state.settings.discord_application_id = "1535816544951476324"
+    client.app.state.settings.discord_bot_token = "test-token"  # noqa: S105
+    fixture = Path(__file__).parents[2] / "fixtures" / "servers" / "vanilla-fixture"
+    created = client.post(
+        "/api/v1/profiles",
+        headers=auth,
+        json={"name": "Discord fixture", "path": str(fixture)},
+    )
+    assert created.status_code == 201, created.text
+    profile_id = created.json()["id"]
+
+    pairing = client.post(
+        "/api/v1/discord/pairings",
+        headers=auth,
+        json={"profile_id": profile_id},
+    )
+    assert pairing.status_code == 201, pairing.text
+    code = pairing.json()["code"]
+    assert code not in pairing.json()["id"]
+
+    factory = client.app.state.session_factory
+    with factory() as db:
+        record = db.get(DiscordPairing, pairing.json()["id"])
+        assert record is not None
+        assert code not in record.code_hash
+        record.claimed_application_id = "1535816544951476324"
+        record.claimed_guild_id = "900000000000000002"
+        record.claimed_channel_id = "900000000000000003"
+        record.claimed_user_id = "900000000000000004"
+        record.claimed_role_ids = json.dumps(["900000000000000005"])
+        record.claimed_at = datetime.now(UTC)
+        db.commit()
+
+    confirmed = client.post(
+        f"/api/v1/discord/pairings/{pairing.json()['id']}/confirm",
+        headers=auth,
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["profile_id"] == profile_id
+    assert confirmed.json()["publish_address"] is False
+
+    status = client.get("/api/v1/discord/status", headers=auth)
+    assert status.status_code == 200, status.text
+    assert status.json()["bot_token_configured"] is True
+    assert status.json()["connections"][0]["guild_id"] == "900000000000000002"
+
+    changed = client.post(
+        f"/api/v1/discord/connections/{confirmed.json()['id']}/status",
+        headers=auth,
+        json={"publish_address": True},
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["publish_address"] is True
 
 
 def test_saved_setup_variant_uses_isolated_copy_and_preserves_source(

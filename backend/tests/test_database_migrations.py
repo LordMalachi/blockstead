@@ -79,9 +79,12 @@ def test_empty_database_upgrades_to_head(tmp_path: Path) -> None:
         "saved_setup_variants",
         "notification_integrations",
         "notification_deliveries",
+        "discord_pairings",
+        "discord_connections",
+        "discord_command_audits",
         "alembic_version",
     }
-    assert current_revision(database) == "0016"
+    assert current_revision(database) == "0017"
 
 
 def test_current_0015_database_upgrades_milestone12_tables(tmp_path: Path) -> None:
@@ -92,13 +95,16 @@ def test_current_0015_database_upgrades_milestone12_tables(tmp_path: Path) -> No
     config_path, migrations_path = migration_paths()
     upgrade_database(database, config_path, migrations_path)
 
-    assert current_revision(database) == "0016"
+    assert current_revision(database) == "0017"
     assert {
         "password_recovery_tokens",
         "saved_setups",
         "saved_setup_variants",
         "notification_integrations",
         "notification_deliveries",
+        "discord_pairings",
+        "discord_connections",
+        "discord_command_audits",
     }.issubset(table_names(database))
 
 
@@ -120,7 +126,7 @@ def test_unversioned_initial_schema_is_stamped_then_upgraded(tmp_path: Path) -> 
     assert ("profile_id",) in schedule_unique_columns(database)
     assert "backups" in table_names(database)
     assert "metric_samples" in table_names(database)
-    assert current_revision(database) == "0016"
+    assert current_revision(database) == "0017"
 
 
 def test_unversioned_current_schema_is_stamped_at_head(tmp_path: Path) -> None:
@@ -157,7 +163,7 @@ def test_unversioned_current_schema_is_stamped_at_head(tmp_path: Path) -> None:
     assert ("profile_id",) in schedule_unique_columns(database)
     assert "backups" in table_names(database)
     assert "metric_samples" in table_names(database)
-    assert current_revision(database) == "0016"
+    assert current_revision(database) == "0017"
 
 
 def test_unknown_unversioned_schema_is_rejected(tmp_path: Path) -> None:

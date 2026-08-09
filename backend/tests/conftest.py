@@ -23,6 +23,7 @@ class PublicIpDiscoveryStub:
 def client(tmp_path: Path) -> TestClient:
     fixture_root = Path(__file__).parents[2] / "fixtures" / "servers"
     settings = Settings(
+        _env_file=None,
         data_dir=tmp_path / "data", server_root=fixture_root, allowed_origins="http://testserver"
     )
     with TestClient(create_app(settings)) as test_client:

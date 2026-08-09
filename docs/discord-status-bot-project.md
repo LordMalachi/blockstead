@@ -3,8 +3,10 @@
 **Priority:** Next development priority after the current notification/webhook
 foundation is complete.
 
-**Status:** Scope only. This document is a project brief, not an implementation
-commitment or a request to change the current agent's in-progress work.
+**Status:** Implementation underway. The first host-side bridge, pairing API,
+Gateway command path, and dashboard controls are now in the working tree. The
+remaining live step is installing the bot in the intended Discord guild and
+confirming the first channel pairing.
 
 **Target:** Give an owner a paired Discord app that reports the selected
 Blockstead server's latest trustworthy status, current player count, and
@@ -37,6 +39,44 @@ The current outbound Discord webhook work is useful groundwork for safe payloads
 secret handling, queueing, and retries. It is not by itself the bot connection:
 a webhook URL must never be treated as a bot credential, pairing credential, or
 command channel.
+
+### Current implementation checkpoint
+
+- Discord application settings are configured for guild installation with the
+  `bot` and `applications.commands` scopes and only View Channels, Send
+  Messages, and Embed Links permissions. Privileged Gateway intents remain off.
+- Blockstead reads `BLOCKSTEAD_DISCORD_APPLICATION_ID`,
+  `BLOCKSTEAD_DISCORD_PUBLIC_KEY`, and the host-only
+  `BLOCKSTEAD_DISCORD_BOT_TOKEN`. The dashboard reports only configured/not
+  configured state; it never returns the token.
+- The bridge currently runs in the Blockstead host process and keeps its
+  outbound Gateway connection there. A separate sidecar plus authenticated
+  local IPC remains an optional packaging improvement, not a reason to expose
+  an inbound endpoint.
+- The code now creates one-time hashed pairing codes, stores pending claims,
+  requires owner confirmation, authorizes the paired user/roles, registers
+  guild-scoped read-only commands, edits one bot-authored status message, and
+  supports revocation and address-sharing opt-in.
+- The live Gateway connection was verified with the configured Discord app;
+  no credential material was printed or committed. The test suite covers the
+  pairing boundary, token redaction, migrations, and command parsing.
+
+### Host setup
+
+1. Keep the bot token in a protected host secret store or ignored `.env`; do
+   not put it in frontend configuration, screenshots, logs, or support files.
+2. Start Blockstead and open **System → Discord server status**.
+3. Use **Install bot in Discord** and select the intended guild. Discord's
+   install screen should show only the configured bot and command scopes with
+   the three minimal channel permissions.
+4. Select a Blockstead profile, create a pairing code, and run
+   `/blockstead pair code:<code>` in the intended channel.
+5. Confirm the exact guild/channel/user claim in Blockstead. The status message
+   will then be created and updated by the host bridge.
+
+The bot does not yet need an interactions endpoint URL because the host uses
+the outbound Gateway. The public key remains configured for future signed HTTP
+interaction support, but it is not a substitute for the bot token.
 
 ### Why self-hosted first
 
@@ -319,4 +359,3 @@ authorization, player-impact confirmations, and a recovery story.
 - Publishing player names, chat, raw logs, exact host details, or backup state.
 - Supporting multiple profiles per Discord channel before one profile per
   connection is reliable and understandable.
-

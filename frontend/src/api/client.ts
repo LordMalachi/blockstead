@@ -55,6 +55,46 @@ export interface SavedSetupSwitchReview {
 }
 export interface NotificationIntegration { id: string; kind: "discord_webhook"; enabled: boolean; webhook_configured: boolean; webhook_display: string; created_at: string; updated_at: string }
 export interface NotificationDelivery { id: string; alert_id: string; status: "pending" | "delivered" | "failed"; attempts: number; response_status: number | null; detail: string; created_at: string; delivered_at: string | null }
+export interface DiscordBotStatus {
+  application_id: string | null;
+  public_key_configured: boolean;
+  bot_token_configured: boolean;
+  bot_ready: boolean;
+  install_url: string | null;
+  application_error: string | null;
+  public_key_error: string | null;
+  mode: "host_outbound_gateway" | "not_configured";
+  pairings: DiscordPairing[];
+  connections: DiscordConnection[];
+}
+export interface DiscordPairing {
+  id: string;
+  profile_id: string;
+  profile_name: string;
+  status: "pending" | "claimed" | "confirmed" | "expired" | "replaced";
+  expires_at: string;
+  claimed: boolean;
+  claimed_guild_id: string | null;
+  claimed_channel_id: string | null;
+  claimed_user_id: string | null;
+  claimed_at: string | null;
+  confirmed_at: string | null;
+}
+export interface DiscordConnection {
+  id: string;
+  profile_id: string;
+  profile_name: string;
+  application_id: string;
+  guild_id: string;
+  channel_id: string;
+  owner_user_id: string;
+  enabled: boolean;
+  publish_address: boolean;
+  status_message_configured: boolean;
+  last_heartbeat_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
 export interface Profile { id: string; name: string; server_directory: string; distribution: string; minecraft_version: string | null; loader_version: string | null; is_fixture: boolean }
 export interface ProfileRemovalReview {
   id: string;
