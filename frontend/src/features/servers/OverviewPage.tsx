@@ -7,6 +7,7 @@ import { Tooltip } from "../../components/Tooltip";
 import { formatBytes } from "../../lib/format";
 import { PrerequisitesPanel } from "../extensions/PrerequisitesPanel";
 import { useServerScope } from "./scope";
+import { useRole } from "../shell/role";
 
 function sampledTime(value: string | null): string {
   return value ? new Date(value).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "not yet sampled";
@@ -48,6 +49,7 @@ function DailyFact({ title, fact, value = fact.label, detail = fact.detail }: { 
 
 export function OverviewPage() {
   const scope = useServerScope();
+  const owner = useRole() === "owner";
   const [copied, setCopied] = useState(false);
   const [connectionHelpOpen, setConnectionHelpOpen] = useState(false);
   const [captureDuration, setCaptureDuration] = useState(30);
@@ -127,8 +129,8 @@ export function OverviewPage() {
           <p>Check that this computer is online without a VPN or proxy, that Minecraft is allowed through the host firewall, and that the router forwards the public port to this server’s local address and port <code>{data.join.public.server_port}</code>.</p>
           <p>Some internet providers use carrier-grade NAT or another router upstream, which prevents ordinary port forwarding. A router’s outside port can also differ from Minecraft’s local port, so Blockstead will not guess it.</p>
           <div className="connection-help-popover__actions">
-            <Button className="button--secondary button--small" disabled={refreshConnection.isPending} onClick={() => refreshConnection.mutate()}>{refreshConnection.isPending ? "Checking…" : "Check public IP again"}</Button>
-            {data.join.local_only && <Button className="button--small" disabled={enableLan.isPending} onClick={() => enableLan.mutate()}>{enableLan.isPending ? "Enabling…" : "Enable local-network access"}</Button>}
+            {owner && <Button className="button--secondary button--small" disabled={refreshConnection.isPending} onClick={() => refreshConnection.mutate()}>{refreshConnection.isPending ? "Checking…" : "Check public IP again"}</Button>}
+            {owner && data.join.local_only && <Button className="button--small" disabled={enableLan.isPending} onClick={() => enableLan.mutate()}>{enableLan.isPending ? "Enabling…" : "Enable local-network access"}</Button>}
             <Link className="button button--quiet button--small" to="/help#connection-troubleshooting">Open full help guide</Link>
           </div>
           {refreshConnection.error && <p className="error" role="alert">{refreshConnection.error.message}</p>}
@@ -171,7 +173,7 @@ export function OverviewPage() {
         </div>
         <div className="performance-capture__actions">
           <label>Duration<select aria-label="Diagnostic capture duration" value={captureDuration} onChange={event => setCaptureDuration(Number(event.target.value))}><option value={30}>30 seconds</option><option value={60}>1 minute</option><option value={120}>2 minutes</option></select></label>
-          <Button className="button--secondary button--small" disabled={!scope.running || captureDiagnostic.isPending} onClick={() => captureDiagnostic.mutate()}>{captureDiagnostic.isPending ? "Capturing…" : "Capture local profile"}</Button>
+          {owner && <Button className="button--secondary button--small" disabled={!scope.running || captureDiagnostic.isPending} onClick={() => captureDiagnostic.mutate()}>{captureDiagnostic.isPending ? "Capturing…" : "Capture local profile"}</Button>}
         </div>
         {captureDiagnostic.error && <p className="error" role="alert">{captureDiagnostic.error.message}</p>}
         {captureDiagnostic.data && <p className="success" role="status">{captureDiagnostic.data.detail}</p>}
@@ -191,7 +193,7 @@ export function OverviewPage() {
       </section>
     </div>
 
-    <PrerequisitesPanel profileId={scope.profile.id} />
+    {owner && <PrerequisitesPanel profileId={scope.profile.id} />}
 
     <details className="card diagnostics">
       <summary>Diagnostics</summary>

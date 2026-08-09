@@ -3,6 +3,7 @@ import { Link, Outlet, useLocation, useNavigate, useParams } from "react-router-
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ProcessState, type Profile } from "../../api/client";
 import { Button } from "../../components/Button";
+import { useRole } from "../shell/role";
 import { scopeFor } from "./scope";
 
 export function ServerLayout() {
@@ -11,6 +12,8 @@ export function ServerLayout() {
   const client = useQueryClient();
   const section = useLocation().pathname.split("/")[3] ?? "overview";
   const [notice, setNotice] = useState("");
+  const role = useRole();
+  const owner = role === "owner";
   const state = useQuery({ queryKey: ["state"], queryFn: () => api<ProcessState>("/server/state"), refetchInterval: 1000 });
   const profiles = useQuery({ queryKey: ["profiles"], queryFn: () => api<Profile[]>("/profiles") });
   const action = useMutation({
@@ -36,12 +39,12 @@ export function ServerLayout() {
       </div>
       <div className="hero-actions">
         <label>Active server<select value={profile.id} onChange={event => { void navigate(`/servers/${event.target.value}/${section}`); }}>{profiles.data.map(entry => <option key={entry.id} value={entry.id}>{entry.name} · {entry.distribution}</option>)}</select></label>
-        <div className="control-actions" aria-busy={action.isPending}>
+        {owner ? <div className="control-actions" aria-busy={action.isPending}>
           <Button disabled={action.isPending || !scope.canStart} onClick={() => action.mutate({ endpoint: "/server/start", body: { profile_id: profile.id, mode: "normal" } })}>Start server</Button>
           <Button className="button--secondary" disabled={action.isPending || !scope.isActive || !["RUNNING", "STARTING", "DEGRADED"].includes(scope.state)} onClick={() => action.mutate({ endpoint: "/server/stop" })}>Stop safely</Button>
           <Button className="button--secondary" disabled={action.isPending || !scope.isActive || !scope.running} onClick={() => action.mutate({ endpoint: "/server/restart", body: { profile_id: profile.id, mode: "normal" } })}>Restart</Button>
           {scope.isActive && scope.state === "STOPPING" && <Button className="button--danger" disabled={action.isPending} onClick={() => action.mutate({ endpoint: "/server/force-stop" })}>{action.isPending ? "Force stopping…" : "Force stop"}</Button>}
-        </div>
+        </div> : <p className="muted-note">View-only account: server controls and raw files are hidden.</p>}
       </div>
     </section>
     {notice && <div className="error page-notice" role="alert">{notice}</div>}

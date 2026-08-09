@@ -110,9 +110,20 @@ def authenticate_request(request: Request, db: Session) -> tuple[Administrator, 
         db.commit()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Your session has expired.")
     admin = db.get(Administrator, session.admin_id)
-    if admin is None:
+    if admin is None or admin.disabled:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Your session is no longer valid.")
     return admin, session
+
+
+def require_role(admin: Administrator, role: str = "owner") -> Administrator:
+    if role == "owner" and admin.role != "owner":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail="Owner access is required for this action.",
+        )
+    if admin.disabled:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="This account is disabled.")
+    return admin
 
 
 def require_mutation_security(

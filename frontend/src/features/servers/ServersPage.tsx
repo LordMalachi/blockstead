@@ -10,6 +10,8 @@ import { ModpacksPanel } from "../extensions/ModpacksPanel";
 import { FirstServerChooser, type FirstServerPath } from "./FirstServerChooser";
 import { scopeFor, type ServerScope } from "./scope";
 import { ProvisionPanel } from "./ProvisionPanel";
+import { SavedSetupsPanel } from "./SavedSetupsPanel";
+import { useRole } from "../shell/role";
 
 function folderFrom(value: string) { return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "minecraft-server"; }
 
@@ -22,7 +24,7 @@ function nextScheduled(schedule: Schedule | undefined): string {
   return `${upcoming.label} ${at}`;
 }
 
-function ServerCard({ scope, allowlist, schedule, onAction, onRemove }: { scope: ServerScope; allowlist: number | null; schedule: Schedule | undefined; onAction: (endpoint: string, body?: object) => void; onRemove: (profile: Profile) => void }) {
+function ServerCard({ scope, allowlist, schedule, onAction, onRemove, owner }: { scope: ServerScope; allowlist: number | null; schedule: Schedule | undefined; onAction: (endpoint: string, body?: object) => void; onRemove: (profile: Profile) => void; owner: boolean }) {
   const { profile } = scope;
   return <article className="server-card">
     <div className="server-card__head">
@@ -34,13 +36,13 @@ function ServerCard({ scope, allowlist, schedule, onAction, onRemove }: { scope:
       <div><dt>Next schedule</dt><dd>{nextScheduled(schedule)}</dd></div>
       <div><dt>Last backup</dt><dd>No history yet</dd></div>
     </dl>
-    <div className="server-card__actions">
+    {owner && <div className="server-card__actions">
       {scope.isActive && ["RUNNING", "STARTING", "DEGRADED"].includes(scope.state)
         ? <Button className="button--secondary" onClick={() => onAction("/server/stop")}>Stop safely</Button>
         : <Button disabled={!scope.canStart} onClick={() => onAction("/server/start", { profile_id: profile.id, mode: "normal" })}>Start server</Button>}
       <Link className="button button--quiet" to={`/servers/${profile.id}/overview`}>Open workspace</Link>
       <Button className="button--quiet button--small" disabled={scope.isActive} onClick={() => onRemove(profile)}>Remove server</Button>
-    </div>
+    </div>}
     {profile.distribution === "unknown" && <small className="warning-note">Blockstead could not identify a launchable server in this folder. Re-import the complete server folder before starting or migrating it.</small>}
     {scope.occupant && <small className="muted-note">{scope.reason}</small>}
   </article>;
@@ -49,6 +51,8 @@ function ServerCard({ scope, allowlist, schedule, onAction, onRemove }: { scope:
 export function ServersPage() {
   const client = useQueryClient();
   const navigate = useNavigate();
+  const role = useRole();
+  const owner = role === "owner";
   const [path, setPath] = useState("");
   const [importName, setImportName] = useState("My Server");
   const [firstServerPath, setFirstServerPath] = useState<FirstServerPath>("create");
@@ -155,10 +159,11 @@ export function ServersPage() {
       <div><p className="eyebrow">Your servers</p><h1>Servers</h1><p>Every Minecraft world Blockstead looks after on this computer. Open one to reach its console, players, schedule, and settings.</p></div>
     </section>
     {notice && <div className="error page-notice" role="alert">{notice}</div>}
-    {list.length > 0 && <div className="server-grid">{list.map((profile, index) => <ServerCard key={profile.id} scope={scopeFor(profile, snapshot, list)} allowlist={rosters[index]?.data?.allowlist.readable ? rosters[index].data.allowlist.players.length : null} schedule={schedules.data?.find(entry => entry.profile_id === profile.id)} onAction={(endpoint, body) => action.mutate({ endpoint, body })} onRemove={profileToRemove => { setRemoving(profileToRemove); setRemoveFiles(false); setRemoveConfirmation(""); }} />)}</div>}
-    {list.length === 0 && <FirstServerChooser value={firstServerPath} onChange={setFirstServerPath} />}
-    {(list.length > 0 || firstServerPath === "create") && <ProvisionPanel stopped={hostFree} onCreated={id => { void navigate(`/servers/${id}/overview`); }} />}
-    {(list.length > 0 || firstServerPath === "import") && <section className="card" id="import-server">
+    {list.length > 0 && <div className="server-grid">{list.map((profile, index) => <ServerCard key={profile.id} scope={scopeFor(profile, snapshot, list)} allowlist={rosters[index]?.data?.allowlist.readable ? rosters[index].data.allowlist.players.length : null} schedule={schedules.data?.find(entry => entry.profile_id === profile.id)} owner={owner} onAction={(endpoint, body) => action.mutate({ endpoint, body })} onRemove={profileToRemove => { setRemoving(profileToRemove); setRemoveFiles(false); setRemoveConfirmation(""); }} />)}</div>}
+    {!owner && <section className="card"><p className="eyebrow">Trusted helper view</p><h2>Operations summary</h2><p>This account can review server health, players, backups, activity, schedules, alerts, performance, and World Care evidence. Server changes, raw files, console access, and recovery actions stay with the owner.</p></section>}
+    {owner && list.length === 0 && <FirstServerChooser value={firstServerPath} onChange={setFirstServerPath} />}
+    {owner && (list.length > 0 || firstServerPath === "create") && <ProvisionPanel stopped={hostFree} onCreated={id => { void navigate(`/servers/${id}/overview`); }} />}
+    {owner && (list.length > 0 || firstServerPath === "import") && <section className="card" id="import-server">
       <p className="eyebrow">{list.length ? "Add a server" : "First safe workflow"}</p>
       <h2>Import a server folder</h2>
       <p>Choose your complete Minecraft server folder — on your Desktop, in Downloads, or anywhere else on this computer. Blockstead copies it into its managed home, identifies the server type and version, and never changes the original.</p>
@@ -176,8 +181,9 @@ export function ServersPage() {
         {scan && <div className="scan-plan"><h3>Import plan</h3><p>Detected: {scan.distribution} {scan.minecraft_version}</p><ul>{scan.plan.map(item => <li key={item}>{item}</li>)}</ul><Button onClick={() => void importProfile()}>Confirm profile record</Button></div>}
       </details>
     </section>}
-    {(list.length > 0 || firstServerPath === "modpack") && <ModpacksPanel stopped={hostFree} onCreated={id => { void navigate(`/servers/${id}/overview`); }} />}
-    {removing && <div className="troubleshooting-confirmation server-removal" role="dialog" aria-modal="true" aria-labelledby="remove-server-heading">
+    {owner && (list.length > 0 || firstServerPath === "modpack") && <ModpacksPanel stopped={hostFree} onCreated={id => { void navigate(`/servers/${id}/overview`); }} />}
+    {owner && list.length > 0 && <SavedSetupsPanel profiles={list} />}
+    {owner && removing && <div className="troubleshooting-confirmation server-removal" role="dialog" aria-modal="true" aria-labelledby="remove-server-heading">
       <div>
         <p className="eyebrow">Remove server</p>
         <h2 id="remove-server-heading">Review removal of “{removing.name}”</h2>

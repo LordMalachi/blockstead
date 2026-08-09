@@ -379,3 +379,51 @@ test("a server folder from anywhere on the computer imports through the browser"
     rmSync(uploadedFixture, { recursive: true, force: true });
   }
 });
+
+test("owner can configure a mocked Discord alert and a viewer sees only safe controls", async ({ page }) => {
+  test.setTimeout(60_000);
+  let configured = false;
+  await page.route("**/api/v1/notification-integrations", async route => {
+    const integration = {
+      id: "mock-discord",
+      kind: "discord_webhook",
+      enabled: true,
+      webhook_configured: true,
+      webhook_display: "https://discord.com/api/webhooks/••••••••",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    if (route.request().method() === "POST") {
+      configured = true;
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(integration) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(configured ? [integration] : []) });
+  });
+
+  await signInAsOwner(page);
+  await page.getByRole("link", { name: "System" }).click();
+  await expect(page.getByRole("heading", { name: "View-only accounts" })).toBeVisible();
+  await page.getByLabel("Username").last().fill("browser-helper");
+  await page.getByLabel("Temporary password").fill("browser helper password");
+  await page.getByRole("button", { name: "Create viewer" }).click();
+  await expect(page.getByText("browser-helper")).toBeVisible();
+
+  await page.getByLabel("Discord webhook URL").fill("https://discord.com/api/webhooks/mock/secret");
+  await page.getByRole("button", { name: "Save webhook" }).click();
+  await expect(page.getByText("https://discord.com/api/webhooks/••••••••")).toBeVisible();
+  await expect(page.getByText("mock/secret")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
+  await page.getByLabel("Username").fill("browser-helper");
+  await page.getByLabel("Password").fill("browser helper password");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
+  await expect(page.getByRole("link", { name: "System" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start server" })).toHaveCount(0);
+  await page.getByRole("link", { name: "Account" }).click();
+  await expect(page.getByRole("heading", { name: "Change your password" })).toBeVisible();
+  await page.getByRole("link", { name: "Servers" }).click();
+  await expect(page.getByRole("link", { name: "Console" })).toHaveCount(0);
+});

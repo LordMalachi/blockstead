@@ -1,0 +1,252 @@
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from blockstead.app import create_app
+from blockstead.config import Settings
+from blockstead.notification_integrations import (
+    WebhookValidationError,
+    safe_payload,
+    validate_webhook_url,
+)
+
+
+def origin_headers(csrf: str) -> dict[str, str]:
+    return {"Origin": "http://testserver", "X-CSRF-Token": csrf}
+
+
+def login(client: TestClient, username: str, password: str) -> dict[str, str]:
+    response = client.post(
+        "/api/v1/auth/login",
+        headers={"Origin": "http://testserver"},
+        json={"username": username, "password": password},
+    )
+    assert response.status_code == 200, response.text
+    return origin_headers(response.json()["csrf_token"])
+
+
+def test_owner_viewer_matrix_and_password_change(client: TestClient, auth: dict[str, str]) -> None:
+    assert client.get("/api/v1/auth/me").json() == {"username": "owner", "role": "owner"}
+    created = client.post(
+        "/api/v1/accounts",
+        headers=auth,
+        json={"username": "helper", "password": "helper password long enough"},
+    )
+    assert created.status_code == 201, created.text
+    account_id = created.json()["id"]
+
+    viewer = login(client, "helper", "helper password long enough")
+    assert client.get("/api/v1/auth/me").json() == {"username": "helper", "role": "viewer"}
+    assert client.get("/api/v1/profiles", headers=viewer).status_code == 200
+    assert client.get("/api/v1/system/diagnostics", headers=viewer).status_code == 403
+    assert (
+        client.post("/api/v1/server/start", headers=viewer, json={"mode": "normal"}).status_code
+        == 403
+    )
+    changed = client.post(
+        "/api/v1/auth/password",
+        headers=viewer,
+        json={"password": "helper password changed"},
+    )
+    assert changed.status_code == 200
+    assert client.get("/api/v1/auth/me", headers=viewer).status_code == 401
+
+    owner = login(client, "owner", "correct horse battery staple")
+    disabled = client.post(
+        f"/api/v1/accounts/{account_id}/status",
+        headers=owner,
+        json={"disabled": True},
+    )
+    assert disabled.status_code == 200
+    assert login_rejected(client, "helper", "helper password changed")
+
+
+def login_rejected(client: TestClient, username: str, password: str) -> bool:
+    response = client.post(
+        "/api/v1/auth/login",
+        headers={"Origin": "http://testserver"},
+        json={"username": username, "password": password},
+    )
+    return response.status_code == 401
+
+
+def test_one_time_recovery_token_expires_after_reuse(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    created = client.post(
+        "/api/v1/accounts",
+        headers=auth,
+        json={"username": "helper", "password": "helper password long enough"},
+    )
+    account_id = created.json()["id"]
+    recovery = client.post(f"/api/v1/accounts/{account_id}/recovery", headers=auth)
+    assert recovery.status_code == 200
+    token = recovery.json()["token"]
+    redeemed = client.post(
+        "/api/v1/auth/password-recovery",
+        headers={"Origin": "http://testserver"},
+        json={"token": token, "password": "recovered password long"},
+    )
+    assert redeemed.status_code == 200
+    reused = client.post(
+        "/api/v1/auth/password-recovery",
+        headers={"Origin": "http://testserver"},
+        json={"token": token, "password": "another password long"},
+    )
+    assert reused.status_code == 400
+    assert login_rejected(client, "helper", "helper password long enough")
+    assert login(client, "helper", "recovered password long")["X-CSRF-Token"]
+
+
+def test_webhook_validation_and_redaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "blockstead.notification_integrations.socket.getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("8.8.8.8", 443))],
+    )
+    assert validate_webhook_url("https://discord.com/api/webhooks/123/secret")
+    for value in (
+        "http://discord.com/api/webhooks/123/secret",
+        "https://discord.com/api/webhooks/123/secret?token=raw",
+    ):
+        with pytest.raises(WebhookValidationError):
+            validate_webhook_url(value)
+    monkeypatch.setattr(
+        "blockstead.notification_integrations.socket.getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("127.0.0.1", 443))],
+    )
+    with pytest.raises(WebhookValidationError, match="non-public"):
+        validate_webhook_url("https://discord.com/api/webhooks/123/secret")
+    result = safe_payload(
+        {
+            "title": "Crash",
+            "severity": "danger",
+            "detail": "secret=abc /srv/minecraft/world from 192.168.1.5",
+            "created_at": "now",
+            "recovery_to": "/activity",
+        }
+    )
+    assert "abc" not in result["detail"]
+    assert "192.168.1.5" not in result["detail"]
+    assert "/srv/minecraft" not in result["detail"]
+
+
+def test_discord_integration_is_masked_and_owner_only(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "blockstead.app.validate_webhook_url",
+        lambda value: value.strip(),
+    )
+    created = client.post(
+        "/api/v1/notification-integrations",
+        headers=auth,
+        json={"webhook_url": "https://discord.com/api/webhooks/123/secret"},
+    )
+    assert created.status_code == 201, created.text
+    assert "secret" not in created.text
+    assert "••••" in created.json()["webhook_display"]
+    viewer = client.post(
+        "/api/v1/accounts",
+        headers=auth,
+        json={"username": "helper", "password": "helper password long enough"},
+    )
+    viewer_headers = login(client, "helper", "helper password long enough")
+    assert (
+        client.get("/api/v1/notification-integrations", headers=viewer_headers).status_code
+        == 403
+    )
+    assert viewer.status_code == 201
+
+
+def test_saved_setup_variant_uses_isolated_copy_and_preserves_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "servers"
+    root.mkdir()
+    settings = Settings(data_dir=tmp_path / "data", server_root=root, allowed_origins="http://testserver")
+    source = root / "source"
+    source.mkdir()
+    (source / "server.properties").write_text("level-name=world\n", encoding="utf-8")
+    (source / "server.jar").write_bytes(b"launcher")
+    (source / "fake-server.json").write_text('{"minecraft_version":"1.21.1"}\n', encoding="utf-8")
+    (source / "world").mkdir()
+    (source / "world" / "level.dat").write_bytes(b"original")
+
+    async def fake_resolve(*_args: object, **_kwargs: object):
+        from blockstead.provisioning import ProvisionPlan
+
+        return ProvisionPlan(
+            distribution="vanilla",
+            minecraft_version="1.21.1",
+            loader_version=None,
+            file_name="server.jar",
+            url="https://example.test/server.jar",
+            checksum_algorithm="sha256",
+            checksum="a" * 64,
+            notes=[],
+        )
+
+    async def fake_provision(
+        _client: object, server_root: Path, directory_name: str, *_args: object, **_kwargs: object
+    ):
+        from blockstead.provisioning import ProvisionResult
+
+        target = server_root / directory_name
+        target.mkdir()
+        (target / "server.jar").write_bytes(b"launcher")
+        return ProvisionResult(plan=await fake_resolve(), directory=str(target), sha256="b" * 64)
+
+    monkeypatch.setattr("blockstead.app.resolve_plan", fake_resolve)
+    monkeypatch.setattr("blockstead.app.provision_profile", fake_provision)
+    monkeypatch.setattr("blockstead.app.required_java_major", lambda _version: None)
+    with TestClient(create_app(settings)) as client:
+        setup = client.post(
+            "/api/v1/setup/admin",
+            headers={"Origin": "http://testserver"},
+            json={"username": "owner", "password": "correct horse battery staple"},
+        )
+        headers = origin_headers(setup.json()["csrf_token"])
+        profile = client.post(
+            "/api/v1/profiles",
+            headers=headers,
+            json={"name": "Source", "path": str(source)},
+        )
+        profile_id = profile.json()["id"]
+        backup = client.post(f"/api/v1/profiles/{profile_id}/backups", headers=headers)
+        setup_group = client.post(
+            "/api/v1/saved-setups",
+            headers=headers,
+            json={"name": "Snapshots", "profile_id": profile_id},
+        )
+        setup_id = setup_group.json()["id"]
+        review = client.post(
+            f"/api/v1/saved-setups/{setup_id}/variants/review",
+            headers=headers,
+            json={
+                "source_profile_id": profile_id,
+                "name": "Copy",
+                "directory_name": "copy",
+                "target_distribution": "vanilla",
+            },
+        )
+        assert review.status_code == 200, review.text
+        body = review.json()
+        applied = client.post(
+            f"/api/v1/saved-setups/{setup_id}/variants",
+            headers=headers,
+            json={
+                "source_profile_id": profile_id,
+                "name": "Copy",
+                "directory_name": "copy",
+                "target_distribution": "vanilla",
+                "loader_version": body["loader_version"],
+                "review_id": body["review_id"],
+                "backup_id": backup.json()["id"],
+                "acknowledge_modded_world": False,
+            },
+        )
+        assert applied.status_code == 201, applied.text
+        assert (source / "world" / "level.dat").read_bytes() == b"original"
+        assert (root / "copy" / "world" / "level.dat").read_bytes() == b"original"
+        assert applied.json()["source_unchanged"] is True

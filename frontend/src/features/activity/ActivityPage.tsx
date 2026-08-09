@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api, type ActivityFeed, type ActivityIncident, type LocalNotifications, type NotificationPreferences, type Profile } from "../../api/client";
 import { Button } from "../../components/Button";
 import { Tooltip } from "../../components/Tooltip";
+import { useRole } from "../shell/role";
 
 const groups = ["lifecycle", "backup", "maintenance", "settings", "extension", "player", "files", "automation", "update", "system"];
 
@@ -14,6 +15,7 @@ function incidentHref(eventId: string, current: URLSearchParams): string {
 }
 
 function IncidentStory({ incident, close }: { incident: ActivityIncident; close: () => void }) {
+  const owner = useRole() === "owner";
   return <section className="card incident-story" id="incident-story" aria-labelledby="incident-story-heading">
     <div className="section-heading">
       <div><p className="eyebrow">Incident story</p><div className="heading-with-help"><h2 id="incident-story-heading">{incident.anchor.title}</h2><Tooltip label="How Blockstead builds this story">Recorded facts come from saved events. Observed timing only says when events happened near one another. A possible explanation is explicitly unconfirmed and is never presented as the cause.</Tooltip></div></div>
@@ -31,17 +33,18 @@ function IncidentStory({ incident, close }: { incident: ActivityIncident; close:
         <div><div className="incident-story__fact-heading"><strong>{fact.title}</strong><time dateTime={fact.created_at}>{new Date(fact.created_at).toLocaleString()}</time></div><p>{fact.detail}</p><small>{fact.group} · {fact.result}</small><Link to={fact.recovery_to}>Open related workspace</Link></div>
       </li>)}</ol> : <p className="empty-note">No other recorded events were close enough to include.</p>}
     </section>
-    <section className="incident-story__logs" aria-labelledby="log-context-heading">
+    {owner && <section className="incident-story__logs" aria-labelledby="log-context-heading">
       <div className="heading-with-help"><h3 id="log-context-heading">Raw log context</h3><Tooltip label="What is safe to share">Log context and the downloadable evidence report are kept local and are never uploaded automatically. They can still include server and player names, so review them before sharing.</Tooltip></div>
       <p>{incident.log_context.detail}</p>
       {incident.log_context.entries.length ? <div className="incident-log" role="log" aria-label="Log entries near this incident">{incident.log_context.entries.map((entry, index) => <div key={`${entry.at}-${entry.logger}-${index}`}><time dateTime={entry.at}>{new Date(entry.at).toLocaleTimeString()}</time><span><b>{entry.level}</b> · {entry.logger}</span><code>{entry.message}</code></div>)}</div> : <p className="empty-note">No raw log entries were recorded near this event.</p>}
       <a className="button button--quiet button--small" href={incident.anchor.report_url} download>Download raw evidence report</a>
-    </section>
+    </section>}
     <aside className="incident-story__action" aria-label="Safe next action"><div><span>Safe next action</span><strong>{incident.safe_next_action.label}</strong><p>{incident.safe_next_action.detail}</p></div><Link className="button button--secondary" to={incident.safe_next_action.to}>Open next step</Link></aside>
   </section>;
 }
 
 export function ActivityPage() {
+  const owner = useRole() === "owner";
   const queryClient = useQueryClient();
   const [urlSearch, setUrlSearch] = useSearchParams();
   const profileId = urlSearch.get("profile_id") ?? "";
@@ -120,7 +123,7 @@ export function ActivityPage() {
     <section className="page-head"><div><p className="eyebrow">What changed</p><h1>Activity</h1><p>Follow server operations across every profile. Open an incident story to compare recorded facts, nearby timing, redacted logs, and one safe next step without treating timing as proof of cause.</p></div></section>
 
     {!!notifications.data?.alerts.length && <section className="card activity-alerts" aria-labelledby="alerts-heading">
-      <div className="section-heading"><div><p className="eyebrow">Needs attention</p><h2 id="alerts-heading">Local notifications</h2></div><div className="activity-alert-actions"><Tooltip label="What does Mark seen do?">It clears unread event alerts. An ongoing condition such as low disk space remains visible until it is fixed.</Tooltip><Button className="button--secondary button--small" onClick={() => acknowledge.mutate()} disabled={acknowledge.isPending}>Mark seen</Button></div></div>
+      <div className="section-heading"><div><p className="eyebrow">Needs attention</p><h2 id="alerts-heading">Local notifications</h2></div>{owner && <div className="activity-alert-actions"><Tooltip label="What does Mark seen do?">It clears unread event alerts. An ongoing condition such as low disk space remains visible until it is fixed.</Tooltip><Button className="button--secondary button--small" onClick={() => acknowledge.mutate()} disabled={acknowledge.isPending}>Mark seen</Button></div>}</div>
       <div className="activity-alert-list">{notifications.data.alerts.map(alert => <article className={`activity-alert activity-alert--${alert.severity}`} key={alert.id}><div><strong>{alert.title}</strong><p>{alert.detail}</p></div><Link to={alert.recovery_to}>Open recovery</Link></article>)}</div>
     </section>}
 
@@ -140,12 +143,12 @@ export function ActivityPage() {
         </div>
         {feed.isPending ? <p className="muted-note">Loading activity…</p> : feed.isError ? <p className="error">Activity could not be loaded.</p> : feed.data?.events.length ? <ol className="activity-timeline">{feed.data.events.map(item => <li key={item.id} className={`activity-event activity-event--${item.severity}`}>
           <span className="activity-event__marker" aria-hidden="true" />
-          <div className="activity-event__body"><div className="activity-event__heading"><div><strong>{item.title}</strong><span className={`result result--${item.severity}`}>{item.result}</span></div><time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time></div><p>{item.detail}</p><small>{item.actor}{item.profile ? ` · ${item.profile.name}` : " · Workspace"} · {item.group}</small><div className="row-actions"><Link className="button button--secondary button--small" to={incidentHref(item.id, urlSearch)}>View incident story</Link><Link className="button button--quiet button--small" to={item.recovery_to}>{item.severity === "danger" ? "Open recovery" : "Related workspace"}</Link><a className="button button--quiet button--small" href={item.report_url} download>Download support report</a></div></div>
+          <div className="activity-event__body"><div className="activity-event__heading"><div><strong>{item.title}</strong><span className={`result result--${item.severity}`}>{item.result}</span></div><time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time></div><p>{item.detail}</p><small>{item.actor}{item.profile ? ` · ${item.profile.name}` : " · Workspace"} · {item.group}</small><div className="row-actions"><Link className="button button--secondary button--small" to={incidentHref(item.id, urlSearch)}>View incident story</Link><Link className="button button--quiet button--small" to={item.recovery_to}>{item.severity === "danger" ? "Open recovery" : "Related workspace"}</Link>{owner && <a className="button button--quiet button--small" href={item.report_url} download>Download support report</a>}</div></div>
         </li>)}</ol> : <p className="activity-empty">No activity matches these filters.</p>}
       </section>
 
       <aside className="card activity-preferences"><p className="eyebrow">Local alerts</p><h2>Notification preferences</h2><p>Choose which important changes appear here. Blockstead does not send these alerts or reports anywhere on its own.</p>
-        {preferences.data && <form onSubmit={event => void savePreferences(event)} key={JSON.stringify(preferences.data)}>
+        {owner && preferences.data && <form onSubmit={event => void savePreferences(event)} key={JSON.stringify(preferences.data)}>
           <label className="vanilla-switch"><span><strong>Server crashes</strong><small>Surface an unexpected Minecraft exit.</small></span><input name="server_crashes" type="checkbox" defaultChecked={preferences.data.server_crashes} /></label>
           <label className="vanilla-switch"><span><strong>Failed backups</strong><small>Keep failed world protection visible.</small></span><input name="failed_backups" type="checkbox" defaultChecked={preferences.data.failed_backups} /></label>
           <label className="vanilla-switch"><span><strong>Failed automation</strong><small>Surface scheduled starts, maintenance, or host-power steps that need attention.</small></span><input name="failed_automations" type="checkbox" defaultChecked={preferences.data.failed_automations} /></label>
@@ -156,6 +159,7 @@ export function ActivityPage() {
           {preferenceState === "saved" && <p className="success">Preferences saved.</p>}
           {preferenceState === "error" && <p className="error">Preferences could not be saved. Try again.</p>}
         </form>}
+        {!owner && <p className="muted-note">Alert preferences and acknowledgement are owner-managed.</p>}
       </aside>
     </div>
   </>;

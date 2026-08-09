@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useMatch } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api, clearCsrf, type LocalNotifications, type ProcessState, type Profile } from "../../api/client";
+import { api, clearCsrf, type AppRole, type LocalNotifications, type ProcessState, type Profile } from "../../api/client";
 import { BrandMark } from "../../components/BrandMark";
 import { Button } from "../../components/Button";
 import { NavIcon } from "../../components/NavIcon";
 import { StatusBadge } from "../../components/StatusBadge";
 import { scopeFor } from "../servers/scope";
 import { UpdateNotice } from "./UpdateNotice";
+import { RoleContext } from "./role";
 
 const workspaceNav = [
   { to: "/servers", label: "Servers", icon: "server", end: true },
   { to: "/system", label: "System", icon: "pulse", end: false },
   { to: "/activity", label: "Activity", icon: "history", end: false },
+  { to: "/account", label: "Account", icon: "users", end: false },
   { to: "/help", label: "Help", icon: "help", end: false },
 ];
 const serverNav = [
@@ -28,7 +30,7 @@ const serverNav = [
   { path: "settings", label: "Settings", icon: "sliders" },
 ];
 
-export function AppShell({ onLogout }: { onLogout: () => void }) {
+export function AppShell({ onLogout, role = "owner" }: { onLogout: () => void; role?: AppRole }) {
   const { pathname } = useLocation();
   const match = useMatch("/servers/:profileId/*");
   const profileId = match?.params.profileId ?? "";
@@ -59,7 +61,9 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
 
   async function logout() { await api("/auth/logout", { method: "POST" }); clearCsrf(); onLogout(); }
 
-  return <div className="app-shell">
+  const visibleWorkspaceNav = role === "owner" ? workspaceNav : workspaceNav.filter(item => item.to !== "/system");
+  const visibleServerNav = role === "owner" ? serverNav : serverNav.filter(item => ["overview", "players", "backups", "world-care"].includes(item.path));
+  return <RoleContext.Provider value={role}><div className="app-shell">
     <header className="topbar">
       <NavLink className="brand" to="/servers" aria-label="Blockstead home"><BrandMark /><span className="brand-copy">Blockstead<small>Minecraft server care</small></span></NavLink>
       {scope && <div className="server-summary"><span className="summary-label">{scope.profile.name}</span><StatusBadge state={scope.state} /></div>}
@@ -69,10 +73,10 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
       <aside className="sidebar">
         <nav aria-label="Main navigation" ref={navRef}>
           <p className="nav-heading">Workspace</p>
-          {workspaceNav.map(item => <NavLink key={item.to} to={item.to} end={item.end} data-walkthrough={item.label.toLowerCase()} className={({ isActive }) => isActive ? "active" : ""}><NavIcon name={item.icon} /><span>{item.label}</span>{item.to === "/activity" && !!notifications.data?.unread_count && <small className="nav-count" aria-label={`${notifications.data.unread_count} notifications`}>{notifications.data.unread_count}</small>}</NavLink>)}
+          {visibleWorkspaceNav.map(item => <NavLink key={item.to} to={item.to} end={item.end} data-walkthrough={item.label.toLowerCase()} className={({ isActive }) => isActive ? "active" : ""}><NavIcon name={item.icon} /><span>{item.label}</span>{item.to === "/activity" && !!notifications.data?.unread_count && <small className="nav-count" aria-label={`${notifications.data.unread_count} notifications`}>{notifications.data.unread_count}</small>}</NavLink>)}
           {profile && <>
             <p className="nav-heading nav-heading--server" title={profile.name}>{profile.name}</p>
-            {serverNav.map(item => <NavLink key={item.path} to={`/servers/${profile.id}/${item.path}`} className={({ isActive }) => isActive ? "active" : ""}><NavIcon name={item.icon} /><span>{item.label}</span></NavLink>)}
+            {visibleServerNav.map(item => <NavLink key={item.path} to={`/servers/${profile.id}/${item.path}`} className={({ isActive }) => isActive ? "active" : ""}><NavIcon name={item.icon} /><span>{item.label}</span></NavLink>)}
           </>}
           <span className="sidebar-scroll-hint" aria-hidden="true" />
         </nav>
@@ -84,5 +88,5 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
         <footer className="app-footer"><BrandMark small /><p><strong>Blockstead</strong><br />Quiet, local care for your Minecraft world.</p></footer>
       </main>
     </div>
-  </div>;
+  </div></RoleContext.Provider>;
 }

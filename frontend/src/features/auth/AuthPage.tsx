@@ -4,7 +4,7 @@ import { BrandMark } from "../../components/BrandMark";
 import { Button } from "../../components/Button";
 import "./setup.css";
 
-export function AuthPage({ setup, onSuccess }: { setup: boolean; onSuccess: () => void }) {
+export function AuthPage({ setup, onSuccess }: { setup: boolean; onSuccess: (session?: Session) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");

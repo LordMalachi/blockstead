@@ -18,6 +18,67 @@ class Credentials(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
+class ViewerAccountRequest(Credentials):
+    pass
+
+
+class AccountStatusRequest(BaseModel):
+    disabled: bool
+
+
+class SavedSetupCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    profile_id: str = Field(min_length=1, max_length=36)
+
+
+class SavedSetupVariantReviewRequest(BaseModel):
+    source_profile_id: str = Field(min_length=1, max_length=36)
+    name: str = Field(min_length=1, max_length=80)
+    directory_name: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$"
+    )
+    target_distribution: str = Field(
+        pattern=r"^(vanilla|paper|fabric|forge|quilt|neoforge)$"
+    )
+    loader_version: str | None = Field(
+        default=None, max_length=64, pattern=r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$"
+    )
+
+
+class SavedSetupVariantApplyRequest(SavedSetupVariantReviewRequest):
+    review_id: str = Field(min_length=16, max_length=64)
+    backup_id: str = Field(min_length=1, max_length=36)
+    acknowledge_modded_world: bool = False
+
+
+class SavedSetupSwitchReviewRequest(BaseModel):
+    target_profile_id: str = Field(min_length=1, max_length=36)
+
+
+class SavedSetupSwitchRequest(BaseModel):
+    target_profile_id: str = Field(min_length=1, max_length=36)
+    review_id: str = Field(min_length=16, max_length=64)
+    backup_id: str | None = Field(default=None, max_length=36)
+    confirm: Literal[True]
+
+
+class PasswordRecoveryRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=256)
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+
+
+class PasswordChangeRequest(BaseModel):
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+
+
+class NotificationIntegrationRequest(BaseModel):
+    webhook_url: str = Field(min_length=1, max_length=2048)
+
+
+class NotificationIntegrationToggleRequest(BaseModel):
+    enabled: bool
+
+
 class ImportRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
 

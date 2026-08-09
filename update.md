@@ -27,6 +27,8 @@ remain available without dominating normal server care.
 - **In progress** — actively being implemented.
 - **Next** — the next milestone to begin.
 - **Planned** — accepted work that has not started.
+- **Proposed** — a candidate milestone in the post-1.0 idea sequence; not yet
+  scheduled or a delivery commitment.
 - **Deferred** — intentionally outside the near-term scope.
 - **Blocked** — cannot proceed until a named dependency or decision is resolved.
 
@@ -47,7 +49,15 @@ remain available without dominating normal server care.
 | 10. World Care and performance insight | Complete | Honest performance evidence, private diagnostic capture, guarded storage care, and recovery cleanup |
 | 11. Calm daily operations | Complete | A task-first daily summary and evidence-safe incident story that connect the facts already collected |
 | 11.5. Extension-aware command packs | Complete | Curated extension recommendations and guided commands gated by active, readable providers |
-| 12. Saved setups and trusted connections | Deferred | Explicit profile switching plus narrowly scoped sharing and notifications, after the local workflows are proven |
+| 12. Saved setups, trusted helpers, and Discord alerts | In progress | Isolated profile variants, owner/viewer accounts, one-time recovery, and redacted outbound local-alert delivery |
+| 13. Trusted household access | Proposed | Future LAN enrollment, device/session naming, and broader household access controls after the scoped helper foundation |
+| 14. Discord server status bot | Next | Paired host-published Discord status, player counts, and owner-approved join address with read-only slash commands |
+| 15. Player-ready sharing and status | Proposed | A privacy-safe read-only join/status surface that stays disabled by default |
+| 16. Curated recipes and reproducible loadouts | Proposed | Versioned, compatibility-aware setup recipes built on existing installers and lockfiles |
+| 17. Portable migration and off-host recovery | Proposed | Verifiable export/import and owner-controlled recovery destinations |
+| 18. Honest trends and capacity guardrails | Proposed | Retained local trends, bounded forecasts, and action-linked thresholds |
+| 19. Change rehearsal and disposable clones | Proposed | Test upgrades and extension changes against a disposable world copy |
+| 20. Safe extension and adapter ecosystem | Proposed | Static, reviewed capability manifests without arbitrary browser or host code |
 
 ## Release status
 
@@ -61,8 +71,12 @@ diagnostics, in-app help, and Linux Mint installation and upkeep. See
 Milestones 10, 11, and 11.5 are complete: Blockstead now adds evidence-labelled
 performance and world care, a task-first daily summary, evidence-safe incident
 stories, and extension-aware command packs to the released owner-focused
-baseline. The remaining saved-setup and trusted-connection work is deferred
-until the local workflows have been proven further.
+baseline. Milestone 12 implementation is complete in the working tree: saved
+setups use isolated profile variants, trusted helpers are scoped owner/viewer
+accounts, and Discord is an owner-configured outbound alert destination with a
+durable redacted queue. It remains **in progress** until the clean Linux Mint
+22.3 acceptance checklist is run; release notes must wait for that gate. The
+paired, host-published Discord status bot remains the next focused project.
 
 ## Current baseline
 
@@ -125,8 +139,8 @@ Blockstead already provides:
 
 The main limitations to address are:
 
-- outbound notification integrations remain deferred until a later integration
-  milestone; local alerts and preferences are complete;
+- the Discord status bot is scoped as the next priority after the current
+  notification/webhook foundation; local alerts and preferences are complete;
 - server cards still show allowlist size rather than polling every server;
 - TPS/MSPT remain unavailable for profiles without a supported capability; Paper
   profiles now expose labelled samples, while update availability remains hidden
@@ -628,29 +642,408 @@ while keeping the first command implementation focused on console-safe providers
 - [Geyser commands and permissions](https://geysermc.org/wiki/geyser/commands/)
 - [Simple Voice Chat commands](https://modrepo.de/minecraft/voicechat/wiki/commands)
 
-## Milestone 12: Saved setups and trusted connections
+## Roadmap expansion: Milestones 12–20
 
-**Status: Deferred — revisit after Milestones 7–11 are proven in normal use.**
+This is the next idea sequence after the completed owner-focused baseline. It
+uses the current feature list as the starting point and compares it with the
+capabilities that recur in Crafty, AMP, PufferPanel, and Pterodactyl. The goal
+is useful local parity where it improves ownership, not commercial-hosting
+parity.
 
-### Candidate work
+### Current feature comparison
 
-- [ ] Explore named saved setups for a vanilla game night or modded experiment,
-      with an explicit parked/restored files list, verified backup, downtime
-      plan, and restart confirmation.
-- [ ] Explore a narrowly scoped, view-only household or trusted-helper role;
-      do not expose console, files, secrets, restore, or host controls by
-      default.
-- [ ] Add opt-in outbound notifications (starting with a documented webhook or
-      Discord-compatible endpoint) only after local alerts are useful, with
-      event selection, redaction preview, delivery history, and no world,
-      player-IP, or secret transmission.
+| Area | Blockstead today | What comparable panels demonstrate | Safe Blockstead opportunity |
+| --- | --- | --- | --- |
+| Lifecycle and workspace | Profile-aware start/stop/restart, live console, players, settings, extensions, backups, schedules, files, activity, Today, and Help | Crafty, AMP, PufferPanel, and Pterodactyl all make the server list/workspace and lifecycle controls foundational | Keep this as the product spine; add depth only when it answers a concrete owner task |
+| Protection and recovery | Verified manifests, SHA-256 checks, retention, staged restore, recovery drills, destination probes, and maintenance preflight | Backups are a baseline feature across [Crafty](https://docs.craftycontrol.com/pages/user-guide/backup-manager/), [AMP](https://cubecoders.com/amp/install), [PufferPanel](https://docs.pufferpanel.com/en/3.x/release-notes/3.0.0.html), and [Pterodactyl](https://pterodactyl.io/panel/1.0/additional_configuration.html) | Extend the evidence advantage to portable destinations, migration, and disposable rehearsal copies |
+| Scheduling and automation | Weekly and one-time plans, ordered action previews, empty-server conditions, run history, and local alerts | [Crafty supports cron-like schedules and chained tasks](https://docs.craftycontrol.com/pages/user-guide/task-scheduler/); [AMP can react to in-game events and send webhooks](https://cubecoders.com/amp/install) | Add a small allowlisted event trigger model, not a general automation language |
+| Access and collaboration | One local administrator with CSRF/origin checks and player-safe actions | [Crafty has server-scoped roles](https://docs.craftycontrol.com/pages/user-guide/user-role-config/); AMP offers multiple users and OIDC role mapping; PufferPanel supports users and nodes; Pterodactyl isolates server access through its panel/daemon model | Add owner, moderator, and viewer boundaries for a trusted household; do not become a multi-tenant control plane |
+| Player-facing status | Copyable local join details, capacity, player roster, and optional squaremap health | [Crafty exposes an optional public status page](https://docs.craftycontrol.com/pages/getting-started/public-status-page/) with state, player count, and MOTD | Add an explicitly enabled, redacted read-only status/share surface; never imply internet reachability |
+| Extensions and setup composition | Modrinth/Hangar/CurseForge discovery, compatible installs, lockfiles, curated recommendations, and static command packs | [AMP has a plugin/mod store](https://cubecoders.com/amp/install); [PufferPanel uses templates](https://docs.pufferpanel.com/en/3.x/templates/templates.html); Pterodactyl uses game/server templates and isolated deployments | Add signed or locally trusted static recipes and loadouts; never execute arbitrary metadata or community scripts |
+| Observability | Host/process evidence, world care, capability-gated Paper TPS/MSPT, bounded Spark capture, incident stories, and local alerts | [Crafty provides metrics and Prometheus endpoints](https://docs.craftycontrol.com/pages/user-guide/open-metrics/); AMP advertises analytics; PufferPanel exposes Java server stats | Add retained trends, exports, and capacity guardrails while keeping unsupported metrics visibly unavailable |
+| File and host reach | Approved category-scoped files, snapshots, archive validation, and no browser shell | AMP includes a file manager and SFTP; PufferPanel documents SFTP and template operations; Pterodactyl uses a separate daemon and container boundary | Add portable, owner-controlled transfer workflows only where they preserve the existing path and recovery protections |
+| Portability and scale | Read-only imports, official bounded upgrades, multiple local profiles, and local Docker support | PufferPanel supports nodes/templates; Pterodactyl is built around isolated nodes/containers; AMP supports multiple systems and instances | Add export/import of a Blockstead setup and recovery material; keep live multi-host orchestration out of scope |
+
+The comparison also clarifies what not to copy. PufferPanel explicitly treats
+its standard environment as lacking strong isolation, while Pterodactyl makes
+container isolation central; neither is a reason to weaken Blockstead's
+approved-path and no-shell model. Likewise, AMP's commercial editions include
+SSO, analytics, webhooks, and reseller/enterprise controls, but Blockstead only
+needs the narrow local equivalents that improve a household owner's safety.
+
+### Sequence and dependencies
+
+Milestone 14 is outbound-only and can begin after the current notification
+foundation, provided its connection-specific authorization is designed in the
+project brief. Milestone 13 should precede the LAN-facing sharing surface in
+Milestone 15. Milestone 16 should reuse the existing extension lockfiles and
+command-pack capability checks. Milestone 17 should land before Milestone 19
+so a rehearsal can prove both the change and the recovery route. Milestone 20
+should be last: the manifest and adapter boundary should be shaped by real
+recipes and real rehearsal evidence, not by an abstract plugin system.
+
+## Milestone 12: Saved server setups
+
+**Status: In progress — implementation complete; the clean Linux Mint 22.3 acceptance gate is pending.**
+
+### Why
+
+Blockstead already has multiple profiles, modpacks, extension lockfiles,
+settings revisions, and backups. Milestone 12 adds a named, reviewable way to
+preserve a “vanilla game night” or “modded experiment” as an isolated profile
+variant. It also adds separate operations-summary helpers and Discord alerts,
+so the owner can share useful status without sharing console, raw files,
+secrets, restores, or host controls.
+
+### Work checklist
+
+- [x] Add named setup groups and provenance records. Every variant is an
+      independent profile with its own folder, world copy, port, launch
+      configuration, backups, and logs.
+- [x] Require a fresh verified source backup and a reviewed loader/world-copy
+      plan. Preserve the source and remove incomplete targets on failure.
+- [x] Add review and activation APIs/UI. Activation stops the current profile
+      before starting the target and leaves both stopped after a failed target
+      start, with an audit event and recovery guidance.
+- [x] Keep in-place parking, shared worlds, concurrent profiles, and ambiguous
+      world mappings out of scope.
+- [x] Add owner-created viewer accounts with disabled/session controls,
+      one-time hashed recovery tokens, self-password change, and centralized
+      backend authorization. Viewers receive operations-summary evidence only.
+- [x] Add one masked owner-configured Discord webhook with HTTPS/public
+      validation, local-preference filtering, redacted summaries, durable
+      deduplicated delivery, bounded retries, restart recovery, and history.
+
+### Acceptance criteria
+
+- A setup switch cannot write to a live server or silently replace an existing
+  setup; the source profile remains unchanged.
+- The review names copied-world operations, downtime, current backup status,
+  target port, EULA readiness, Java readiness, and launch blockers.
+- A failed activation leaves both profiles stopped and records recovery
+  guidance; incomplete creation removes its target folder.
+- Viewer API access is read-only even when a restricted route is guessed;
+  console, raw files/downloads, settings, secrets, recovery, host controls,
+  and server mutations remain owner-only.
+- Discord delivery never includes world paths, player IPs, secrets, raw logs,
+  credentials, or webhook values; duplicate alerts are not queued twice.
+- Automated checks pass, and the final clean Linux Mint 22.3 checklist is
+  completed before Milestone 12 is marked Complete or release notes change.
+
+## Milestone 13: Trusted household access
+
+**Status: Proposed — security design and threat-model update required.**
+
+### Why
+
+The current single-admin model is appropriate for first-run ownership, but a
+household often needs someone who can answer “is it online?” or moderate a
+player without receiving access to files, restores, secrets, or host controls.
+Crafty's server-scoped roles and AMP's role mapping show the demand; Blockstead
+should adopt the boundary, not the hosting-panel complexity.
+
+### Work checklist
+
+- [ ] Define owner, moderator, and viewer capabilities by server and action,
+      with player-safe moderation separated from console, files, settings,
+      upgrades, backups, and host power.
+- [ ] Add server-side authorization checks to every read and mutation, not only
+      navigation visibility; test direct API access for each denied capability.
+- [ ] Add explicit LAN enrollment with a one-time invitation, device/session
+      list, revocation, idle expiry, and re-authentication for sensitive owner
+      actions.
+- [ ] Provide a documented recovery path before enabling a second factor,
+      passkey, or additional trusted account.
+- [ ] Audit role changes, invitations, revocations, and denied actions without
+      recording secrets or player IPs.
+
+### Acceptance criteria
+
+- A moderator can inspect the roster and perform only approved player actions;
+  denied console, file, restore, and host actions fail server-side.
+- A viewer receives useful status without receiving live logs, secrets, or
+  world data.
+- Every invited device can be named and revoked, and revocation invalidates
+  its active sessions.
+- LAN exposure remains opt-in, and the setup guide states the TLS/trusted-
+  network boundary plainly.
+
+## Milestone 14: Discord server status bot
+
+**Status: Next — begin after the current notification/webhook foundation is
+complete.**
+
+### Why
+
+The owner needs a reliable way for friends to discover whether the selected
+Minecraft server is online, how many players are connected, and where to join
+when the residential IP changes. The host can publish those facts outbound to
+Discord; it does not need DNS or an inbound endpoint.
+
+This is a true bot project, not just a webhook destination. The full scope,
+pairing protocol, threat model, status contract, commands, phases, and success
+criteria live in [the Discord server status bot project brief](discord-status-bot-project.md).
+
+### Scope summary
+
+- Use a self-hosted host-side Discord bridge over an outbound Discord Gateway
+  connection; defer a shared multi-tenant relay.
+- Pair one Blockstead installation/profile to one Discord guild/channel through
+  a short-lived, single-use code plus explicit owner confirmation.
+- Authorize commands by exact guild, channel, Discord user, and optionally role;
+  guild membership or possession of the bot invite is not enough.
+- Publish a small status snapshot with online state, player count, freshness,
+  current address when explicitly enabled, and honest `port_unverified`,
+  `local_only`, `unavailable`, and `stale` states.
+- Start with read-only `/blockstead status`, `players`, `address`, `refresh`,
+  `pair`, `unpair`, and `help` commands.
+- Keep start/stop, console, files, settings, backups, restores, moderation,
+  raw logs, and arbitrary Minecraft commands out of this milestone.
 
 ### Decision gates
 
-- Saved setups need an approved data model and restore semantics; they are not
-  a shortcut for arbitrary game-server swapping.
-- Any additional account or integration needs a threat-model update, explicit
-  LAN/TLS guidance, and an owner-visible permission/data boundary.
+- Confirm the self-hosted bridge deployment model and native/Docker packaging.
+- Define a new connection/pairing record instead of overloading the generic
+  webhook record with bot identity or command authorization.
+- Decide whether the current public address appears in the persistent status
+  message or only in an authorized ephemeral command response; command-only is
+  the safer default.
+- Require tests for pairing expiry, copied-code confirmation, unauthorized
+  users, connection revocation, stale IP/status, Discord outages, and profile
+  deletion before implementation is marked complete.
+
+## Milestone 15: Player-ready sharing and status
+
+**Status: Proposed — depends on Milestone 13 and an explicit network decision.**
+
+### Why
+
+The current join card is useful to the owner, but players need a small answer:
+“Can I join, where do I connect, and is the map available?” Crafty's optional
+public status page demonstrates the utility of this surface. Blockstead should
+make it privacy-safe and disabled by default because a local dashboard is not a
+public service.
+
+### Work checklist
+
+- [ ] Add a read-only status route that can be enabled per server and exposes
+      only state, version, capacity, MOTD, join details, and configured map
+      availability.
+- [ ] Support an expiring, revocable share token or local-network-only mode;
+      do not reuse an owner session or expose an admin URL.
+- [ ] Keep player names, IPs, backup status, filesystem facts, and diagnostics
+      out of the player surface by default.
+- [ ] Show stale/unknown status honestly and distinguish local service health
+      from internet or router reachability.
+- [ ] Add a copyable player-ready card and optional QR representation without
+      auto-configuring firewall, port forwarding, or DNS.
+
+### Acceptance criteria
+
+- The status surface is disabled until the owner explicitly enables it and
+  can be revoked without restarting Minecraft.
+- It cannot reach console, player mutations, files, settings, backups, or
+  Activity through route guessing or token reuse.
+- Every displayed fact has a freshness/source state; unknown never becomes
+  “offline” by inference.
+- The UI states that sharing the page does not make the Minecraft port
+  reachable from the internet.
+
+## Milestone 16: Curated recipes and reproducible loadouts
+
+**Status: Proposed — build on Milestone 11.5 and the existing lockfile path.**
+
+### Why
+
+AMP's store, PufferPanel's templates, and Pterodactyl's template-driven
+provisioning show the value of repeatable setup composition. Blockstead already
+has compatible catalogs, curated recommendations, settings cards, and command
+packs; the missing piece is a reviewable recipe that makes those pieces
+repeatable without turning community metadata into executable code.
+
+### Work checklist
+
+- [ ] Define a static recipe format for a named server pattern: supported
+      loaders/versions, extension IDs and ranges, dependencies/conflicts,
+      settings changes, Java requirements, and expected restart impact.
+- [ ] Include source URLs, release identifiers, checksums, author/version
+      metadata, and a clear offline/unavailable state.
+- [ ] Add a dry-run plan that reuses maintenance preflight, backup protection,
+      lockfile diff, settings diff, and rollback evidence.
+- [ ] Start with a small curated set such as Paper essentials, Fabric
+      performance, Geyser/Floodgate, and squaremap/BlueMap alternatives.
+- [ ] Refresh recipes after install, update, disable, removal, or loader change;
+      do not hide a dependency or conflict behind a one-click button.
+
+### Acceptance criteria
+
+- A recipe can only call existing typed installers, settings editors, and
+  guided command packs; it cannot provide shell commands or arbitrary file
+  paths.
+- The owner sees the full version, dependency, compatibility, backup, and
+  restart review before any write.
+- A catalog outage leaves already installed content usable and marks new
+  resolution as unavailable instead of guessing.
+- A recipe failure preserves the prior lockfile, configuration snapshots, and
+  recovery bundle.
+
+## Milestone 17: Portable migration and off-host recovery
+
+**Status: Proposed — requires a destination and secret-handling design.**
+
+### Why
+
+Blockstead can import an existing server and mirror backups to approved local
+folders, but moving to a replacement Linux machine still requires manual
+knowledge. PufferPanel's nodes and Pterodactyl's isolated multi-node model
+show the demand for portability; Blockstead can deliver the owner-sized
+version without becoming a fleet manager.
+
+### Work checklist
+
+- [ ] Export a portable package containing selected server metadata, setup
+      manifests, extension lockfiles, configuration snapshots, launch-plan
+      facts, and optionally world backups.
+- [ ] Redact or explicitly re-enter administrator credentials, webhook secrets,
+      session material, and host-specific paths during export/import.
+- [ ] Start with owner-mounted local or network destinations and a private
+      write/read/verify probe; consider S3-compatible storage only after a
+      separate credential and egress review.
+- [ ] Add an import dry run that reports version/loader/Java requirements, path
+      mapping, disk needs, conflicts, and unsupported artifacts.
+- [ ] Require archive verification and a staged recovery drill before making an
+      imported world live.
+- [ ] Preserve the source package and old launch artifact until the owner
+      confirms the new server starts and the recovery test passes.
+
+### Acceptance criteria
+
+- An export never contains secrets by default and clearly labels omitted data.
+- A destination is not considered healthy until a private probe and checksum
+  verification succeed.
+- Import cannot write outside the selected managed server paths or overwrite a
+  live profile without an explicit reviewed plan.
+- A failed migration leaves both the source server and its recovery material
+  usable.
+
+## Milestone 18: Honest trends and capacity guardrails
+
+**Status: Proposed — extend Milestone 10 without creating an NOC dashboard.**
+
+### Why
+
+Blockstead already records useful samples and exposes World Care evidence, while
+Crafty exposes metrics endpoints and AMP advertises analytics. The next useful
+step is not more gauges; it is enough local history to answer “is disk growth,
+memory pressure, or backup storage becoming a problem?”
+
+### Work checklist
+
+- [ ] Retain bounded daily and weekly summaries for world size, free disk,
+      backup storage, operation duration, player sessions, and supported
+      performance samples.
+- [ ] Add clearly labelled threshold warnings and simple bounded forecasts for
+      disk/recovery capacity; show the sample window and uncertainty.
+- [ ] Link every warning to a safe action such as retention review, destination
+      check, recovery cleanup, or maintenance preflight.
+- [ ] Offer owner-triggered CSV/JSON export and, only after an auth review, a
+      loopback/local metrics endpoint for tools such as Prometheus.
+- [ ] Keep unsupported metrics omitted and never estimate TPS/MSPT from host
+      CPU, memory, or player count.
+
+### Acceptance criteria
+
+- Every trend names its source, window, units, and last observation time.
+- A forecast is presented as an estimate with a clear “not enough history”
+  state, never as a guarantee.
+- Retention is bounded and cannot consume the world or backup budget it is
+  meant to monitor.
+- Export and metrics access follow the same server/account authorization and
+  redaction rules as the dashboard.
+
+## Milestone 19: Change rehearsal and disposable clones
+
+**Status: Proposed — depends on Milestones 16 and 17.**
+
+### Why
+
+Maintenance preflight proves that a change is planned and a recovery drill
+proves that an archive can be staged. A disposable clone would close the gap
+between “the files look compatible” and “this exact setup launches and answers
+basic health checks.” It is a natural extension of Blockstead's safety-first
+position and a stronger local alternative to blindly applying a panel update.
+
+### Work checklist
+
+- [ ] Create a disposable, loopback-bound clone from a verified backup with a
+  separate profile identity, port, storage budget, and expiration time.
+- [ ] Run a bounded smoke suite: launch-plan validation, readiness, console
+  response, extension load outcome, status capability, and configured map
+  health where applicable.
+- [ ] Allow an owner to apply a proposed server/loader/extension/recipe change
+  to the clone and compare logs, files, versions, and capability results.
+- [ ] Prevent external player joins, cross-profile paths, host-power actions,
+  and outbound notifications from the clone by default.
+- [ ] Make promotion a new reviewed maintenance plan; never silently swap the
+  clone into production.
+- [ ] Clean up expired clones through the same exact-artifact, backup-aware
+  recovery rules as World Care.
+
+### Acceptance criteria
+
+- Clone creation never mutates the live world or its player data in place.
+- A failed rehearsal produces an evidence bundle with facts, unknowns, and
+  next actions rather than a compatibility claim.
+- The clone is isolated to approved paths and loopback ports, with an explicit
+  disk/time budget.
+- Production promotion re-runs protection and compatibility checks because the
+  source server may have changed since rehearsal.
+
+## Milestone 20: Safe extension and adapter ecosystem
+
+**Status: Proposed — final milestone in this idea sequence.**
+
+### Why
+
+The roadmap will eventually have enough recipes, capability providers, and
+rehearsal evidence to justify a stable extension boundary. AMP's plugin system,
+PufferPanel's template model, and Pterodactyl's ecosystem show why extension
+points matter; arbitrary plugins would conflict with Blockstead's no-shell,
+approved-path, and honest-evidence principles. The safe target is a versioned
+manifest and adapter contract, not code execution supplied by a downloaded jar.
+
+### Work checklist
+
+- [ ] Publish versioned schemas for recipes, settings cards, command packs,
+  diagnostics, and capability declarations.
+- [ ] Require each provider to declare sources, supported versions/loaders,
+  permissions, touched paths, network destinations, restart impact, and
+  destructive actions.
+- [ ] Validate manifests against a signed or locally trusted registry and keep a
+  visible provider version, provenance, checksum, and revocation state.
+- [ ] Keep command definitions static and typed; no provider may inject shell,
+  raw file paths, hidden network calls, or arbitrary console text.
+- [ ] Add a fixture-based developer mode that is disabled in production and
+  makes unsupported capabilities disappear rather than fail open.
+- [ ] Document a review checklist and migration policy for schema changes.
+
+### Acceptance criteria
+
+- An untrusted or malformed provider cannot add a command, path, secret, or
+  network destination to the product.
+- Every provider action is capability-gated, permission-checked, auditable,
+  and subject to the same backup/confirmation rules as built-in actions.
+- Registry outages do not disable installed servers or erase the provenance of
+  already approved providers.
+- Removing or revoking a provider removes its UI affordances while preserving
+  the server files, lockfiles, and Activity evidence it previously touched.
+
+### Expansion decision gate
+
+Do not start Milestone 20 merely because other panels have plugin systems. Start
+it only after at least two real recipes have been used through Milestone 19,
+their failure evidence is understandable, and the manifest boundary can be
+kept narrower than arbitrary application code.
 
 ## Deferred scope
 

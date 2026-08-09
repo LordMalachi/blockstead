@@ -2,6 +2,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type NotificationPreferences, type PlayerAction, type RosterEntry, type RosterView } from "../../api/client";
 import { Button } from "../../components/Button";
+import { useRole } from "../shell/role";
 
 const ACTIONS: { value: PlayerAction; label: string }[] = [
   { value: "whitelist_add", label: "Add to allowlist" },
@@ -75,12 +76,14 @@ function RosterRow({
   running,
   showAvatars,
   pending,
+  owner,
   onAction,
 }: {
   entry: RosterEntry;
   running: boolean;
   showAvatars: boolean;
   pending: boolean;
+  owner: boolean;
   onAction: (action: PlayerAction, player: string) => void;
 }) {
   const [confirming, setConfirming] = useState<"ban" | "kick" | null>(null);
@@ -100,7 +103,7 @@ function RosterRow({
       <span className={`roster-status roster-status--${entry.online === true ? "online" : entry.online === false ? "offline" : "unknown"}`}>{statusLabel(entry)}</span>
       <small>{seenNote(entry)}</small>
     </div>
-    <div className="roster-row__actions">
+    {owner && <div className="roster-row__actions">
       {isConsideredOnline(entry) && (confirming === "kick"
         ? <Button className="button--danger button--small" disabled={pending} onClick={() => { onAction("kick", entry.name); setConfirming(null); }}>Confirm kick</Button>
         : <Button className="button--quiet button--small" disabled={!running || pending} onClick={() => setConfirming("kick")}>Kick</Button>)}
@@ -109,11 +112,12 @@ function RosterRow({
         : (confirming === "ban"
           ? <Button className="button--danger button--small" disabled={pending} onClick={() => { onAction("ban", entry.name); setConfirming(null); }}>Confirm ban</Button>
           : <Button className="button--quiet button--small" disabled={!running || pending} onClick={() => setConfirming("ban")}>Ban</Button>)}
-    </div>
+    </div>}
   </li>;
 }
 
 export function PlayersPanel({ profileId, running }: { profileId: string; running: boolean }) {
+  const owner = useRole() === "owner";
   const client = useQueryClient();
   const [player, setPlayer] = useState("");
   const [action, setAction] = useState<PlayerAction>("whitelist_add");
@@ -190,15 +194,15 @@ export function PlayersPanel({ profileId, running }: { profileId: string; runnin
             ? <p className="empty-note">No players are allowlisted, operators, banned, or currently online.</p>
             : filtered.length === 0
               ? <p className="empty-note">No players match this search or filter.</p>
-              : <ul className="roster-list">{filtered.map(entry => <RosterRow key={entry.name} entry={entry} running={running} showAvatars={showAvatars} pending={act.isPending} onAction={(actionValue, playerName) => { setNotice(""); act.mutate({ action: actionValue, player: playerName }); }} />)}</ul>}
+              : <ul className="roster-list">{filtered.map(entry => <RosterRow key={entry.name} entry={entry} running={running} showAvatars={showAvatars} pending={act.isPending} owner={owner} onAction={(actionValue, playerName) => { setNotice(""); act.mutate({ action: actionValue, player: playerName }); }} />)}</ul>}
         </>}
 
-    <form className="inline-form" onSubmit={submit}>
+    {owner && <form className="inline-form" onSubmit={submit}>
       <label>Player name<input value={player} onChange={e => { setPlayer(e.target.value); setConfirmingBan(false); }} placeholder="Steve_Fixture" disabled={!running} /></label>
       <label>Action<select value={action} onChange={e => { setAction(e.target.value as PlayerAction); setConfirmingBan(false); }} disabled={!running}>{ACTIONS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
       <Button className={confirmingBan ? "button--danger" : ""} disabled={!running || !valid || act.isPending}>{confirmingBan ? "Confirm ban" : "Apply"}</Button>
-    </form>
+    </form>}
     {notice && <p className="muted-note" role="status">{notice}</p>}
-    <small className="muted-note">{running ? "Actions are sent as guided console commands to the running server." : "Start the server to apply player actions. The roster stays readable while it is stopped."}</small>
+    <small className="muted-note">{owner ? (running ? "Actions are sent as guided console commands to the running server." : "Start the server to apply player actions. The roster stays readable while it is stopped.") : "View-only account: player actions are hidden; the roster remains readable."}</small>
   </section>;
 }

@@ -4,6 +4,7 @@ import { api, type WorldCareView, type WorldCleanupPlan } from "../../api/client
 import { Button } from "../../components/Button";
 import { formatBytes } from "../../lib/format";
 import { useServerScope } from "../servers/scope";
+import { useRole } from "../shell/role";
 
 function bytes(value: number | null): string {
   return value == null ? "Unknown" : formatBytes(value);
@@ -19,6 +20,7 @@ function diskState(value: WorldCareView["disk"]): string {
 
 export function WorldCarePage() {
   const scope = useServerScope();
+  const owner = useRole() === "owner";
   const client = useQueryClient();
   const worldCare = useQuery({
     queryKey: ["world-care", scope.profile.id],
@@ -59,7 +61,7 @@ export function WorldCarePage() {
 
     <div className="world-care-columns">
       <section className="card" aria-labelledby="worlds-heading">
-        <div className="section-heading"><div><p className="eyebrow">Observed folders</p><h2 id="worlds-heading">Worlds</h2></div><Link to={`/servers/${scope.profile.id}/files`}>Open Files</Link></div>
+        <div className="section-heading"><div><p className="eyebrow">Observed folders</p><h2 id="worlds-heading">Worlds</h2></div>{owner && <Link to={`/servers/${scope.profile.id}/files`}>Open Files</Link>}</div>
         {data.worlds.length ? <ul className="care-list">{data.worlds.map(world => <li key={world.name}><div><strong>{world.name}</strong><small>Recognized world folder</small></div><span>{bytes(world.size_bytes)}</span></li>)}</ul> : <p className="empty-note">No recognized world folder was found yet.</p>}
       </section>
 
@@ -67,10 +69,10 @@ export function WorldCarePage() {
         <div className="section-heading"><div><p className="eyebrow">Reversible boundaries</p><h2 id="recovery-heading">Recovery storage</h2></div><Link to={`/servers/${scope.profile.id}/backups`}>Open Backups</Link></div>
         {data.recovery.entries.length ? <ul className="care-list">{data.recovery.entries.map(entry => <li key={entry.label}><div><strong>{entry.label}</strong><small>{entry.state === "available" ? "Measured on this computer" : "Measurement is incomplete"}</small></div><span>{bytes(entry.size_bytes)}</span></li>)}</ul> : <p className="empty-note">No retained recovery copies were found.</p>}
         <div className="warning"><strong>Reviewed cleanup only</strong><span>{data.cleanup.detail}</span></div>
-        <div className="world-care-actions">
+        {owner && <div className="world-care-actions">
           <Button className="button--secondary button--small" disabled={cleanupReview.isPending || applyCleanup.isPending} onClick={() => cleanupReview.mutate()}>{cleanupReview.isPending ? "Reviewing…" : "Review cleanup"}</Button>
           <small>Review lists the exact private files and expires after 15 minutes.</small>
-        </div>
+        </div>}
         {cleanupReview.error && <p className="error" role="alert">{cleanupReview.error.message}</p>}
         {cleanupReview.data && <div className="world-care-cleanup" role="region" aria-label="Cleanup review">
           {cleanupReview.data.targets.length ? <>
@@ -87,10 +89,10 @@ export function WorldCarePage() {
     </div>
 
     <section className="card" aria-labelledby="destinations-heading">
-      <div className="section-heading"><div><p className="eyebrow">Protection health</p><h2 id="destinations-heading">Backup destinations</h2></div><div className="world-care-actions"><Button className="button--secondary button--small" disabled={destinationCheck.isPending} onClick={() => destinationCheck.mutate()}>{destinationCheck.isPending ? "Checking…" : "Test resilience"}</Button><span>{data.backup_destinations.length} destination{data.backup_destinations.length === 1 ? "" : "s"}</span></div></div>
+      <div className="section-heading"><div><p className="eyebrow">Protection health</p><h2 id="destinations-heading">Backup destinations</h2></div><div className="world-care-actions">{owner && <Button className="button--secondary button--small" disabled={destinationCheck.isPending} onClick={() => destinationCheck.mutate()}>{destinationCheck.isPending ? "Checking…" : "Test resilience"}</Button>}<span>{data.backup_destinations.length} destination{data.backup_destinations.length === 1 ? "" : "s"}</span></div></div>
       <p className="muted-note">Tests write, read, and remove a private random file at each approved destination. No backup archive is changed.</p>
       {destinationCheck.error && <p className="error" role="alert">{destinationCheck.error.message}</p>}
-      <ul className="care-destinations">{data.backup_destinations.map((destination, index) => <li key={`${destination.configured_path}-${index}`}><div><strong>{destination.label}</strong><code>{destination.configured_path}</code></div><div><span>{bytes(destination.stored_bytes)} stored</span><small className={destination.disk.state === "available" ? "state-label state-label--ok" : "state-label state-label--warning"}>{destination.disk.state === "available" ? "Available" : destination.disk.state === "missing" ? "Not created" : "Could not check"}</small><small>{diskState(destination.disk)}</small>{destination.last_check ? <small className={destination.last_check.state === "available" ? "state-label state-label--ok" : "state-label state-label--warning"}>{destination.last_check.state === "available" ? `Read/write verified ${new Date(destination.last_check.checked_at).toLocaleString()}` : destination.last_check.detail}</small> : <small>Not tested yet</small>}</div></li>)}</ul>
+      <ul className="care-destinations">{data.backup_destinations.map((destination, index) => <li key={`${destination.configured_path || destination.label}-${index}`}><div><strong>{destination.label}</strong>{owner ? <code>{destination.configured_path}</code> : <small>Destination details are owner-only.</small>}</div><div><span>{bytes(destination.stored_bytes)} stored</span><small className={destination.disk.state === "available" ? "state-label state-label--ok" : "state-label state-label--warning"}>{destination.disk.state === "available" ? "Available" : destination.disk.state === "missing" ? "Not created" : "Could not check"}</small><small>{diskState(destination.disk)}</small>{destination.last_check ? <small className={destination.last_check.state === "available" ? "state-label state-label--ok" : "state-label state-label--warning"}>{destination.last_check.state === "available" ? `Read/write verified ${new Date(destination.last_check.checked_at).toLocaleString()}` : destination.last_check.detail}</small> : <small>Not tested yet</small>}</div></li>)}</ul>
     </section>
   </>;
 }

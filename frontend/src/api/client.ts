@@ -1,5 +1,60 @@
 export interface ApiError { error: { code: string; message: string; recovery?: string } }
-export interface Session { username: string; csrf_token?: string }
+export type AppRole = "owner" | "viewer"
+export interface Session { username: string; role?: AppRole; csrf_token?: string }
+export interface Account { id: string; username: string; role: AppRole; disabled: boolean }
+export interface SavedSetupVariant {
+  id: string;
+  profile_id: string;
+  name: string;
+  distribution: string;
+  minecraft_version: string | null;
+  loader_version: string | null;
+  source_profile_id: string | null;
+  protection_backup_id: string | null;
+  protection_status: "verified" | "missing";
+  copied_paths: string[];
+  created_at: string;
+  active: boolean;
+}
+export interface SavedSetup { id: string; name: string; created_at: string; updated_at: string; variants: SavedSetupVariant[] }
+export interface SavedSetupVariantReview {
+  review_id: string;
+  setup_id: string;
+  source_profile_id: string;
+  name: string;
+  directory_name: string;
+  target_distribution: string;
+  loader_version: string | null;
+  world_copy_operations: Array<{ source_path: string; destination_relative_path: string; detail: string }>;
+  world_size_bytes: number | null;
+  disk_free_bytes: number;
+  protection: { verified: boolean; backup_id: string | null; age_hours: number | null; detail: string };
+  java_ready: boolean;
+  stopped: boolean;
+  blockers: string[];
+  modded_world_warning: boolean;
+  ready: boolean;
+}
+export interface SavedSetupSwitchReview {
+  review_id: string;
+  setup_id: string;
+  target_profile_id: string;
+  target_name: string;
+  target_distribution: string;
+  target_port: string;
+  current_profile_id: string | null;
+  current_profile_name: string | null;
+  current_backup_id: string | null;
+  current_backup_verified: boolean;
+  downtime_expected: boolean;
+  eula_ready: boolean;
+  java_ready: boolean;
+  launch_ready: boolean;
+  blockers: string[];
+  ready: boolean;
+}
+export interface NotificationIntegration { id: string; kind: "discord_webhook"; enabled: boolean; webhook_configured: boolean; webhook_display: string; created_at: string; updated_at: string }
+export interface NotificationDelivery { id: string; alert_id: string; status: "pending" | "delivered" | "failed"; attempts: number; response_status: number | null; detail: string; created_at: string; delivered_at: string | null }
 export interface Profile { id: string; name: string; server_directory: string; distribution: string; minecraft_version: string | null; loader_version: string | null; is_fixture: boolean }
 export interface ProfileRemovalReview {
   id: string;

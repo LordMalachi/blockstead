@@ -60,9 +60,11 @@ compose the existing backup, compatibility, extension, scheduling, and
 activity boundaries into one reversible workflow. Until a source and rollback
 boundary can be verified, an upgrade is reported as blocked rather than
 offered. World-care/performance insight, calm daily-operation composition, and
-extension-aware command packs are complete. Saved setups, helper access, and
-outbound notifications remain deferred until those local workflows have been
-proven in normal use. The detailed
+extension-aware command packs are complete. The current notification/webhook
+foundation is being completed before the next focused project: the paired,
+host-published Discord status bot described in
+[docs/discord-status-bot-project.md](discord-status-bot-project.md). Saved
+setups and broader helper access remain later proposed work. The detailed
 post-1.0 roadmap and decision gates live in [update.md](../update.md).
 
 Multi-host management and public remote access remain outside the current

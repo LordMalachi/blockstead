@@ -6,7 +6,12 @@ commitment.
 This is a parking place for possibilities worth revisiting after the current
 roadmap.  They should be assessed against Blockstead's local-first,
 single-owner, safety-first product direction before being promoted into
-`update.md`.
+`update.md`. The comparison-backed Milestone 12–20 sequence now lives in
+[`update.md`](../update.md); this file remains the unprioritized shelf for
+ideas that have not been promoted into that sequence.
+
+The Discord-specific status bot has been promoted to the next focused project;
+its detailed scope is in [`docs/discord-status-bot-project.md`](../docs/discord-status-bot-project.md).
 
 ## Product guardrails
 

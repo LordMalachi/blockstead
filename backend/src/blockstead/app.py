@@ -232,8 +232,13 @@ from .models import (
     DiagnosticCapture,
     LoginSession,
     MetricSample,
+    NotificationDelivery,
+    NotificationIntegration,
+    PasswordRecoveryToken,
     PerformanceSample,
     Profile,
+    SavedSetup,
+    SavedSetupVariant,
     Schedule,
 )
 from .modpacks import (
@@ -257,6 +262,14 @@ from .modrinth import (
     list_project_versions as modrinth_versions,
 )
 from .modrinth import search as modrinth_search
+from .notification_integrations import (
+    ALERT_KINDS,
+    WebhookValidationError,
+    safe_payload,
+    send_discord,
+    serialize_payload,
+    validate_webhook_url,
+)
 from .overview import (
     PublicIpDiscovery,
     join_details,
@@ -310,6 +323,7 @@ from .safe_start import (
 from .scheduler import Scheduler, automation_steps, next_executions, parse_weekdays
 from .schemas import (
     PROJECT_ID_PATTERN,
+    AccountStatusRequest,
     AutomationEventRequest,
     AutomationRunRequest,
     BackupPolicyRequest,
@@ -328,13 +342,22 @@ from .schemas import (
     MinecraftVersionRequest,
     ModConfigUpdateRequest,
     ModpackInstallRequest,
+    NotificationIntegrationRequest,
+    NotificationIntegrationToggleRequest,
     NotificationPreferencesRequest,
+    PasswordChangeRequest,
+    PasswordRecoveryRequest,
     PlayerActionRequest,
     ProfileCreate,
     ProfileDeleteRequest,
     ProvisionRequest,
     RawSettingsUpdateRequest,
     SafeTestStartRequest,
+    SavedSetupCreateRequest,
+    SavedSetupSwitchRequest,
+    SavedSetupSwitchReviewRequest,
+    SavedSetupVariantApplyRequest,
+    SavedSetupVariantReviewRequest,
     ScheduleRequest,
     ServerUpgradeRequest,
     SettingsUpdateRequest,
@@ -343,6 +366,7 @@ from .schemas import (
     ToggleRequest,
     UpdateRequest,
     UpdateReviewRequest,
+    ViewerAccountRequest,
 )
 from .security import (
     SESSION_COOKIE,
@@ -353,6 +377,7 @@ from .security import (
     digest,
     hash_password,
     require_mutation_security,
+    require_role,
     verify_password,
 )
 from .server_files import (
@@ -510,6 +535,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     metrics_task: asyncio.Task[None] | None = None
     update_task: asyncio.Task[None] | None = None
     player_session_task: asyncio.Task[None] | None = None
+    notification_task: asyncio.Task[None] | None = None
     update_wakeup = asyncio.Event()
     update_lock = asyncio.Lock()
     performance_lock = asyncio.Lock()
@@ -528,9 +554,184 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return
         await asyncio.to_thread(record_player_session_line, event.profile_id, event.line)
 
+    def queue_background_alerts(db: Session) -> None:
+        """Materialize persisted local alert categories even when no browser is open."""
+        admin_ids = set(
+            db.scalars(
+                select(NotificationIntegration.admin_id).where(
+                    NotificationIntegration.enabled.is_(True)
+                )
+            ).all()
+        )
+        if not admin_ids:
+            return
+        failed_backups = db.scalars(
+            select(BackupRecord)
+            .where(BackupRecord.status == "failed")
+            .order_by(BackupRecord.created_at.desc())
+            .limit(10)
+        ).all()
+        failed_automations = db.scalars(
+            select(AutomationRun)
+            .where(AutomationRun.status == "failed")
+            .order_by(AutomationRun.started_at.desc())
+            .limit(10)
+        ).all()
+        disk = psutil.disk_usage(str(config.data_dir))
+        snapshot = manager.snapshot()
+        update = update_status().get("last_result")
+        for admin_id in admin_ids:
+            prefs = preferences_for(db, admin_id, persist=False)
+            alerts: list[dict[str, object]] = []
+            if prefs.failed_backups:
+                alerts.extend(
+                    {
+                        "id": f"failed-backup-{record.id}",
+                        "kind": "failed_backup",
+                        "title": "A world backup failed",
+                        "detail": record.result,
+                        "severity": "danger",
+                        "created_at": (record.completed_at or record.created_at).isoformat(),
+                        "recovery_to": f"/servers/{record.profile_id}/backups",
+                    }
+                    for record in failed_backups
+                )
+            if prefs.failed_automations:
+                alerts.extend(
+                    {
+                        "id": f"failed-automation-{run.id}",
+                        "kind": "failed_automation",
+                        "title": "A server automation failed",
+                        "detail": run.detail,
+                        "severity": "danger",
+                        "created_at": run.started_at.isoformat(),
+                        "recovery_to": f"/servers/{run.profile_id}/schedule",
+                    }
+                    for run in failed_automations
+                )
+            if prefs.low_disk_space and disk.percent >= 90:
+                alerts.append(
+                    {
+                        "id": "low-disk-space",
+                        "kind": "low_disk_space",
+                        "title": "Disk space is running low",
+                        "detail": f"The Blockstead data disk is {disk.percent:.0f}% full.",
+                        "severity": "danger" if disk.percent >= 95 else "warning",
+                        "created_at": datetime.now(UTC).isoformat(),
+                        "recovery_to": "/activity",
+                    }
+                )
+            if (
+                prefs.server_crashes
+                and snapshot["state"] == "CRASHED"
+                and manager.state_changed_at is not None
+            ):
+                alerts.append(
+                    {
+                        "id": f"current-server-crash-{manager.state_changed_at.isoformat()}",
+                        "kind": "server_crash",
+                        "title": "The Minecraft server crashed",
+                        "detail": snapshot["reason"],
+                        "severity": "danger",
+                        "created_at": manager.state_changed_at.isoformat(),
+                        "recovery_to": "/activity",
+                    }
+                )
+            if (
+                prefs.completed_updates
+                and isinstance(update, dict)
+                and update.get("state") == "succeeded"
+            ):
+                alerts.append(
+                    {
+                        "id": f"completed-update-{update.get('commit') or update.get('at')}",
+                        "kind": "completed_update",
+                        "title": "Blockstead finished updating",
+                        "detail": str(update.get("detail") or "The update completed successfully."),
+                        "severity": "success",
+                        "created_at": str(update.get("at") or datetime.now(UTC).isoformat()),
+                        "recovery_to": "/activity",
+                    }
+                )
+            queue_alerts(admin_id, alerts, db)
+
+    async def notification_loop() -> None:
+        """Resume queued Discord deliveries without blocking dashboard requests."""
+        while True:
+            try:
+                now = datetime.now(timezone.utc)  # noqa: UP017
+                with factory() as db:
+                    queue_background_alerts(db)
+                    db.commit()
+                    deliveries = db.scalars(
+                        select(NotificationDelivery)
+                        .where(
+                            NotificationDelivery.status == "pending",
+                            (NotificationDelivery.next_attempt_at.is_(None))
+                            | (NotificationDelivery.next_attempt_at <= now),
+                        )
+                        .order_by(NotificationDelivery.created_at)
+                        .limit(10)
+                    ).all()
+                    for delivery in deliveries:
+                        integration = db.get(NotificationIntegration, delivery.integration_id)
+                        secret = db.get(AppSecret, integration.secret_key) if integration else None
+                        if integration is None or not integration.enabled or secret is None:
+                            delivery.status = "failed"
+                            delivery.detail = (
+                                "The notification integration is disabled or unavailable."
+                            )
+                            db.commit()
+                            continue
+                        delivery.attempts += 1
+                        db.commit()
+                        try:
+                            status_code, detail = await send_discord(
+                                validate_webhook_url(secret.value),
+                                json.loads(delivery.payload),
+                            )
+                        except (
+                            WebhookValidationError,
+                            OSError,
+                            httpx.HTTPError,
+                            json.JSONDecodeError,
+                        ) as exc:
+                            status_code, detail = 0, (
+                                "The Discord delivery could not be sent safely."
+                                if isinstance(exc, WebhookValidationError)
+                                else "The Discord delivery failed before it was accepted."
+                            )
+                        delivery.response_status = status_code or None
+                        delivery.detail = detail
+                        if 200 <= status_code < 300:
+                            delivery.status = "delivered"
+                            delivery.delivered_at = datetime.now(timezone.utc)  # noqa: UP017
+                            delivery.next_attempt_at = None
+                        elif delivery.attempts >= 3 or status_code not in {
+                            0,
+                            429,
+                            500,
+                            502,
+                            503,
+                            504,
+                        }:
+                            delivery.status = "failed"
+                            delivery.next_attempt_at = None
+                        else:
+                            delivery.status = "pending"
+                            delivery.next_attempt_at = datetime.now(UTC) + timedelta(
+                                seconds=5 * (2 ** (delivery.attempts - 1))
+                            )
+                        db.commit()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Could not process queued notification deliveries")
+            await asyncio.sleep(2)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        nonlocal metrics_task, update_task, player_session_task
+        nonlocal metrics_task, update_task, player_session_task, notification_task
         engine = factory.kw["bind"]
         Base.metadata.create_all(engine)
         with factory() as db:
@@ -576,6 +777,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.commit()
         metrics_task = asyncio.create_task(metrics_loop())
         player_session_task = asyncio.create_task(manager.subscribe(track_player_sessions))
+        notification_task = asyncio.create_task(notification_loop())
         # A first-ever start has nothing to announce, so the build that is
         # already running is recorded quietly. Anything different arriving later
         # is a real update and is announced once the owner sees it.
@@ -597,7 +799,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             config.port,
         )
         yield
-        for task in (metrics_task, update_task, player_session_task):
+        for task in (metrics_task, update_task, player_session_task, notification_task):
             if task is None:
                 continue
             task.cancel()
@@ -608,6 +810,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         metrics_task = None
         update_task = None
         player_session_task = None
+        notification_task = None
         await scheduler.close()
         await manager.close()
         await http_client.aclose()
@@ -1263,15 +1466,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "Try again. If it continues, review the application log.",
         )
 
+    def viewer_path_allowed(path: str) -> bool:
+        """The narrow read-only surface exposed to trusted household viewers."""
+        if path in {
+            "/api/v1/auth/me",
+            "/api/v1/auth/password",
+            "/api/v1/profiles",
+            "/api/v1/server/state",
+            "/api/v1/system/metrics",
+            "/api/v1/schedules",
+            "/api/v1/activity",
+            "/api/v1/notifications",
+            "/api/v1/notification-preferences",
+        }:
+            return True
+        if re.fullmatch(
+            r"/api/v1/profiles/[^/]+/(overview|players|players/roster|backups|world-care)",
+            path,
+        ):
+            return True
+        if re.fullmatch(r"/api/v1/activity/[^/]+/incident", path):
+            return True
+        return False
+
     def current(request: Request, db: Session) -> tuple[Administrator, LoginSession]:
-        return authenticate_request(request, db)
+        admin, session = authenticate_request(request, db)
+        if admin.role == "viewer" and not viewer_path_allowed(request.url.path):
+            raise HTTPException(403, "This read-only account cannot access that workspace.")
+        return admin, session
 
     def mutation(request: Request, db: Session) -> Administrator:
         admin, session = current(request, db)
         require_mutation_security(request, session, config.origins)
-        return admin
+        return require_role(admin)
 
-    def backup_payload(record: BackupRecord) -> dict[str, object]:
+    def backup_payload(record: BackupRecord, *, viewer: bool = False) -> dict[str, object]:
         def timestamp(value: datetime) -> str:
             if value.tzinfo is None:
                 value = value.replace(tzinfo=timezone.utc)  # noqa: UP017
@@ -1288,13 +1517,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "status": record.status,
             "method": record.method,
             "trigger": record.trigger,
-            "file_name": record.file_name,
+            "file_name": None if viewer else record.file_name,
             "size_bytes": record.size_bytes,
             "duration_ms": record.duration_ms,
-            "sha256": record.sha256,
-            "included_paths": json.loads(record.included_paths) if record.included_paths else [],
-            "archive_available": archive_available,
-            "result": record.result,
+            "sha256": None if viewer else record.sha256,
+            "included_paths": (
+                []
+                if viewer
+                else json.loads(record.included_paths)
+                if record.included_paths
+                else []
+            ),
+            "archive_available": False if viewer else archive_available,
+            "result": redact(record.result) if viewer else record.result,
             "created_at": timestamp(record.created_at),
             "completed_at": timestamp(record.completed_at) if record.completed_at else None,
         }
@@ -1340,7 +1575,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.commit()
         token, csrf = create_session(db, admin, config.session_hours)
         set_session_cookie(response, token)
-        return {"username": admin.username, "csrf_token": csrf}
+        return {"username": admin.username, "role": admin.role, "csrf_token": csrf}
 
     @app.post("/api/v1/auth/login")
     def login(payload: Credentials, request: Request, response: Response, db: Db) -> dict[str, str]:
@@ -1354,7 +1589,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         )
         try:
-            password_valid = admin is not None and verify_password(
+            password_valid = admin is not None and not admin.disabled and verify_password(
                 admin.password_hash, payload.password
             )
         except PasswordHashError as exc:
@@ -1371,7 +1606,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         limiter.clear(key)
         token, csrf = create_session(db, admin, config.session_hours)
         set_session_cookie(response, token)
-        return {"username": admin.username, "csrf_token": csrf}
+        return {"username": admin.username, "role": admin.role, "csrf_token": csrf}
 
     @app.post("/api/v1/auth/logout", status_code=204)
     def logout(request: Request, response: Response, db: Db) -> None:
@@ -1384,7 +1619,177 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/auth/me")
     def me(request: Request, db: Db) -> dict[str, str]:
         admin, _ = current(request, db)
-        return {"username": admin.username}
+        return {"username": admin.username, "role": admin.role}
+
+    @app.get("/api/v1/accounts")
+    def list_accounts(request: Request, db: Db) -> list[dict[str, object]]:
+        owner = require_role(current(request, db)[0])
+        return [
+            {
+                "id": row.id,
+                "username": row.username,
+                "role": row.role,
+                "disabled": row.disabled,
+                "created_at": row.created_at.astimezone(UTC).isoformat(),
+            }
+            for row in db.scalars(select(Administrator).order_by(Administrator.created_at)).all()
+            if row.id != owner.id or row.role == "owner"
+        ]
+
+    @app.post("/api/v1/accounts", status_code=201)
+    def create_viewer_account(
+        payload: ViewerAccountRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        owner = mutation(request, db)
+        existing = db.scalar(
+            select(Administrator).where(
+                func.lower(Administrator.username) == payload.username.lower()
+            )
+        )
+        if existing is not None:
+            raise HTTPException(409, "That account name is already in use.")
+        account = Administrator(
+            username=payload.username,
+            password_hash=hash_password(payload.password),
+            role="viewer",
+        )
+        db.add(account)
+        db.add(
+            AuditEvent(
+                admin_id=owner.id,
+                category="account_change",
+                result="success",
+                safe_detail=f"Created view-only account {account.username}",
+            )
+        )
+        db.commit()
+        return {
+            "id": account.id,
+            "username": account.username,
+            "role": account.role,
+            "disabled": account.disabled,
+        }
+
+    @app.post("/api/v1/accounts/{account_id}/status")
+    def update_account_status(
+        account_id: str, payload: AccountStatusRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        owner = mutation(request, db)
+        account = db.get(Administrator, account_id)
+        if account is None or account.role != "viewer":
+            raise HTTPException(404, "That view-only account was not found.")
+        account.disabled = payload.disabled
+        if payload.disabled:
+            db.execute(delete(LoginSession).where(LoginSession.admin_id == account.id))
+        db.add(
+            AuditEvent(
+                admin_id=owner.id,
+                category="account_change",
+                result="success",
+                safe_detail=(
+                    f"{'Disabled' if payload.disabled else 'Enabled'} view-only account "
+                    f"{account.username}"
+                ),
+            )
+        )
+        db.commit()
+        return {
+            "id": account.id,
+            "username": account.username,
+            "role": account.role,
+            "disabled": account.disabled,
+        }
+
+    @app.delete("/api/v1/accounts/{account_id}", status_code=204)
+    def delete_viewer_account(account_id: str, request: Request, db: Db) -> None:
+        owner = mutation(request, db)
+        account = db.get(Administrator, account_id)
+        if account is None or account.role != "viewer":
+            raise HTTPException(404, "That view-only account was not found.")
+        db.add(
+            AuditEvent(
+                admin_id=owner.id,
+                category="account_change",
+                result="success",
+                safe_detail=f"Removed view-only account {account.username}",
+            )
+        )
+        db.delete(account)
+        db.commit()
+
+    @app.post("/api/v1/accounts/{account_id}/recovery")
+    def issue_account_recovery(account_id: str, request: Request, db: Db) -> dict[str, str]:
+        owner = mutation(request, db)
+        account = db.get(Administrator, account_id)
+        if account is None or account.role != "viewer":
+            raise HTTPException(404, "That view-only account was not found.")
+        raw_token = secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)  # noqa: UP017
+        db.execute(delete(PasswordRecoveryToken).where(PasswordRecoveryToken.expires_at <= now))
+        db.add(
+            PasswordRecoveryToken(
+                admin_id=account.id,
+                token_hash=digest(raw_token),
+                expires_at=now + timedelta(minutes=15),
+            )
+        )
+        db.execute(delete(LoginSession).where(LoginSession.admin_id == account.id))
+        db.add(
+            AuditEvent(
+                admin_id=owner.id,
+                category="account_change",
+                result="success",
+                safe_detail=f"Issued a one-time password recovery for {account.username}",
+            )
+        )
+        db.commit()
+        return {"token": raw_token, "expires_at": (now + timedelta(minutes=15)).isoformat()}
+
+    @app.post("/api/v1/auth/password-recovery")
+    def redeem_account_recovery(
+        payload: PasswordRecoveryRequest, request: Request, db: Db
+    ) -> dict[str, str]:
+        if request.headers.get("origin") not in config.origins:
+            raise HTTPException(403, "This request came from an untrusted page.")
+        token = db.scalar(
+            select(PasswordRecoveryToken).where(
+                PasswordRecoveryToken.token_hash == digest(payload.token)
+            )
+        )
+        now = datetime.now(timezone.utc)  # noqa: UP017
+        if (
+            token is None
+            or token.used_at is not None
+            or token.expires_at.replace(tzinfo=UTC) <= now
+        ):
+            raise HTTPException(400, "That recovery token is invalid or expired.")
+        account = db.get(Administrator, token.admin_id)
+        if account is None or account.disabled:
+            raise HTTPException(400, "That recovery token is no longer usable.")
+        account.password_hash = hash_password(payload.password)
+        token.used_at = now
+        db.execute(delete(LoginSession).where(LoginSession.admin_id == account.id))
+        db.commit()
+        return {"username": account.username, "detail": "Password updated. Sign in again."}
+
+    @app.post("/api/v1/auth/password")
+    def change_own_password(
+        payload: PasswordChangeRequest, request: Request, db: Db
+    ) -> dict[str, str]:
+        admin, session = current(request, db)
+        require_mutation_security(request, session, config.origins)
+        admin.password_hash = hash_password(payload.password)
+        db.execute(delete(LoginSession).where(LoginSession.admin_id == admin.id))
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                category="account_change",
+                result="success",
+                safe_detail="Changed the signed-in account password",
+            )
+        )
+        db.commit()
+        return {"detail": "Password updated. Sign in again."}
 
     def scan_error(exc: Exception) -> HTTPException:
         """Turn folder-scan failures into plain-language guidance, never raw errno text."""
@@ -1601,13 +2006,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/profiles")
     def list_profiles(request: Request, db: Db) -> list[dict[str, object]]:
-        current(request, db)
+        admin, _ = current(request, db)
         refresh_profile_facts(list(db.scalars(select(Profile)).all()), db)
         return [
             {
                 "id": p.id,
                 "name": p.name,
-                "server_directory": p.server_directory,
+                "server_directory": p.server_directory if admin.role == "owner" else "",
                 "distribution": p.distribution,
                 "minecraft_version": p.minecraft_version,
                 "loader_version": p.loader_version,
@@ -1796,7 +2201,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/profiles/{profile_id}/backups")
     def list_backups(profile_id: str, request: Request, db: Db) -> list[dict[str, object]]:
-        current(request, db)
+        admin, _ = current(request, db)
         if db.get(Profile, profile_id) is None:
             raise HTTPException(404, "That profile was not found.")
         records = db.scalars(
@@ -1805,7 +2210,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             .order_by(BackupRecord.created_at.desc())
             .limit(50)
         ).all()
-        return [backup_payload(record) for record in records]
+        return [backup_payload(record, viewer=admin.role == "viewer") for record in records]
 
     @app.get("/api/v1/profiles/{profile_id}/backups/{backup_id}/download")
     def download_backup(profile_id: str, backup_id: str, request: Request, db: Db) -> FileResponse:
@@ -2787,6 +3192,468 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "next_route": f"/servers/{created.id}/mods?migration=1",
             "eula_accepted": False,
         }
+
+    def setup_variant_payload(variant: SavedSetupVariant, db: Session) -> dict[str, object]:
+        profile = db.get(Profile, variant.profile_id)
+        if profile is None:
+            return {"id": variant.id, "profile_id": variant.profile_id, "missing": True}
+        protection = (
+            db.get(BackupRecord, variant.protection_backup_id)
+            if variant.protection_backup_id
+            else None
+        )
+        protection_verified = bool(
+            protection is not None
+            and protection.status == "completed"
+            and protection.file_name
+            and (
+                config.data_dir / "backups" / protection.profile_id / protection.file_name
+            ).is_file()
+        )
+        return {
+            "id": variant.id,
+            "profile_id": profile.id,
+            "name": profile.name,
+            "distribution": profile.distribution,
+            "minecraft_version": profile.minecraft_version,
+            "loader_version": profile.loader_version,
+            "source_profile_id": variant.source_profile_id,
+            "protection_backup_id": variant.protection_backup_id,
+            "protection_status": "verified" if protection_verified else "missing",
+            "copied_paths": json.loads(variant.copied_paths or "[]"),
+            "created_at": variant.created_at.astimezone(UTC).isoformat(),
+            "active": app.state.active_profile_id == profile.id,
+        }
+
+    @app.get("/api/v1/saved-setups")
+    def list_saved_setups(request: Request, db: Db) -> list[dict[str, object]]:
+        require_role(current(request, db)[0])
+        result: list[dict[str, object]] = []
+        for setup in db.scalars(select(SavedSetup).order_by(SavedSetup.created_at)).all():
+            variants = db.scalars(
+                select(SavedSetupVariant)
+                .where(SavedSetupVariant.setup_id == setup.id)
+                .order_by(SavedSetupVariant.created_at)
+            ).all()
+            result.append(
+                {
+                    "id": setup.id,
+                    "name": setup.name,
+                    "created_at": setup.created_at.astimezone(UTC).isoformat(),
+                    "updated_at": setup.updated_at.astimezone(UTC).isoformat(),
+                    "variants": [setup_variant_payload(item, db) for item in variants],
+                }
+            )
+        return result
+
+    @app.post("/api/v1/saved-setups", status_code=201)
+    def create_saved_setup(
+        payload: SavedSetupCreateRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        profile = db.get(Profile, payload.profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        enrolled = db.scalar(
+            select(SavedSetupVariant).where(SavedSetupVariant.profile_id == profile.id)
+        )
+        if enrolled is not None:
+            raise HTTPException(409, "That profile already belongs to a saved setup.")
+        now = datetime.now(timezone.utc)  # noqa: UP017
+        setup = SavedSetup(
+            name=payload.name.strip(),
+            created_by_admin_id=admin.id,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(setup)
+        db.flush()
+        variant = SavedSetupVariant(
+            setup_id=setup.id,
+            profile_id=profile.id,
+            copied_paths=json.dumps(["existing profile retained"]),
+            created_at=now,
+        )
+        db.add(variant)
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=profile.id,
+                category="saved_setup",
+                result="success",
+                safe_detail=f"Created saved setup {setup.name} around profile {profile.name}",
+            )
+        )
+        db.commit()
+        return {
+            "id": setup.id,
+            "name": setup.name,
+            "variants": [setup_variant_payload(variant, db)],
+        }
+
+    def saved_variant_review_id(
+        setup_id: str, source_review_id: str, name: str, directory_name: str
+    ) -> str:
+        return hashlib.sha256(
+            f"{setup_id}|{source_review_id}|{name.strip()}|{directory_name}".encode()
+        ).hexdigest()[:16]
+
+    @app.post("/api/v1/saved-setups/{setup_id}/variants/review")
+    async def saved_variant_review(
+        setup_id: str,
+        payload: SavedSetupVariantReviewRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        mutation(request, db)
+        setup = db.get(SavedSetup, setup_id)
+        source = db.get(Profile, payload.source_profile_id)
+        if setup is None or source is None:
+            raise HTTPException(404, "That saved setup or source profile was not found.")
+        existing = db.scalar(
+            select(SavedSetupVariant).where(SavedSetupVariant.profile_id == source.id)
+        )
+        if existing is not None and existing.setup_id != setup.id:
+            raise HTTPException(409, "The source profile belongs to another saved setup.")
+        fresh = await build_loader_migration_review(source, payload.target_distribution, db)
+        review_id = saved_variant_review_id(
+            setup.id,
+            str(fresh["review_id"]),
+            payload.name,
+            payload.directory_name,
+        )
+        return {
+            "review_id": review_id,
+            "setup_id": setup.id,
+            "source_profile_id": source.id,
+            "name": payload.name.strip(),
+            "directory_name": payload.directory_name,
+            "target_distribution": payload.target_distribution,
+            "loader_version": fresh["loader_version"],
+            "world_copy_operations": fresh["world_copy_operations"],
+            "world_size_bytes": fresh["world_size_bytes"],
+            "disk_free_bytes": fresh["disk_free_bytes"],
+            "protection": fresh["protection"],
+            "java_ready": fresh["java_ready"],
+            "stopped": fresh["stopped"],
+            "blockers": fresh["blockers"],
+            "modded_world_warning": fresh["modded_world_warning"],
+            "ready": bool(fresh["ready"]),
+        }
+
+    @app.post("/api/v1/saved-setups/{setup_id}/variants", status_code=201)
+    async def create_saved_variant(
+        setup_id: str,
+        payload: SavedSetupVariantApplyRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        setup = db.get(SavedSetup, setup_id)
+        source = db.get(Profile, payload.source_profile_id)
+        if setup is None or source is None:
+            raise HTTPException(404, "That saved setup or source profile was not found.")
+        fresh = await build_loader_migration_review(source, payload.target_distribution, db)
+        expected_review = saved_variant_review_id(
+            setup.id,
+            str(fresh["review_id"]),
+            payload.name,
+            payload.directory_name,
+        )
+        if expected_review != payload.review_id:
+            raise HTTPException(409, "This setup changed after its review. Review it again.")
+        blockers = cast(list[str], fresh["blockers"])
+        if blockers:
+            raise HTTPException(409, blockers[0])
+        protection = cast(dict[str, object], fresh["protection"])
+        if protection.get("backup_id") != payload.backup_id:
+            raise HTTPException(409, "Choose the fresh verified backup from this review.")
+        if fresh["modded_world_warning"] and not payload.acknowledge_modded_world:
+            raise HTTPException(
+                422,
+                "Acknowledge that the copied world may contain loader-specific content.",
+            )
+        if payload.loader_version not in {None, fresh["loader_version"]}:
+            raise HTTPException(
+                409,
+                "The recommended loader version changed. Review the setup again.",
+            )
+        source_directory = profile_directory(source.id, db)
+        reviewed_worlds = cast(list[str], fresh["worlds"])
+        roots = tuple(
+            root
+            for root in migration_world_roots(source_directory, cast(str, fresh["level_name"]))
+            if root.name in reviewed_worlds
+        )
+        if [root.name for root in roots] != reviewed_worlds:
+            raise HTTPException(409, "The reviewed world folders changed. Review the setup again.")
+        required_java = cast(int | None, fresh["required_java_major"])
+        runtime = (
+            find_java(required_java, discover_java_runtimes())
+            if required_java is not None
+            else None
+        )
+        java_executable = (
+            runtime.path
+            if runtime is not None
+            and payload.target_distribution in {"forge", "quilt", "neoforge"}
+            else None
+        )
+        try:
+            provisioned = await provision_profile(
+                http_client,
+                config.server_root,
+                payload.directory_name,
+                payload.target_distribution,
+                cast(str, fresh["minecraft_version"]),
+                cast(str | None, fresh["loader_version"]),
+                java_executable,
+            )
+            target = Path(provisioned.directory)
+            copied = await asyncio.to_thread(
+                copy_worlds,
+                roots,
+                target,
+                cast(str, fresh["level_name"]),
+                source.distribution,
+                payload.target_distribution,
+                cast(str, fresh["minecraft_version"]),
+            )
+        except (ProvisionError, OSError, ValueError) as exc:
+            target_path = locals().get("target")
+            if isinstance(target_path, Path):
+                await asyncio.to_thread(shutil.rmtree, target_path, True)
+            raise HTTPException(
+                409,
+                "The saved setup could not be created; the incomplete target was removed "
+                "and the source was not changed.",
+            ) from exc
+        profile = Profile(
+            name=payload.name.strip(),
+            server_directory=str(target),
+            distribution=payload.target_distribution,
+            minecraft_version=cast(str, fresh["minecraft_version"]),
+            loader_version=provisioned.plan.loader_version,
+            is_fixture=False,
+        )
+        now = datetime.now(timezone.utc)  # noqa: UP017
+        variant = SavedSetupVariant(
+            setup_id=setup.id,
+            profile_id=profile.id,
+            source_profile_id=source.id,
+            protection_backup_id=payload.backup_id,
+            copied_paths=json.dumps(copied),
+            created_at=now,
+        )
+        try:
+            db.add(profile)
+            db.flush()
+            variant.profile_id = profile.id
+            db.add(variant)
+            db.add(
+                AuditEvent(
+                    admin_id=admin.id,
+                    profile_id=profile.id,
+                    category="saved_setup",
+                    result="success",
+                    safe_detail=(
+                        f"Created protected saved setup variant {profile.name}; "
+                        "source retained"
+                    ),
+                )
+            )
+            setup.updated_at = now
+            db.commit()
+        except SQLAlchemyError as exc:
+            db.rollback()
+            await asyncio.to_thread(shutil.rmtree, target, True)
+            raise HTTPException(
+                409,
+                "The saved setup could not be registered; the source was not changed.",
+            ) from exc
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            "distribution": profile.distribution,
+            "minecraft_version": profile.minecraft_version,
+            "loader_version": profile.loader_version,
+            "source_profile_id": source.id,
+            "copied_paths": copied,
+            "source_unchanged": True,
+            "eula_accepted": False,
+        }
+
+    async def saved_switch_review(
+        setup_id: str,
+        target_profile_id: str,
+        db: Session,
+    ) -> dict[str, object]:
+        setup = db.get(SavedSetup, setup_id)
+        target = db.get(Profile, target_profile_id)
+        membership = db.scalar(
+            select(SavedSetupVariant).where(
+                SavedSetupVariant.setup_id == setup_id,
+                SavedSetupVariant.profile_id == target_profile_id,
+            )
+        )
+        if setup is None or target is None or membership is None:
+            raise HTTPException(404, "That saved setup variant was not found.")
+        current_id = (
+            app.state.active_profile_id
+            if manager.snapshot()["state"] in {"RUNNING", "STARTING", "DEGRADED"}
+            else None
+        )
+        if current_id == target.id:
+            raise HTTPException(409, "That saved setup is already running.")
+        current_profile = db.get(Profile, current_id) if current_id else None
+        current_backup: BackupRecord | None = None
+        current_backup_verified = False
+        blockers: list[str] = []
+        if current_profile is not None:
+            current_backup = db.scalar(
+                select(BackupRecord)
+                .where(
+                    BackupRecord.profile_id == current_profile.id,
+                    BackupRecord.status == "completed",
+                )
+                .order_by(BackupRecord.created_at.desc())
+                .limit(1)
+            )
+            if (
+                current_backup is None
+                or not current_backup.file_name
+                or not current_backup.manifest_name
+            ):
+                blockers.append("Create a verified backup of the running profile before switching.")
+            else:
+                try:
+                    verify_backup_archive(
+                        config.data_dir,
+                        current_profile.id,
+                        current_backup.file_name,
+                        current_backup.manifest_name,
+                        current_backup.sha256,
+                    )
+                    current_backup_verified = True
+                except RestoreError:
+                    blockers.append(
+                        "The latest backup of the running profile could not be verified."
+                    )
+        eula_ready = False
+        java_ready = False
+        try:
+            target_directory = profile_directory(target.id, db)
+            eula_ready = target.is_fixture or eula_accepted(target_directory)
+            required_java = required_java_major(target.minecraft_version)
+            java_ready = target.is_fixture or (
+                find_java(required_java, discover_java_runtimes()) is not None
+            )
+            launch_spec(target, "normal")
+        except HTTPException as exc:
+            blockers.append(str(exc.detail))
+            target_directory = Path(target.server_directory).resolve(strict=False)
+        target_port = read_properties(target_directory).get("server-port", "25565")
+        review_id = hashlib.sha256(
+            (
+                f"{setup.id}|{target.id}|{current_id or ''}|"
+                f"{current_backup.id if current_backup else ''}|{target_port}"
+            ).encode()
+        ).hexdigest()[:16]
+        return {
+            "review_id": review_id,
+            "setup_id": setup.id,
+            "target_profile_id": target.id,
+            "target_name": target.name,
+            "target_distribution": target.distribution,
+            "target_port": target_port,
+            "current_profile_id": current_id,
+            "current_profile_name": current_profile.name if current_profile else None,
+            "current_backup_id": current_backup.id if current_backup else None,
+            "current_backup_verified": current_backup_verified,
+            "downtime_expected": current_id is not None,
+            "eula_ready": eula_ready,
+            "java_ready": java_ready,
+            "launch_ready": not blockers,
+            "blockers": blockers,
+            "ready": not blockers,
+        }
+
+    @app.post("/api/v1/saved-setups/{setup_id}/switch/review")
+    async def saved_switch_review_route(
+        setup_id: str,
+        payload: SavedSetupSwitchReviewRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        mutation(request, db)
+        return await saved_switch_review(setup_id, payload.target_profile_id, db)
+
+    @app.post("/api/v1/saved-setups/{setup_id}/switch")
+    async def saved_switch(
+        setup_id: str,
+        payload: SavedSetupSwitchRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        admin = mutation(request, db)
+        fresh = await saved_switch_review(setup_id, payload.target_profile_id, db)
+        if fresh["review_id"] != payload.review_id:
+            raise HTTPException(409, "This saved setup changed after its review. Review it again.")
+        blockers = cast(list[str], fresh["blockers"])
+        if blockers:
+            raise HTTPException(409, blockers[0])
+        if fresh["current_backup_id"] != payload.backup_id:
+            raise HTTPException(409, "Choose the verified backup named by this review.")
+        target = db.get(Profile, payload.target_profile_id)
+        if target is None:
+            raise HTTPException(404, "That saved setup variant was not found.")
+        async with update_lock:
+            if manager.snapshot()["state"] in {"RUNNING", "STARTING", "DEGRADED"}:
+                if not await manager.stop():
+                    raise HTTPException(
+                        409,
+                        "The current server did not stop before the timeout; "
+                        "the target was not started.",
+                    )
+                app.state.active_profile_id = None
+            try:
+                await start_profile(target)
+            except (InvalidTransition, HTTPException) as exc:
+                db.add(
+                    AuditEvent(
+                        admin_id=admin.id,
+                        profile_id=target.id,
+                        category="saved_setup",
+                        result="failed",
+                        safe_detail=(
+                            f"Saved setup activation failed for {target.name}; "
+                            "both profiles remain stopped"
+                        ),
+                    )
+                )
+                db.commit()
+                reason = (
+                    str(exc.detail)
+                    if isinstance(exc, HTTPException)
+                    else "The target process could not be started."
+                )
+                raise HTTPException(
+                    409,
+                    "Saved setup activation failed; both profiles remain stopped. "
+                    "Recovery: review target readiness and start either profile from "
+                    f"its workspace. {reason}",
+                ) from exc
+        db.add(
+            AuditEvent(
+                admin_id=admin.id,
+                profile_id=target.id,
+                category="saved_setup",
+                result="success",
+                safe_detail=f"Activated saved setup variant {target.name}",
+            )
+        )
+        db.commit()
+        return {**manager.snapshot(), "profile_id": target.id, "detail": f"Started {target.name}."}
 
     @app.get("/api/v1/profiles/{profile_id}/settings")
     def profile_settings(profile_id: str, request: Request, db: Db) -> dict[str, object]:
@@ -5119,7 +5986,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/profiles/{profile_id}/overview")
     async def profile_overview(profile_id: str, request: Request, db: Db) -> dict[str, object]:
-        current(request, db)
+        admin, _ = current(request, db)
         profile = db.get(Profile, profile_id)
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
@@ -5427,7 +6294,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if len(activity) == 5:
                 break
 
-        backup_payload_value = backup_payload(backup) if backup else None
+        backup_payload_value = (
+            backup_payload(backup, viewer=admin.role == "viewer") if backup else None
+        )
         performance_supported = performance_capable(profile.distribution)
         performance_sampled_at: str | None = None
         if latest_performance is not None:
@@ -6072,7 +6941,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def profile_world_care(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         """Return read-only world, backup, destination, and recovery evidence."""
 
-        current(request, db)
+        admin, _ = current(request, db)
         profile = db.get(Profile, profile_id)
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
@@ -6134,11 +7003,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             .order_by(BackupRecord.created_at.desc())
         ).all()
         latest = backups[0] if backups else None
+        if admin.role == "viewer":
+            server_disk["path"] = ""
+            for destination_payload in destinations:
+                destination_payload["configured_path"] = ""
+                destination_payload["disk"] = {
+                    **cast(dict[str, object], destination_payload["disk"]),
+                    "path": "",
+                }
         return {
             "worlds": world_entries,
             "world_size_bytes": world_bytes,
             "disk": server_disk,
-            "last_verified_backup": backup_payload(latest) if latest else None,
+            "last_verified_backup": (
+                backup_payload(latest, viewer=admin.role == "viewer") if latest else None
+            ),
             "backup_destinations": destinations,
             "recovery": {
                 "entries": recovery,
@@ -7194,7 +8073,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def activity_incident(event_id: str, request: Request, db: Db) -> dict[str, object]:
         """Connect one durable event to bounded same-profile evidence around its time."""
 
-        current(request, db)
+        admin, _ = current(request, db)
         event = db.get(AuditEvent, event_id)
         if event is None:
             raise HTTPException(404, "That activity event was not found.")
@@ -7207,7 +8086,225 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
             for entry in diagnostics.window(event.created_at)
         ]
-        return incident_payload(db, anchor=event, log_entries=log_entries)
+        result = incident_payload(db, anchor=event, log_entries=log_entries)
+        if admin.role == "viewer":
+            result["log_context"] = {
+                "detail": (
+                    "Raw log context and downloadable reports are available to the owner only."
+                ),
+                "entries": [],
+            }
+            cast(dict[str, object], result["anchor"])["report_url"] = ""
+        return result
+
+    def integration_payload(integration: NotificationIntegration) -> dict[str, object]:
+        return {
+            "id": integration.id,
+            "kind": integration.kind,
+            "enabled": integration.enabled,
+            "webhook_configured": True,
+            "webhook_display": "https://discord.com/api/webhooks/••••••••",
+            "created_at": integration.created_at.astimezone(UTC).isoformat(),
+            "updated_at": integration.updated_at.astimezone(UTC).isoformat(),
+        }
+
+    def queue_alerts(admin_id: str, alerts: list[dict[str, object]], db: Session) -> None:
+        integrations = db.scalars(
+            select(NotificationIntegration).where(
+                NotificationIntegration.admin_id == admin_id,
+                NotificationIntegration.enabled.is_(True),
+            )
+        ).all()
+        for alert in alerts:
+            if str(alert.get("kind")) not in ALERT_KINDS:
+                continue
+            alert_id = str(alert.get("id"))
+            payload = safe_payload(alert)
+            for integration in integrations:
+                exists = db.scalar(
+                    select(NotificationDelivery.id).where(
+                        NotificationDelivery.integration_id == integration.id,
+                        NotificationDelivery.alert_id == alert_id,
+                    )
+                )
+                if exists is None:
+                    db.add(
+                        NotificationDelivery(
+                            integration_id=integration.id,
+                            alert_id=alert_id,
+                            payload=serialize_payload(payload),
+                            detail="Delivery is queued.",
+                        )
+                    )
+
+    @app.get("/api/v1/notification-integrations")
+    def list_notification_integrations(request: Request, db: Db) -> list[dict[str, object]]:
+        owner = require_role(current(request, db)[0])
+        return [
+            integration_payload(item)
+            for item in db.scalars(
+                select(NotificationIntegration)
+                .where(NotificationIntegration.admin_id == owner.id)
+                .order_by(NotificationIntegration.created_at)
+            ).all()
+        ]
+
+    @app.post("/api/v1/notification-integrations", status_code=201)
+    def create_notification_integration(
+        payload: NotificationIntegrationRequest, request: Request, db: Db
+    ) -> dict[str, object]:
+        owner = mutation(request, db)
+        existing = db.scalar(
+            select(NotificationIntegration).where(NotificationIntegration.admin_id == owner.id)
+        )
+        if existing is not None:
+            raise HTTPException(409, "Only one Discord notification integration is supported.")
+        try:
+            webhook_url = validate_webhook_url(payload.webhook_url)
+        except WebhookValidationError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        integration = NotificationIntegration(
+            admin_id=owner.id,
+            kind="discord_webhook",
+            secret_key=f"discord-webhook-{secrets.token_hex(16)}",
+        )
+        db.add(integration)
+        db.flush()
+        db.add(AppSecret(key=integration.secret_key, value=webhook_url))
+        db.add(
+            AuditEvent(
+                admin_id=owner.id,
+                category="notification_integration",
+                result="success",
+                safe_detail="Configured a Discord notification integration",
+            )
+        )
+        db.commit()
+        return integration_payload(integration)
+
+    @app.post("/api/v1/notification-integrations/{integration_id}/status")
+    def update_notification_integration_status(
+        integration_id: str,
+        payload: NotificationIntegrationToggleRequest,
+        request: Request,
+        db: Db,
+    ) -> dict[str, object]:
+        owner = mutation(request, db)
+        integration = db.get(NotificationIntegration, integration_id)
+        if integration is None or integration.admin_id != owner.id:
+            raise HTTPException(404, "That notification integration was not found.")
+        integration.enabled = payload.enabled
+        integration.updated_at = datetime.now(timezone.utc)  # noqa: UP017
+        db.add(
+            AuditEvent(
+                admin_id=owner.id,
+                category="notification_integration",
+                result="success",
+                safe_detail=f"{'Enabled' if payload.enabled else 'Disabled'} Discord notifications",
+            )
+        )
+        db.commit()
+        return integration_payload(integration)
+
+    @app.delete("/api/v1/notification-integrations/{integration_id}", status_code=204)
+    def delete_notification_integration(integration_id: str, request: Request, db: Db) -> None:
+        owner = mutation(request, db)
+        integration = db.get(NotificationIntegration, integration_id)
+        if integration is None or integration.admin_id != owner.id:
+            raise HTTPException(404, "That notification integration was not found.")
+        secret = db.get(AppSecret, integration.secret_key)
+        db.add(
+            AuditEvent(
+                admin_id=owner.id,
+                category="notification_integration",
+                result="success",
+                safe_detail="Removed the Discord notification integration",
+            )
+        )
+        if secret is not None:
+            db.delete(secret)
+        db.delete(integration)
+        db.commit()
+
+    @app.get("/api/v1/notification-integrations/{integration_id}/deliveries")
+    def list_notification_deliveries(
+        integration_id: str, request: Request, db: Db
+    ) -> list[dict[str, object]]:
+        owner = require_role(current(request, db)[0])
+        integration = db.get(NotificationIntegration, integration_id)
+        if integration is None or integration.admin_id != owner.id:
+            raise HTTPException(404, "That notification integration was not found.")
+        return [
+            {
+                "id": item.id,
+                "alert_id": item.alert_id,
+                "status": item.status,
+                "attempts": item.attempts,
+                "response_status": item.response_status,
+                "detail": item.detail,
+                "created_at": item.created_at.astimezone(UTC).isoformat(),
+                "delivered_at": (
+                    item.delivered_at.astimezone(UTC).isoformat()
+                    if item.delivered_at
+                    else None
+                ),
+            }
+            for item in db.scalars(
+                select(NotificationDelivery)
+                .where(NotificationDelivery.integration_id == integration.id)
+                .order_by(NotificationDelivery.created_at.desc())
+                .limit(50)
+            ).all()
+        ]
+
+    @app.post("/api/v1/notification-integrations/{integration_id}/test")
+    async def test_notification_integration(
+        integration_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        owner = mutation(request, db)
+        integration = db.get(NotificationIntegration, integration_id)
+        secret = db.get(AppSecret, integration.secret_key) if integration else None
+        if integration is None or integration.admin_id != owner.id or secret is None:
+            raise HTTPException(404, "That notification integration was not found.")
+        payload = safe_payload(
+            {
+                "title": "Test notification",
+                "severity": "success",
+                "detail": "This is a redacted test from Blockstead.",
+                "created_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
+                "recovery_to": "/activity",
+            }
+        )
+        delivery = NotificationDelivery(
+            integration_id=integration.id,
+            alert_id=f"test-{secrets.token_hex(8)}",
+            status="pending",
+            payload=serialize_payload(payload),
+            detail="Test delivery is being sent.",
+        )
+        db.add(delivery)
+        db.commit()
+        try:
+            status_code, detail = await send_discord(validate_webhook_url(secret.value), payload)
+        except (WebhookValidationError, OSError, httpx.HTTPError) as exc:
+            status_code, detail = 0, (
+                str(exc)
+                if isinstance(exc, WebhookValidationError)
+                else "The test delivery failed before it was accepted."
+            )
+        delivery.attempts = 1
+        delivery.response_status = status_code or None
+        delivery.detail = detail
+        delivery.status = "delivered" if 200 <= status_code < 300 else "failed"
+        delivery.delivered_at = (
+            datetime.now(UTC) if delivery.status == "delivered" else None
+        )
+        db.commit()
+        return {
+            "status": delivery.status,
+            "detail": delivery.detail,
+            "response_status": delivery.response_status,
+        }
 
     @app.get("/api/v1/notification-preferences")
     def notification_preferences(request: Request, db: Db) -> dict[str, object]:
@@ -7399,6 +8496,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     }
                 )
         alerts.sort(key=lambda item: str(item["created_at"]), reverse=True)
+        if admin.role == "owner":
+            queue_alerts(admin.id, alerts, db)
+            db.commit()
         return {"alerts": alerts, "unread_count": len(alerts)}
 
     @app.post("/api/v1/notifications/acknowledge", status_code=204)
