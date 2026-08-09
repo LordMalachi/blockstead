@@ -17,6 +17,7 @@ const configListing: FileListing = {
   path: "",
   writable: true,
   stopped_required: false,
+  host_path: "/srv/minecraft/fabric-server",
   entries: [
     {
       name: "server.properties",
@@ -35,6 +36,7 @@ const worldListing: FileListing = {
   path: "",
   writable: true,
   stopped_required: true,
+  host_path: "/srv/minecraft/fabric-server",
   entries: [
     { name: "world", path: "world", is_dir: true, size_bytes: null, modified_at: null, viewable: false, editable: false },
   ],
@@ -45,6 +47,7 @@ const backupsListing: FileListing = {
   path: "",
   writable: false,
   stopped_required: false,
+  host_path: "/var/lib/blockstead/backups/fabric-server",
   entries: [
     {
       name: "20260720-140000-abcd1234.tar.gz",
@@ -63,6 +66,7 @@ const fileContent: FileContent = {
   content: "motd=Hi\n",
   revision: "a".repeat(64),
   editable: true,
+  host_path: "/srv/minecraft/fabric-server/server.properties",
 };
 
 const editPreview: FileEditPreview = { revision: "a".repeat(64), valid: true, problems: [], no_changes: false };

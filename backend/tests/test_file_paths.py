@@ -8,6 +8,7 @@ from blockstead.file_paths import (
     FilePathError,
     category_root,
     extract_zip_safely,
+    host_display_path,
     is_editable_text,
     list_directory,
     promote_extracted,
@@ -219,6 +220,29 @@ def test_extract_zip_safely_and_promote_writes_files(tmp_path: Path) -> None:
     assert (destination / "a.txt").read_bytes() == b"one"
     assert (destination / "sub" / "b.txt").read_bytes() == b"two"
     assert not staging.exists()
+
+
+def test_host_display_path_defaults_to_the_real_path() -> None:
+    # A native installation has no display-root override configured, so its
+    # own filesystem view already is the host's view.
+    path = Path("/srv/minecraft/family-server/eula.txt")
+    assert host_display_path(path, ()) == str(path)
+    assert host_display_path(path, ((Path("/srv/minecraft"), None),)) == str(path)
+
+
+def test_host_display_path_substitutes_the_configured_host_root() -> None:
+    path = Path("/srv/minecraft/family-server/eula.txt")
+    roots = ((Path("/srv/minecraft"), "/Users/owner/Blockstead/servers"),)
+    assert host_display_path(path, roots) == "/Users/owner/Blockstead/servers/family-server/eula.txt"
+
+
+def test_host_display_path_checks_roots_in_order_and_falls_through() -> None:
+    path = Path("/var/lib/blockstead/blockstead.db")
+    roots = (
+        (Path("/srv/minecraft"), "/Users/owner/Blockstead/servers"),
+        (Path("/var/lib/blockstead"), "/Users/owner/Blockstead/data"),
+    )
+    assert host_display_path(path, roots) == "/Users/owner/Blockstead/data/blockstead.db"
 
 
 def test_promote_extracted_preserves_name_collision(tmp_path: Path) -> None:

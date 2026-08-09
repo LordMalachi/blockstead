@@ -1,0 +1,21 @@
+name: blockstead-discord-relay
+
+services:
+  relay:
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - relay.env
+    ports:
+      - "443:8080"
+    volumes:
+      - relay-data:/var/lib/blockstead-relay
+      - ./tls:/run/blockstead-relay/tls:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  relay-data:

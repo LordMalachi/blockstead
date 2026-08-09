@@ -9,8 +9,18 @@ supported.
 
 ## Quick start
 
-Install Docker Engine with the Compose plugin, or Docker Desktop, then run from
-the repository root:
+Install Docker Engine with the Compose plugin, or Docker Desktop.
+
+On macOS, double-click **Start Blockstead.command** in the repository root.
+It checks Docker is installed, starts Docker Desktop if it is not already
+running, creates `docker.env` from the template on first run, builds and
+starts the container, waits for the dashboard to actually answer rather than
+just for the container to launch, and opens it in your browser. It is safe to
+run again later — an already-running, healthy Blockstead is detected and just
+reopened rather than rebuilt. The same logic is available from a terminal (and
+on Linux) as `./scripts/docker-up.sh`.
+
+To drive Compose directly instead, run from the repository root:
 
 ```bash
 cp docker.env.example docker.env
@@ -21,6 +31,13 @@ docker compose ps
 Open <http://127.0.0.1:8765>, create the first administrator, and create a
 Vanilla, Fabric, Forge, Quilt, NeoForge, or Paper server in the dashboard. The
 container runs database migrations before starting the application.
+
+### Central Discord relay
+
+Discord status is no longer a host-local bot. The host container uses an
+outbound WebSocket connector to the separately deployed relay. Copy the relay
+URL, application metadata, and—if used—CA bundle into `docker.env`; never put a
+Discord bot token in that file. See the [relay deployment runbook](discord-relay-deployment.md).
 
 If the administrator password is forgotten, the person who controls Docker on
 the host can replace it without deleting any Blockstead data:
@@ -45,39 +62,45 @@ mapping in `compose.yaml` as well.
 
 ## Persistent storage
 
-Compose creates two named volumes:
+Compose mounts two real folders on this computer rather than Docker-managed
+volumes, so Finder, Explorer, or your own tools can reach the files directly:
 
-- `/var/lib/blockstead` holds the database, administrator records, audit data,
-  and Blockstead-created backups.
-- `/srv/minecraft` holds every managed server, including worlds, jars, mods,
-  packs, and configuration.
+- `BLOCKSTEAD_HOST_DATA_DIR` (default `blockstead-data/` next to this
+  repository, or `~/Blockstead/data` when created by `scripts/docker-up.sh` /
+  **Start Blockstead.command**) holds the database, administrator records,
+  audit data, and Blockstead-created backups. Mounted into the container at
+  `/var/lib/blockstead`.
+- `BLOCKSTEAD_HOST_SERVERS_DIR` (default `blockstead-servers/`, or
+  `~/Blockstead/servers`) holds every managed server, including worlds, jars,
+  mods, packs, and configuration. Mounted at `/srv/minecraft`.
 
-Image rebuilds and `docker compose down` preserve both volumes. The `-v` flag
-removes them; treat `docker compose down -v` as a permanent data-deletion
-command.
+Set either in `docker.env` to use a different location, such as an external
+drive. The dashboard also shows these paths directly next to the files they
+contain — the Files workspace and **System → Storage** both display "on
+disk" locations with a copy button, so you rarely need to look them up here.
 
-Use Blockstead's Backup Center for regular world backups. For a full disaster
-recovery copy, stop the Minecraft server and container before backing up both
-named volumes with your Docker installation's volume-backup procedure. Keeping
-only the world volume is not enough to preserve administrator accounts and the
-Blockstead backup catalog.
+Image rebuilds and `docker compose down` preserve both folders; they are
+ordinary files on your computer, not Docker state, so removing containers or
+images never touches them. Back them up the same way you'd back up any other
+folder. Use Blockstead's Backup Center for regular world backups; a full
+disaster-recovery copy needs both folders, since the data folder alone does
+not include worlds, and the servers folder alone does not include
+administrator accounts or the backup catalog.
 
-### Import an existing host folder
+### Pointing at an existing host folder
 
-Named volumes are recommended. To expose an existing host folder instead, edit
-the server volume in `compose.yaml` to an absolute bind mount:
+Because the servers folder is already a real location on this computer,
+"importing" an existing server is usually just: stop Blockstead, move (or
+copy) the server's folder into `BLOCKSTEAD_HOST_SERVERS_DIR`, start Blockstead
+again, and use its **scan** feature (Servers → Use an existing server) to
+recognize it in place — no volume or Compose edits needed.
 
-```yaml
-services:
-  blockstead:
-    volumes:
-      - blockstead-data:/var/lib/blockstead
-      - /absolute/path/to/minecraft:/srv/minecraft
-```
-
-On Linux, the folder must be writable by container UID and GID `10001`. Review
-the exact path before changing ownership; never recursively change ownership of
-a broad directory. Docker Desktop may handle host-file ownership differently.
+To instead point Blockstead at a folder that already lives somewhere else,
+change `BLOCKSTEAD_HOST_SERVERS_DIR` in `docker.env` to that folder's absolute
+path and restart. On Linux, the folder must be writable by container UID and
+GID `10001`; review the exact path before changing ownership, and never
+recursively `chown` a broad directory. Docker Desktop's file sharing
+generally does not require this.
 
 ## LAN dashboard access
 
@@ -138,9 +161,10 @@ docker compose --env-file docker.env up -d
 
 For a ZIP installation, [download the newest approved Linux ZIP](https://github.com/LordMalachi/blockstead/releases/download/update-channel/blockstead-linux.zip),
 extract it to a new folder, copy your existing `docker.env` into that folder,
-and run the final two Compose commands there. The Compose project has a fixed
-name, so it reconnects the replacement container to the existing
-`blockstead-data` and `blockstead-servers` volumes.
+and run the final two Compose commands there. Because `BLOCKSTEAD_HOST_DATA_DIR`
+and `BLOCKSTEAD_HOST_SERVERS_DIR` in that copied `docker.env` are absolute
+paths to real folders (not tied to this project's Compose name), the
+replacement container picks up your existing data and servers automatically.
 
 View live container logs at any time with:
 

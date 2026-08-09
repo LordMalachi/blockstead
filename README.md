@@ -223,6 +223,13 @@ local source from the approved ZIP or `update-channel` Git tag, then rebuild the
 container with Compose; [the Docker guide](docs/docker.md#logs-shutdown-and-upgrades)
 has the exact update commands.
 
+On macOS, double-click **Start Blockstead.command** in this folder. It starts
+Docker Desktop if it is not already running, builds the container, waits for
+the dashboard to answer, and opens it in your browser — no terminal commands
+needed. Run it again any time; an already-running Blockstead is just reopened.
+
+To do the same from a terminal, or on Linux and Windows:
+
 ```bash
 cp docker.env.example docker.env
 docker compose --env-file docker.env up --build -d
@@ -230,17 +237,21 @@ docker compose --env-file docker.env up --build -d
 
 Then open <http://127.0.0.1:8765>. The Compose setup publishes Minecraft on
 port `25565` for LAN players, keeps the dashboard local to this computer, runs
-Blockstead as an unprivileged user, and stores state in two named volumes:
+Blockstead as an unprivileged user, and stores state in two real folders on
+this computer (not Docker-managed volumes, so Finder/Explorer can reach them
+directly):
 
-| Volume | Contents |
+| Folder (`docker.env` variable) | Contents |
 | --- | --- |
-| `blockstead-data` | Accounts, settings, audit records, and backups |
-| `blockstead-servers` | Server profiles, worlds, mods, packs, and configuration |
+| `blockstead-data/` (`BLOCKSTEAD_HOST_DATA_DIR`) | Accounts, settings, audit records, and backups |
+| `blockstead-servers/` (`BLOCKSTEAD_HOST_SERVERS_DIR`) | Server profiles, worlds, mods, packs, and configuration |
 
-Stop Minecraft from the dashboard before rebuilding or taking the container
-down. `docker compose down` keeps both volumes. **Do not run
-`docker compose down -v` unless you intend to delete Blockstead's data and all
-managed Minecraft servers.**
+The dashboard also shows each file's exact folder next to it — see **Files**
+and **System → Storage**. Stop Minecraft from the dashboard before rebuilding
+or taking the container down. `docker compose down`, with or without `-v`,
+never touches these folders; they are ordinary files, not Docker state.
+**Deleting `blockstead-data/` or `blockstead-servers/` deletes Blockstead's
+data or your Minecraft servers, the same as deleting any other folder.**
 
 View live container logs with `docker compose logs -f blockstead`. Use the
 approved-source refresh steps in the Docker guide before rebuilding an upgrade.

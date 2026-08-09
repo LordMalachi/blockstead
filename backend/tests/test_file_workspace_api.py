@@ -330,3 +330,41 @@ def test_backups_category_is_read_only(api: tuple[TestClient, Path, dict[str, st
         files=[("files", ("x.txt", b"data", "text/plain"))],
     )
     assert response.status_code == 409
+
+
+def test_files_show_the_host_path_configured_for_a_container_deployment(tmp_path: Path) -> None:
+    # Mirrors a Docker deployment: the app's own filesystem view (server_root)
+    # is not the host's, so the owner-facing path substitutes the configured
+    # bind-mount source instead.
+    root = tmp_path / "servers"
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        server_root=root,
+        allowed_origins="http://testserver",
+        host_server_root_display="/Users/owner/Blockstead/servers",
+    )
+    with TestClient(create_app(settings)) as client:
+        setup = client.post(
+            "/api/v1/setup/admin",
+            headers={"Origin": "http://testserver"},
+            json={"username": "owner", "password": "correct horse battery staple"},
+        )
+        headers = {"Origin": "http://testserver", "X-CSRF-Token": setup.json()["csrf_token"]}
+        folder = root / "vanilla-server"
+        (folder / "world").mkdir(parents=True)
+        (folder / "eula.txt").write_text("eula=true\n", encoding="utf-8")
+        created = client.post(
+            "/api/v1/profiles", headers=headers, json={"name": "Vanilla", "path": str(folder)}
+        )
+        profile_id = created.json()["id"]
+
+        listing = client.get(f"/api/v1/profiles/{profile_id}/files/config")
+        assert listing.json()["host_path"] == "/Users/owner/Blockstead/servers/vanilla-server"
+
+        content = client.get(
+            f"/api/v1/profiles/{profile_id}/files/config/content", params={"path": "eula.txt"}
+        )
+        assert (
+            content.json()["host_path"]
+            == "/Users/owner/Blockstead/servers/vanilla-server/eula.txt"
+        )

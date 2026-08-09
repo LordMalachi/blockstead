@@ -15,6 +15,7 @@ from .file_paths import (
     FilePathError,
     category_root,
     extract_zip_safely,
+    host_display_path,
     is_editable_text,
     list_directory,
     promote_extracted,
@@ -28,6 +29,10 @@ from .server_settings import read_settings as read_settings
 #: edits are safe on a running server the same way the settings editor is;
 #: world and extension files are not.
 STOPPED_REQUIRED_CATEGORIES: frozenset[str] = frozenset({"world", "extensions"})
+
+#: (internal root, host-side display root) pairs. Empty for a native install,
+#: where the app's own filesystem view already is the host's view.
+DisplayRoots = tuple[tuple[Path, str | None], ...]
 
 
 class FileConflictError(RuntimeError):
@@ -197,6 +202,10 @@ class FileListing(BaseModel):
     entries: list[FileNode]
     writable: bool
     stopped_required: bool
+    #: Where this folder actually lives, for someone who wants to work with
+    #: it directly (their own editor, a backup script, and so on) rather
+    #: than through this workspace. Display only.
+    host_path: str
 
 
 class FileContent(BaseModel):
@@ -204,6 +213,8 @@ class FileContent(BaseModel):
     content: str
     revision: str
     editable: bool
+    #: Where this exact file actually lives. Display only; see FileListing.
+    host_path: str
 
 
 class FileEditPreview(BaseModel):
@@ -273,15 +284,18 @@ def list_category(
     *,
     data_dir: Path | None = None,
     profile_id: str | None = None,
+    display_roots: DisplayRoots = (),
 ) -> FileListing:
     root = _root(server_directory, distribution, category, data_dir=data_dir, profile_id=profile_id)
     entries = list_directory(root, subpath)
+    folder = root.base / subpath if subpath else root.base
     return FileListing(
         category=category,
         path=subpath,
         entries=[FileNode(**entry.__dict__) for entry in entries],
         writable=category not in READ_ONLY_CATEGORIES,
         stopped_required=category in STOPPED_REQUIRED_CATEGORIES,
+        host_path=host_display_path(folder, display_roots),
     )
 
 
@@ -309,6 +323,7 @@ def read_file_content(
     *,
     data_dir: Path | None = None,
     profile_id: str | None = None,
+    display_roots: DisplayRoots = (),
 ) -> FileContent:
     root = _root(server_directory, distribution, category, data_dir=data_dir, profile_id=profile_id)
     target = resolve_target(root, path)
@@ -330,7 +345,11 @@ def read_file_content(
     except UnicodeDecodeError as exc:
         raise FilePathError("That file is not valid UTF-8 text.") from exc
     return FileContent(
-        path=path, content=content, revision=hashlib.sha256(raw).hexdigest(), editable=editable
+        path=path,
+        content=content,
+        revision=hashlib.sha256(raw).hexdigest(),
+        editable=editable,
+        host_path=host_display_path(target, display_roots),
     )
 
 

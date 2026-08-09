@@ -126,14 +126,17 @@ def parse_interaction(payload: Mapping[str, object]) -> DiscordInteraction:
     token = payload.get("token")
     application_id = payload.get("application_id")
     user_id = user.get("id")
-    if not all(isinstance(value, str) and value for value in (
-        guild_id,
-        channel_id,
-        interaction_id,
-        token,
-        application_id,
-        user_id,
-    )):
+    if not all(
+        isinstance(value, str) and value
+        for value in (
+            guild_id,
+            channel_id,
+            interaction_id,
+            token,
+            application_id,
+            user_id,
+        )
+    ):
         raise DiscordConfigurationError("The Discord interaction was missing a required ID.")
     roles = member.get("roles", []) if isinstance(member, dict) else []
     role_ids = (
@@ -360,11 +363,22 @@ class DiscordGateway:
             pass
 
     async def _identify(self, socket: object) -> None:
-        await socket.send(json.dumps({"op": 2, "d": {
-            "token": self.rest._token,
-            "intents": 0,
-            "properties": {"os": "linux", "browser": "blockstead", "device": "blockstead"},
-        }}))  # type: ignore[union-attr]
+        await socket.send(
+            json.dumps(
+                {
+                    "op": 2,
+                    "d": {
+                        "token": self.rest._token,
+                        "intents": 0,
+                        "properties": {
+                            "os": "linux",
+                            "browser": "blockstead",
+                            "device": "blockstead",
+                        },
+                    },
+                }
+            )
+        )  # type: ignore[union-attr]
         self._connected = True
 
     async def _heartbeat(self, socket: object, interval: float) -> None:
@@ -394,9 +408,7 @@ class DiscordGateway:
             try:
                 await self.rest.register_guild_commands(guild_id)
             except DiscordApiError:
-                self._log.warning(
-                    "Could not register Blockstead commands for one Discord guild."
-                )
+                self._log.warning("Could not register Blockstead commands for one Discord guild.")
         if name == "INTERACTION_CREATE" and isinstance(data, dict):
             try:
                 interaction = parse_interaction(data)
@@ -407,7 +419,7 @@ class DiscordGateway:
 
 
 def discord_configuration(settings: Settings) -> dict[str, object]:
-    """Return a safe dashboard payload; never include the bot token."""
+    """Return safe legacy Discord metadata; the host never starts this Gateway."""
 
     application_id = (
         settings.discord_application_id.strip() if settings.discord_application_id else None
@@ -426,13 +438,21 @@ def discord_configuration(settings: Settings) -> dict[str, object]:
         except DiscordConfigurationError as exc:
             public_key_error = str(exc)
     valid_application = application_id is not None and application_error is None
+    relay_configured = bool(settings.discord_relay_url and settings.discord_relay_url.strip())
+    legacy_token_configured = bool(settings.discord_bot_token)
     return {
         "application_id": application_id,
         "public_key_configured": public_key is not None and public_key_error is None,
-        "bot_token_configured": bool(settings.discord_bot_token),
-        "bot_ready": valid_application and bool(settings.discord_bot_token),
+        "bot_token_configured": legacy_token_configured,
+        "bot_ready": valid_application and (relay_configured or legacy_token_configured),
         "install_url": discord_install_url(application_id) if valid_application else None,
         "application_error": application_error,
         "public_key_error": public_key_error,
-        "mode": "host_outbound_gateway" if valid_application else "not_configured",
+        "mode": (
+            "central_relay"
+            if valid_application and relay_configured
+            else "legacy_host_gateway_disabled"
+            if valid_application and legacy_token_configured
+            else "not_configured"
+        ),
     }

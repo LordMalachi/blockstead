@@ -17,6 +17,7 @@ import {
   type FileUploadResult,
 } from "../../api/client";
 import { Button } from "../../components/Button";
+import { CopyableText } from "../../components/CopyableText";
 import { NavIcon } from "../../components/NavIcon";
 import { Tooltip } from "../../components/Tooltip";
 import { formatBytes } from "../../lib/format";
@@ -185,6 +186,7 @@ export function FilesPanel({
       <button type="button" aria-label={`${category[0].toUpperCase() + category.slice(1)} root folder`} onClick={() => setPath("")} disabled={!path}>{category[0].toUpperCase() + category.slice(1)}</button>
       {segments(path).map(segment => <span key={segment.path}><span aria-hidden="true">/</span><button type="button" onClick={() => setPath(segment.path)} disabled={segment.path === path}>{segment.name}</button></span>)}
     </nav>
+    {listing.data && <CopyableText label="This folder is at" value={listing.data.host_path} />}
 
     {locked && <p className="warning">Stop the server before uploading, renaming, deleting, or extracting archives in this category.</p>}
     {notice && <p className="success" role="status">{notice}</p>}
@@ -226,6 +228,7 @@ export function FilesPanel({
 
     {openFile && <section className="file-editor" aria-label={`View ${openFile}`}>
       <div className="section-heading"><div><p className="eyebrow">{openFile}</p><div className="heading-with-help"><h3>{fileValue?.editable ? "Edit file" : "View file"}</h3>{fileValue?.editable && <Tooltip label="How Check changes and Save file work">Check changes validates the current draft without writing it. Save file is enabled only after a valid check, then creates a recovery snapshot and replaces the file safely.</Tooltip>}</div></div><Button className="button--quiet button--small" onClick={() => setOpenFile(null)}>Close</Button></div>
+      {fileValue && <CopyableText label="This file is at" value={fileValue.host_path} />}
       {content.isLoading ? <p className="empty-note">Loading file…</p>
         : content.error ? <p className="error" role="alert">{content.error.message}</p>
           : fileValue && (fileValue.editable

@@ -45,11 +45,25 @@ class Settings(BaseSettings):
     #: Once an update is waiting for players to leave, check frequently instead
     #: of waiting for the normal six-hour channel interval.
     update_wait_minutes: float = Field(default=5.0, ge=0.1, le=60)
-    #: Discord application configuration. The bot token is deliberately not
-    #: given a default and must be supplied through a protected host secret.
+    #: Discord application metadata remains useful for install links, but the
+    #: bot token belongs only on the central relay service.
     discord_application_id: str | None = None
     discord_public_key: str | None = None
+    #: Deprecated migration field. Blockstead no longer starts a Discord
+    #: Gateway with this value; it is retained so old environments can start
+    #: and display a migration warning without crashing.
     discord_bot_token: str | None = Field(default=None, repr=False)
+    discord_relay_url: str | None = None
+    discord_relay_installation_id: str | None = None
+    discord_relay_connector_secret: str | None = Field(default=None, repr=False)
+    discord_relay_ca_file: Path | None = None
+    #: Where data_dir/server_root actually live on the host, for display only.
+    #: A native installation's own filesystem view already is the host's, so
+    #: these stay unset there. A container deployment sets them to the host
+    #: side of its bind mounts, since the app's internal /var/lib/blockstead
+    #: and /srv/minecraft are not paths that exist on the host at all.
+    host_data_dir_display: str | None = None
+    host_server_root_display: str | None = None
 
     @field_validator("bind_host")
     @classmethod

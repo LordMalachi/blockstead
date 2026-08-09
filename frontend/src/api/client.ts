@@ -60,10 +60,17 @@ export interface DiscordBotStatus {
   public_key_configured: boolean;
   bot_token_configured: boolean;
   bot_ready: boolean;
+  relay_configured: boolean;
+  relay_url: string | null;
+  relay_online: boolean;
+  connected_hosts?: number;
+  installation_id: string | null;
+  connector_configured: boolean;
+  legacy_token_present: boolean;
   install_url: string | null;
   application_error: string | null;
   public_key_error: string | null;
-  mode: "host_outbound_gateway" | "not_configured";
+  mode: "central_relay" | "legacy_host_gateway_disabled" | "not_configured";
   pairings: DiscordPairing[];
   connections: DiscordConnection[];
 }
@@ -92,6 +99,9 @@ export interface DiscordConnection {
   publish_address: boolean;
   status_message_configured: boolean;
   last_heartbeat_at: string | null;
+  relay_connection_id?: string | null;
+  relay_connected?: boolean;
+  last_relay_heartbeat_at?: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -157,7 +167,7 @@ export interface CommandArgument {
 }
 export interface GuidedCommand { id: string; label: string; root: string; category: string; description: string; safety: "normal" | "caution" | "danger"; arguments: CommandArgument[]; provider_id?: string }
 export interface CommandCatalog { schema_version: number; revision: string; source: "curated" | "runtime"; complete: boolean; commands: GuidedCommand[] }
-export interface SystemMetrics { cpu_percent: number; memory: { total_bytes: number; used_bytes: number; percent: number }; disk: { total_bytes: number; used_bytes: number; percent: number }; process: { uptime_seconds: number | null; memory_bytes: number | null } }
+export interface SystemMetrics { cpu_percent: number; memory: { total_bytes: number; used_bytes: number; percent: number }; disk: { total_bytes: number; used_bytes: number; percent: number }; process: { uptime_seconds: number | null; memory_bytes: number | null }; storage: { data_dir: string; server_root: string } }
 export interface DiagnosticLogEntry { at: string; level: string; logger: string; message: string; occurrences?: number; first_at?: string; last_at?: string }
 export interface DiagnosticsReport {
   report_version: number;
@@ -577,8 +587,8 @@ export interface ModConfigsView { distribution: string; directory: string; files
 export interface ModConfigDocument { path: string; content: string; revision: string; size_bytes: number; restart_required?: boolean }
 export type FileCategory = "config" | "logs" | "extensions" | "world" | "backups"
 export interface FileNode { name: string; path: string; is_dir: boolean; size_bytes: number | null; modified_at: string | null; viewable: boolean; editable: boolean }
-export interface FileListing { category: string; path: string; entries: FileNode[]; writable: boolean; stopped_required: boolean }
-export interface FileContent { path: string; content: string; revision: string; editable: boolean }
+export interface FileListing { category: string; path: string; entries: FileNode[]; writable: boolean; stopped_required: boolean; host_path: string }
+export interface FileContent { path: string; content: string; revision: string; editable: boolean; host_path: string }
 export interface FileEditPreview { revision: string; valid: boolean; problems: string[]; no_changes: boolean }
 export interface FileEditResult { path: string; snapshot_name: string; previous_revision: string; revision: string }
 export interface FileRenameResult { path: string }

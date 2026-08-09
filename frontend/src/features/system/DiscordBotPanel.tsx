@@ -34,21 +34,23 @@ export function DiscordBotPanel() {
   });
 
   return <section className="card" aria-labelledby="discord-bot-heading">
-    <div className="section-heading"><div><p className="eyebrow">Host-side bot bridge</p><h2 id="discord-bot-heading">Discord server status bot</h2></div><span>{data?.bot_ready ? "Ready" : "Needs setup"}</span></div>
-    <p>The host publishes the selected server’s status through an outbound Discord connection. DNS and inbound access to this computer are not required.</p>
+    <div className="section-heading"><div><p className="eyebrow">Central Discord relay</p><h2 id="discord-bot-heading">Discord server status bot</h2></div><span>{data?.relay_online ? "Online" : "Needs relay"}</span></div>
+    <p>The shared Discord bot stays online on the relay. This Blockstead host makes an outbound connection and only sends the selected profile’s status.</p>
     {status.isLoading && <p className="muted-note" role="status">Checking Discord application configuration…</p>}
     {status.error && <p className="error" role="alert">{status.error.message}</p>}
     {data && <>
       <dl className="system-facts">
         <div><dt>Application ID</dt><dd><code>{data.application_id ?? "Not configured"}</code></dd></div>
         <div><dt>Public key</dt><dd>{data.public_key_configured ? "Configured" : data.public_key_error ?? "Not configured"}</dd></div>
-        <div><dt>Bot token</dt><dd>{data.bot_token_configured ? "Configured on host" : "Not configured"}</dd></div>
-        <div><dt>Connection mode</dt><dd>{data.mode === "host_outbound_gateway" ? "Host outbound Gateway" : "Not configured"}</dd></div>
+        <div><dt>Relay URL</dt><dd><code>{data.relay_url ?? "Not configured"}</code></dd></div>
+        <div><dt>Relay connection</dt><dd>{data.relay_online ? "Connected" : "Disconnected"}</dd></div>
+        <div><dt>Installation identity</dt><dd>{data.connector_configured ? "Configured" : "Generated on first start"}</dd></div>
       </dl>
       {data.application_error && <p className="error" role="alert">{data.application_error}</p>}
-      {!data.bot_token_configured && <p className="warning" role="status">Set <code>BLOCKSTEAD_DISCORD_BOT_TOKEN</code> in the host’s protected environment and restart Blockstead. The token is never shown in this dashboard.</p>}
+      {!data.relay_configured && <p className="warning" role="status">Set <code>BLOCKSTEAD_DISCORD_RELAY_URL</code> for the central relay and restart Blockstead. The Discord bot token belongs only on the relay.</p>}
+      {data.legacy_token_present && <p className="warning" role="status">The old host-side Discord token setting is deprecated and ignored. Remove <code>BLOCKSTEAD_DISCORD_BOT_TOKEN</code> after migrating to the relay.</p>}
       {data.install_url && <p><a className="button button--secondary" href={data.install_url} target="_blank" rel="noreferrer">Install bot in Discord</a></p>}
-      {data.bot_ready && <>
+      {data.relay_configured && <>
         <h3>Pair a server profile</h3>
         <p className="muted-note">In a new Discord channel, run <code>/blockstead setup</code> for the walkthrough. Then create a short-lived code here and run <code>/blockstead pair code:…</code> in that channel. Confirm the claimed channel here. Use one channel per Minecraft profile when a guild hosts multiple servers.</p>
         <form className="inline-form" onSubmit={event => { event.preventDefault(); createPairing.mutate(); }}>

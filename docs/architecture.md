@@ -66,9 +66,10 @@ The optional Docker Compose deployment builds the Vite application in a Node
 stage, then copies it and the Python package into a Java 21 runtime image. The
 container runs as UID/GID `10001` with Linux capabilities dropped. Blockstead
 and its managed Minecraft child processes share the container so the existing
-stdin, log, process-group, and graceful-shutdown contracts remain intact. Named
-volumes separate application data from server folders; the Docker socket and
-host power interfaces are not mounted.
+stdin, log, process-group, and graceful-shutdown contracts remain intact. Two
+real host folders (bind-mounted, not Docker-managed volumes, so an owner can
+reach them directly) separate application data from server folders; the
+Docker socket and host power interfaces are not mounted.
 
 ## Management views
 

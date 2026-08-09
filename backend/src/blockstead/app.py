@@ -88,11 +88,17 @@ from .diagnostic_captures import (
 from .diagnostics import attach_logging, build_report, redact
 from .discord_bot import (
     DiscordConfigurationError,
-    DiscordGateway,
     DiscordInteraction,
     DiscordReply,
     discord_configuration,
     validate_application_id,
+)
+from .discord_relay import (
+    RelayClient,
+    RelayConnector,
+    RelayError,
+    ensure_relay_identity,
+    relay_configuration,
 )
 from .distributions import (
     DISTRIBUTIONS,
@@ -532,6 +538,16 @@ class SpaStaticFiles(StaticFiles):
 def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or Settings()
     config.prepare()
+
+    def display_roots() -> tuple[tuple[Path, str | None], tuple[Path, str | None]]:
+        """Where config.server_root/data_dir actually live on the host, for
+        an owner who wants to work with a file directly. See
+        file_paths.host_display_path."""
+        return (
+            (config.server_root, config.host_server_root_display),
+            (config.data_dir, config.host_data_dir_display),
+        )
+
     diagnostics = attach_logging(config.data_dir)
     factory = create_session_factory(config.data_dir / "blockstead.db")
     manager = ProcessManager()
@@ -550,13 +566,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     player_session_task: asyncio.Task[None] | None = None
     notification_task: asyncio.Task[None] | None = None
     discord_status_task: asyncio.Task[None] | None = None
-    discord_task: asyncio.Task[None] | None = None
-    discord_gateway: DiscordGateway | None = None
+    relay_connector: RelayConnector | None = None
+    relay_client: RelayClient | None = None
+    relay_identity = ensure_relay_identity(
+        config.data_dir,
+        config.discord_relay_installation_id,
+        config.discord_relay_connector_secret,
+    )
+    config.discord_relay_installation_id = relay_identity.installation_id
+    config.discord_relay_connector_secret = relay_identity.connector_secret
     update_wakeup = asyncio.Event()
     update_lock = asyncio.Lock()
     performance_lock = asyncio.Lock()
     discord_pairing_lock = asyncio.Lock()
     discord_refresh_times: dict[str, float] = {}
+    relay_wakeup = asyncio.Event()
 
     def record_player_session_line(profile_id: str, line: str) -> None:
         with factory() as db:
@@ -714,10 +738,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             httpx.HTTPError,
                             json.JSONDecodeError,
                         ) as exc:
-                            status_code, detail = 0, (
-                                "The Discord delivery could not be sent safely."
-                                if isinstance(exc, WebhookValidationError)
-                                else "The Discord delivery failed before it was accepted."
+                            status_code, detail = (
+                                0,
+                                (
+                                    "The Discord delivery could not be sent safely."
+                                    if isinstance(exc, WebhookValidationError)
+                                    else "The Discord delivery failed before it was accepted."
+                                ),
                             )
                         delivery.response_status = status_code or None
                         delivery.detail = detail
@@ -760,9 +787,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except json.JSONDecodeError:
             return []
         return (
-            [item for item in decoded if isinstance(item, str)]
-            if isinstance(decoded, list)
-            else []
+            [item for item in decoded if isinstance(item, str)] if isinstance(decoded, list) else []
         )
 
     def discord_pairing_payload(
@@ -778,6 +803,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "id": pairing.id,
             "profile_id": pairing.profile_id,
             "profile_name": profile.name if profile else "Unknown profile",
+            "relay_pairing_id": pairing.relay_pairing_id,
             "status": status,
             "expires_at": expires_at.astimezone(UTC).isoformat(),  # noqa: UP017
             "claimed": pairing.claimed_at is not None,
@@ -803,6 +829,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "publish_address": connection.publish_address,
             "status_message_configured": connection.status_message_id is not None,
             "last_heartbeat_at": utc_timestamp(connection.last_heartbeat_at),
+            "relay_connection_id": connection.relay_connection_id,
+            "relay_connected": relay_connector.connected if relay_connector is not None else False,
+            "last_relay_heartbeat_at": utc_timestamp(connection.last_relay_heartbeat_at),
             "created_at": utc_timestamp(connection.created_at),
             "updated_at": utc_timestamp(connection.updated_at),
         }
@@ -887,12 +916,66 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lines.append("Use `/blockstead help` for read-only commands.")
         return "\n".join(lines)
 
-    async def discord_status_loop() -> None:
-        """Keep one owner-approved status message fresh in each paired channel."""
+    async def relay_event(message: Mapping[str, object]) -> None:
+        """Apply relay events to the local owner-facing pairing records."""
+
+        kind = message.get("type")
+        if kind == "refresh":
+            relay_wakeup.set()
+            return
+        if kind not in {
+            "pairing_claimed",
+            "connection_activated",
+            "connection_changed",
+            "connection_revoked",
+        }:
+            return
+        relay_id = message.get("id")
+        if not isinstance(relay_id, str):
+            return
+        with factory() as db:
+            if kind == "pairing_claimed":
+                pairing = db.scalar(
+                    select(DiscordPairing).where(DiscordPairing.relay_pairing_id == relay_id)
+                )
+                if pairing is not None:
+                    pairing.claimed_application_id = cast(
+                        str | None, message.get("claimed_application_id")
+                    )
+                    pairing.claimed_guild_id = cast(str | None, message.get("claimed_guild_id"))
+                    pairing.claimed_channel_id = cast(str | None, message.get("claimed_channel_id"))
+                    pairing.claimed_user_id = cast(str | None, message.get("claimed_user_id"))
+                    claimed_at = message.get("claimed_at")
+                    pairing.claimed_at = (
+                        datetime.fromisoformat(claimed_at)
+                        if isinstance(claimed_at, str)
+                        else datetime.now(UTC)
+                    )
+            else:
+                connection = db.scalar(
+                    select(DiscordConnection).where(
+                        DiscordConnection.relay_connection_id == relay_id
+                    )
+                )
+                if connection is not None:
+                    if kind == "connection_changed":
+                        enabled = message.get("enabled")
+                        publish_address = message.get("publish_address")
+                        if isinstance(enabled, bool):
+                            connection.enabled = enabled
+                        if isinstance(publish_address, bool):
+                            connection.publish_address = publish_address
+                    elif kind == "connection_revoked":
+                        connection.enabled = False
+                    connection.last_relay_heartbeat_at = datetime.now(UTC)
+            db.commit()
+
+    async def relay_status_loop() -> None:
+        """Publish scoped snapshots to the relay; Discord is relay-owned."""
 
         while True:
             try:
-                if discord_gateway is not None and discord_gateway.connected:
+                if relay_connector is not None and relay_connector.connected:
                     with factory() as db:
                         connections = db.scalars(
                             select(DiscordConnection).where(DiscordConnection.enabled.is_(True))
@@ -904,32 +987,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             status = await discord_profile_status(
                                 profile, include_address=connection.publish_address
                             )
-                            content = discord_status_message(connection, profile, status)
-                            try:
-                                if connection.status_message_id:
-                                    await discord_gateway.rest.edit_message(
-                                        connection.channel_id, connection.status_message_id, content
-                                    )
-                                else:
-                                    connection.status_message_id = (
-                                        await discord_gateway.rest.create_message(
-                                            connection.channel_id, content
-                                        )
-                                    )
-                                connection.last_sequence += 1
-                                connection.last_heartbeat_at = datetime.now(UTC)
-                                connection.last_status_payload = json.dumps(
-                                    status, separators=(",", ":")
-                                )
-                                connection.updated_at = datetime.now(UTC)
-                            except Exception:
-                                log.warning("Could not publish one Discord status message safely.")
+                            snapshot: dict[str, object] = {
+                                "state": status.get("state", "unknown"),
+                                "players": status.get("players", {}),
+                                "public": status.get("public", {}),
+                            }
+                            connection.last_sequence += 1
+                            relay_connection_id = connection.relay_connection_id or connection.id
+                            await relay_connector.send_heartbeat(relay_connection_id)
+                            await relay_connector.send_status(
+                                relay_connection_id,
+                                connection.last_sequence,
+                                snapshot,
+                            )
+                            connection.last_heartbeat_at = datetime.now(UTC)
+                            connection.last_relay_heartbeat_at = datetime.now(UTC)
+                            connection.last_status_payload = json.dumps(
+                                status, separators=(",", ":")
+                            )
+                            connection.updated_at = datetime.now(UTC)
                         db.commit()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("Could not process Discord status publishing")
-            await asyncio.sleep(60)
+                log.exception("Could not process Discord relay status publishing")
+            try:
+                await asyncio.wait_for(relay_wakeup.wait(), timeout=60)
+                relay_wakeup.clear()
+            except TimeoutError:
+                pass
 
     async def handle_discord_interaction(interaction: DiscordInteraction) -> DiscordReply:
         """Authenticate every command against a confirmed profile connection."""
@@ -1124,7 +1210,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         nonlocal metrics_task, update_task, player_session_task, notification_task
-        nonlocal discord_status_task, discord_task, discord_gateway
+        nonlocal discord_status_task, relay_connector, relay_client
         engine = factory.kw["bind"]
         Base.metadata.create_all(engine)
         with factory() as db:
@@ -1171,22 +1257,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         metrics_task = asyncio.create_task(metrics_loop())
         player_session_task = asyncio.create_task(manager.subscribe(track_player_sessions))
         notification_task = asyncio.create_task(notification_loop())
-        configuration = discord_configuration(config)
-        if configuration["bot_ready"]:
+        configuration = relay_configuration(config)
+        if configuration["configured"]:
             try:
-                assert config.discord_application_id is not None
-                assert config.discord_bot_token is not None
-                discord_gateway = DiscordGateway(
-                    validate_application_id(config.discord_application_id),
-                    config.discord_bot_token,
-                    handle_discord_interaction,
-                    logger=log,
+                relay_client = RelayClient(config, relay_identity)
+                try:
+                    relay_client.register_installation()
+                except RelayError:
+                    log.warning("Discord relay registration will retry with the next pairing.")
+                relay_connector = RelayConnector(
+                    config,
+                    relay_identity,
+                    relay_event,
                 )
-                discord_task = discord_gateway.start()
-                discord_status_task = asyncio.create_task(discord_status_loop())
-                log.info("Discord status bridge started in outbound Gateway mode.")
-            except DiscordConfigurationError:
-                log.warning("Discord status bridge is configured but could not start safely.")
+                relay_connector.start()
+                discord_status_task = asyncio.create_task(relay_status_loop())
+                log.info("Discord host connector started in central relay mode.")
+            except RelayError:
+                log.warning("Discord relay is configured but could not start safely.")
+        elif config.discord_bot_token:
+            log.warning(
+                "BLOCKSTEAD_DISCORD_BOT_TOKEN is deprecated and ignored; configure "
+                "BLOCKSTEAD_DISCORD_RELAY_URL instead."
+            )
         # A first-ever start has nothing to announce, so the build that is
         # already running is recorded quietly. Anything different arriving later
         # is a real update and is announced once the owner sees it.
@@ -1227,10 +1320,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         player_session_task = None
         notification_task = None
         discord_status_task = None
-        if discord_gateway is not None:
-            await discord_gateway.stop()
-        discord_gateway = None
-        discord_task = None
+        if relay_connector is not None:
+            await relay_connector.stop()
+        relay_connector = None
+        if relay_client is not None:
+            relay_client.close()
+        relay_client = None
         await scheduler.close()
         await manager.close()
         await http_client.aclose()
@@ -1942,11 +2037,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "duration_ms": record.duration_ms,
             "sha256": None if viewer else record.sha256,
             "included_paths": (
-                []
-                if viewer
-                else json.loads(record.included_paths)
-                if record.included_paths
-                else []
+                [] if viewer else json.loads(record.included_paths) if record.included_paths else []
             ),
             "archive_available": False if viewer else archive_available,
             "result": redact(record.result) if viewer else record.result,
@@ -2009,8 +2100,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         )
         try:
-            password_valid = admin is not None and not admin.disabled and verify_password(
-                admin.password_hash, payload.password
+            password_valid = (
+                admin is not None
+                and not admin.disabled
+                and verify_password(admin.password_hash, payload.password)
             )
         except PasswordHashError as exc:
             log.error("The stored administrator password hash could not be verified")
@@ -2501,9 +2594,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/v1/profiles/{profile_id}/removal-review")
-    def profile_removal_review(
-        profile_id: str, request: Request, db: Db
-    ) -> dict[str, object]:
+    def profile_removal_review(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
         profile = db.get(Profile, profile_id)
         if profile is None:
@@ -2592,9 +2683,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         local_backup_directory = cast(str, removal["local_backup_directory"])
         external_backup_directories = cast(list[str], removal["external_backup_directories"])
         external_note = (
-            " Separate backup copies were kept at "
-            + ", ".join(external_backup_directories)
-            + "."
+            " Separate backup copies were kept at " + ", ".join(external_backup_directories) + "."
             if external_backup_directories
             else ""
         )
@@ -3815,8 +3904,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         java_executable = (
             runtime.path
-            if runtime is not None
-            and payload.target_distribution in {"forge", "quilt", "neoforge"}
+            if runtime is not None and payload.target_distribution in {"forge", "quilt", "neoforge"}
             else None
         )
         try:
@@ -3877,8 +3965,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     category="saved_setup",
                     result="success",
                     safe_detail=(
-                        f"Created protected saved setup variant {profile.name}; "
-                        "source retained"
+                        f"Created protected saved setup variant {profile.name}; source retained"
                     ),
                 )
             )
@@ -4229,9 +4316,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return read_extensions(directory, profile.distribution).model_dump()
 
     @app.get("/api/v1/profiles/{profile_id}/shared-map")
-    async def profile_shared_map(
-        profile_id: str, request: Request, db: Db
-    ) -> dict[str, object]:
+    async def profile_shared_map(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         current(request, db)
         profile = db.get(Profile, profile_id)
         if profile is None:
@@ -4239,9 +4324,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         directory = profile_directory(profile_id, db)
         view = read_shared_map(directory, profile.distribution)
         snapshot = manager.snapshot()
-        running = (
-            app.state.active_profile_id == profile.id and snapshot["state"] == "RUNNING"
-        )
+        running = app.state.active_profile_id == profile.id and snapshot["state"] == "RUNNING"
         if not running:
             health = {
                 "state": "not_running",
@@ -4296,9 +4379,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "STOPPED",
             "CRASHED",
         }:
-            raise HTTPException(
-                409, "Stop this server before changing squaremap's render profile."
-            )
+            raise HTTPException(409, "Stop this server before changing squaremap's render profile.")
         try:
             result = await asyncio.to_thread(
                 apply_low_resource_profile,
@@ -5941,6 +6022,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 path,
                 data_dir=config.data_dir,
                 profile_id=profile.id,
+                display_roots=display_roots(),
             )
         except FilePathError as exc:
             raise HTTPException(404, str(exc)) from exc
@@ -5961,6 +6043,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 path,
                 data_dir=config.data_dir,
                 profile_id=profile.id,
+                display_roots=display_roots(),
             )
         except FilePathError as exc:
             raise HTTPException(404, str(exc)) from exc
@@ -6892,9 +6975,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/v1/profiles/{profile_id}/world-care/cleanup-plan")
-    def review_world_cleanup(
-        profile_id: str, request: Request, db: Db
-    ) -> dict[str, object]:
+    def review_world_cleanup(profile_id: str, request: Request, db: Db) -> dict[str, object]:
         """Build an exact, short-lived review for safe private-data cleanup."""
 
         current(request, db)
@@ -7102,11 +7183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 admin_id=admin.id,
                 profile_id=profile.id,
                 category="backup_destination_check",
-                result=(
-                    "success"
-                    if all(destination_available)
-                    else "warning"
-                ),
+                result=("success" if all(destination_available) else "warning"),
                 safe_detail=(
                     f"Tested {len(payloads)} backup destination(s) with private temporary "
                     "write/read/remove evidence"
@@ -7442,9 +7519,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "recovery": {
                 "entries": recovery,
                 "total_bytes": sum(
-                    size
-                    for entry in recovery
-                    if isinstance((size := entry.get("size_bytes")), int)
+                    size for entry in recovery if isinstance((size := entry.get("size_bytes")), int)
                 ),
             },
             "cleanup": {
@@ -8413,6 +8488,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
             "disk": {"total_bytes": disk.total, "used_bytes": disk.used, "percent": disk.percent},
             "process": process,
+            "storage": {
+                "data_dir": config.host_data_dir_display or str(config.data_dir),
+                "server_root": config.host_server_root_display or str(config.server_root),
+            },
         }
 
     async def diagnostics_payload(
@@ -8574,7 +8653,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Expose safe Discord app readiness without returning the bot token."""
 
         owner = require_role(current(request, db)[0])
-        configuration = discord_configuration(config)
+        configuration = {
+            **discord_configuration(config),
+            **relay_configuration(config),
+            "relay_online": relay_connector.connected if relay_connector is not None else False,
+            "legacy_token_present": bool(config.discord_bot_token),
+        }
         pairings = db.scalars(
             select(DiscordPairing)
             .where(DiscordPairing.admin_id == owner.id)
@@ -8589,8 +8673,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             **configuration,
             "pairings": [
-                discord_pairing_payload(item, db.get(Profile, item.profile_id))
-                for item in pairings
+                discord_pairing_payload(item, db.get(Profile, item.profile_id)) for item in pairings
             ],
             "connections": [
                 discord_connection_payload(item, db.get(Profile, item.profile_id))
@@ -8603,11 +8686,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: DiscordPairingCreateRequest, request: Request, db: Db
     ) -> dict[str, object]:
         owner = mutation(request, db)
-        configuration = discord_configuration(config)
-        if not configuration["bot_ready"]:
+        configuration = {
+            **discord_configuration(config),
+            **relay_configuration(config),
+        }
+        if not configuration["configured"] and not config.discord_bot_token:
             raise HTTPException(
                 409,
-                "Configure the Discord application ID and bot token before creating a pairing.",
+                "Configure the Discord relay URL and start the host connector before "
+                "creating a pairing.",
+            )
+        if configuration["configured"] and relay_client is None:
+            raise HTTPException(
+                503, "The Blockstead host is not connected to the Discord relay yet."
             )
         profile = db.get(Profile, payload.profile_id)
         if profile is None:
@@ -8637,6 +8728,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             code_hash=digest(code),
             expires_at=now + timedelta(minutes=10),
         )
+        if relay_client is not None:
+            try:
+                remote = relay_client.register_pairing(profile.id, profile.name, code)
+            except RelayError as exc:
+                raise HTTPException(
+                    503, "The Discord relay is unavailable; try again shortly."
+                ) from exc
+            remote_id = remote.get("id")
+            if not isinstance(remote_id, str):
+                raise HTTPException(503, "The Discord relay returned an invalid pairing response.")
+            pairing.relay_pairing_id = remote_id
         db.add(pairing)
         db.add(
             AuditEvent(
@@ -8657,9 +8759,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/api/v1/discord/pairings/{pairing_id}/confirm")
-    def confirm_discord_pairing(
-        pairing_id: str, request: Request, db: Db
-    ) -> dict[str, object]:
+    def confirm_discord_pairing(pairing_id: str, request: Request, db: Db) -> dict[str, object]:
         owner = mutation(request, db)
         pairing = db.get(DiscordPairing, pairing_id)
         if pairing is None or pairing.admin_id != owner.id:
@@ -8672,9 +8772,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 pairing.status = "expired"
                 db.commit()
             raise HTTPException(409, "That pairing is no longer awaiting confirmation.")
-        configured_app = config.discord_application_id
-        if not configured_app or pairing.claimed_application_id != configured_app.strip():
-            raise HTTPException(409, "The pairing was claimed by a different Discord application.")
+        legacy_pairing = relay_client is None and bool(config.discord_bot_token)
+        if not legacy_pairing and (relay_client is None or not pairing.relay_pairing_id):
+            raise HTTPException(
+                503, "The Blockstead host is not connected to the Discord relay yet."
+            )
         if not all(
             isinstance(value, str) and value
             for value in (
@@ -8705,6 +8807,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "That Discord channel is already assigned to another Blockstead profile. "
                 "Use a separate channel for each Minecraft server.",
             )
+        relay_connection_id: str | None = None
+        if not legacy_pairing:
+            try:
+                remote = relay_client.confirm_pairing(pairing.relay_pairing_id)
+            except RelayError as exc:
+                raise HTTPException(
+                    503, "The Discord relay could not confirm this pairing."
+                ) from exc
+            relay_connection_id = remote.get("id")
+            if not isinstance(relay_connection_id, str):
+                raise HTTPException(
+                    503, "The Discord relay returned an invalid connection response."
+                )
         if connection is None:
             connection = DiscordConnection(
                 admin_id=owner.id,
@@ -8715,6 +8830,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 owner_user_id=pairing.claimed_user_id,
                 authorized_user_ids=json.dumps([pairing.claimed_user_id]),
                 authorized_role_ids=pairing.claimed_role_ids or "[]",
+                relay_connection_id=relay_connection_id,
             )
             db.add(connection)
             db.flush()
@@ -8727,6 +8843,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             connection.authorized_user_ids = json.dumps([pairing.claimed_user_id])
             connection.authorized_role_ids = pairing.claimed_role_ids or "[]"
             connection.enabled = True
+            connection.relay_connection_id = relay_connection_id
             connection.updated_at = datetime.now(UTC)
         pairing.status = "confirmed"
         pairing.confirmed_at = datetime.now(UTC)
@@ -8755,6 +8872,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "That Discord connection was not found.")
         if payload.enabled is None and payload.publish_address is None:
             raise HTTPException(422, "Provide an enabled or publish_address change.")
+        if relay_client is None and not config.discord_bot_token:
+            raise HTTPException(
+                503, "The Blockstead host is not connected to the Discord relay yet."
+            )
+        changes = {
+            key: value
+            for key, value in {
+                "enabled": payload.enabled,
+                "publish_address": payload.publish_address,
+            }.items()
+            if value is not None
+        }
+        if relay_client is not None and connection.relay_connection_id:
+            try:
+                relay_client.update_connection(connection.relay_connection_id, **changes)
+            except RelayError as exc:
+                raise HTTPException(
+                    503, "The Discord relay could not update this connection."
+                ) from exc
         if payload.enabled is not None:
             connection.enabled = payload.enabled
         if payload.publish_address is not None:
@@ -8779,6 +8915,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         connection = db.get(DiscordConnection, connection_id)
         if connection is None or connection.admin_id != owner.id:
             raise HTTPException(404, "That Discord connection was not found.")
+        if relay_client is None and not config.discord_bot_token:
+            raise HTTPException(
+                503, "The Blockstead host is not connected to the Discord relay yet."
+            )
+        if relay_client is not None and connection.relay_connection_id:
+            try:
+                relay_client.revoke_connection(connection.relay_connection_id)
+            except RelayError as exc:
+                raise HTTPException(
+                    503, "The Discord relay could not revoke this connection."
+                ) from exc
         connection.enabled = False
         connection.updated_at = datetime.now(UTC)
         db.add(
@@ -8888,9 +9035,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "detail": item.detail,
                 "created_at": item.created_at.astimezone(UTC).isoformat(),
                 "delivered_at": (
-                    item.delivered_at.astimezone(UTC).isoformat()
-                    if item.delivered_at
-                    else None
+                    item.delivered_at.astimezone(UTC).isoformat() if item.delivered_at else None
                 ),
             }
             for item in db.scalars(
@@ -8931,18 +9076,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             status_code, detail = await send_discord(validate_webhook_url(secret.value), payload)
         except (WebhookValidationError, OSError, httpx.HTTPError) as exc:
-            status_code, detail = 0, (
-                str(exc)
-                if isinstance(exc, WebhookValidationError)
-                else "The test delivery failed before it was accepted."
+            status_code, detail = (
+                0,
+                (
+                    str(exc)
+                    if isinstance(exc, WebhookValidationError)
+                    else "The test delivery failed before it was accepted."
+                ),
             )
         delivery.attempts = 1
         delivery.response_status = status_code or None
         delivery.detail = detail
         delivery.status = "delivered" if 200 <= status_code < 300 else "failed"
-        delivery.delivered_at = (
-            datetime.now(UTC) if delivery.status == "delivered" else None
-        )
+        delivery.delivered_at = datetime.now(UTC) if delivery.status == "delivered" else None
         db.commit()
         return {
             "status": delivery.status,

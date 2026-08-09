@@ -341,6 +341,7 @@ class DiscordPairing(Base):
     admin_id: Mapped[str] = mapped_column(ForeignKey("administrators.id", ondelete="CASCADE"))
     profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
     code_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    relay_pairing_id: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
     status: Mapped[str] = mapped_column(String(24), default="pending")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     claimed_application_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -367,6 +368,7 @@ class DiscordConnection(Base):
     profile_id: Mapped[str] = mapped_column(
         ForeignKey("profiles.id", ondelete="CASCADE"), unique=True
     )
+    relay_connection_id: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
     application_id: Mapped[str] = mapped_column(String(32))
     guild_id: Mapped[str] = mapped_column(String(32))
     channel_id: Mapped[str] = mapped_column(String(32))
@@ -378,6 +380,9 @@ class DiscordConnection(Base):
     status_message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_sequence: Mapped[int] = mapped_column(Integer, default=0)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_relay_heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     last_status_payload: Mapped[str] = mapped_column(Text, default="{}")

@@ -134,6 +134,27 @@ def resolve_target(root: CategoryRoot, relative: str) -> Path:
     return resolved
 
 
+def host_display_path(path: Path, display_roots: tuple[tuple[Path, str | None], ...]) -> str:
+    """The path to show an owner as "where this is on your computer."
+
+    Ordinarily this is just the real path: a native installation's view of
+    its files already is the host's view. A container deployment sees its
+    own filesystem instead, so ``display_roots`` lets the app substitute the
+    host-side location a root is bind-mounted to. Never used to open, read,
+    or write anything -- display only.
+    """
+
+    for internal_root, display_root in display_roots:
+        if not display_root:
+            continue
+        try:
+            relative = path.relative_to(internal_root)
+        except ValueError:
+            continue
+        return str(PurePosixPath(display_root) / relative.as_posix())
+    return str(path)
+
+
 def is_editable_text(category: FileCategory, name: str, size: int) -> tuple[bool, bool]:
     """Returns (viewable, editable) for a text preview of a file this size."""
 

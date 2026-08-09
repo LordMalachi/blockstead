@@ -3,10 +3,10 @@
 **Priority:** Next development priority after the current notification/webhook
 foundation is complete.
 
-**Status:** Implementation underway. The first host-side bridge, pairing API,
-Gateway command path, and dashboard controls are now in the working tree. The
-remaining live step is installing the bot in the intended Discord guild and
-confirming the first channel pairing.
+**Status:** Central relay implementation underway. The relay service, outbound
+host connector, migration, dashboard wiring, Docker packaging, and isolation
+tests are in the working tree. Live Oracle provisioning and the production
+token rotation remain deployment steps.
 
 **Target:** Give an owner a paired Discord app that reports the selected
 Blockstead server's latest trustworthy status, current player count, and
@@ -15,25 +15,22 @@ the host computer.
 
 ## Product decision
 
-The first implementation should use a **self-hosted Discord bridge on the
-Blockstead host**:
+The implementation uses a **shared always-online relay**:
 
 ```text
 Discord guild
-    │ slash commands over Discord Gateway
+    │ slash commands and status messages
     ▼
-Blockstead Discord bridge ── local authenticated IPC ── Blockstead
-    │
-    └──────── outbound Gateway connection to Discord
+Central Discord relay ── outbound secure WebSocket ── Blockstead host
+    │                                  │
+    └── bot token, Discord REST/Gateway   └── installation-scoped status only
 ```
 
-The host initiates the connection to Discord. It does not need a public DNS
-name, an inbound HTTP endpoint, port forwarding, or a router change. Discord
-supports bots connecting through a persistent Gateway WebSocket, while
-incoming webhooks are intended for one-way posting and do not provide command
-handling. See the [Discord bot documentation](https://docs.discord.com/developers/platform/bots),
-[interactions documentation](https://docs.discord.com/developers/platform/interactions),
-and [webhook documentation](https://docs.discord.com/developers/platform/webhooks).
+The host initiates the connection to the relay. It does not need a public DNS
+name, an inbound HTTP endpoint, port forwarding, or a router change. The relay
+holds the bot token and stays online when zero hosts are connected. Discord's
+Gateway and REST connections are relay-owned; the host never receives the bot
+token.
 
 The current outbound Discord webhook work is useful groundwork for safe payloads,
 secret handling, queueing, and retries. It is not by itself the bot connection:
@@ -45,38 +42,40 @@ command channel.
 - Discord application settings are configured for guild installation with the
   `bot` and `applications.commands` scopes and only View Channels, Send
   Messages, and Embed Links permissions. Privileged Gateway intents remain off.
-- Blockstead reads `BLOCKSTEAD_DISCORD_APPLICATION_ID`,
-  `BLOCKSTEAD_DISCORD_PUBLIC_KEY`, and the host-only
-  `BLOCKSTEAD_DISCORD_BOT_TOKEN`. The dashboard reports only configured/not
-  configured state; it never returns the token.
-- The bridge currently runs in the Blockstead host process and keeps its
-  outbound Gateway connection there. A separate sidecar plus authenticated
-  local IPC remains an optional packaging improvement, not a reason to expose
-  an inbound endpoint.
-- The code now creates one-time hashed pairing codes, stores pending claims,
-  requires owner confirmation, authorizes the paired user/roles, registers
-  guild-scoped read-only commands, edits one bot-authored status message, and
-  supports revocation and address-sharing opt-in.
-- The live Gateway connection was verified with the configured Discord app;
-  no credential material was printed or committed. The test suite covers the
-  pairing boundary, token redaction, migrations, and command parsing.
+- Blockstead reads application metadata plus `BLOCKSTEAD_DISCORD_RELAY_URL`,
+  an installation ID, and a per-installation connector secret. The old
+  `BLOCKSTEAD_DISCORD_BOT_TOKEN` setting is migration-only and ignored.
+- `relay/` contains the central FastAPI/WebSocket service. It owns the Discord
+  Gateway, guild-scoped command registration, REST status messages, and a
+  SQLite metadata store. Latest snapshots stay in memory and are never
+  retained as a status history.
+- Blockstead hosts use an outbound reconnecting WebSocket. The relay accepts
+  only the installation's credential and only routes that installation's
+  profiles. Status packets are bounded, versioned, and sequence-checked.
+- One-time hashed pairing codes, exact application/guild/channel/user claims,
+  owner confirmation, one-profile/one-channel enforcement, revocation, stale
+  marking, and address-sharing opt-in are implemented.
+- The dashboard distinguishes central bot/Gateway availability from the host
+  connector and last host heartbeat. The relay bot remains online with zero
+  connected hosts.
 
 ### Host setup
 
-1. Keep the bot token in a protected host secret store or ignored `.env`; do
-   not put it in frontend configuration, screenshots, logs, or support files.
-2. Start Blockstead and open **System → Discord server status**.
+1. Deploy the relay and store the replacement bot token only in its protected
+   `relay.env` on the relay VM.
+2. Set the host's `BLOCKSTEAD_DISCORD_RELAY_URL` and let Blockstead generate a
+   per-installation identity in its data directory.
 3. Use **Install bot in Discord** and select the intended guild. Discord's
    install screen should show only the configured bot and command scopes with
-   the three minimal channel permissions.
-4. Select a Blockstead profile, create a pairing code, and run
-   `/blockstead pair code:<code>` in the intended channel.
-5. Confirm the exact guild/channel/user claim in Blockstead. The status message
-   will then be created and updated by the host bridge.
+   minimal channel permissions.
+4. In Blockstead, select a profile and create a pairing code. In the chosen
+   channel, run `/blockstead setup`, then `/blockstead pair code:<code>`.
+5. Confirm the exact guild/channel/user claim in Blockstead. The relay creates
+   one status message and edits it as the host publishes updates.
 
-The bot does not yet need an interactions endpoint URL because the host uses
-the outbound Gateway. The public key remains configured for future signed HTTP
-interaction support, but it is not a substitute for the bot token.
+The bot does not need an interactions endpoint URL because the relay uses the
+outbound Gateway. The public key remains application metadata; it is not a
+substitute for the relay-only bot token.
 
 ### Avatar asset
 
@@ -85,20 +84,16 @@ prepared for Discord's application icon upload:
 
 `frontend/public/icons/cheese-maid-discord.png`
 
-### Why self-hosted first
+### Why the relay is shared
 
-- The host already owns the authoritative server state and public-IP lookup.
-- Status data and the public IP do not need to pass through a Blockstead cloud
-  relay.
-- The design works behind NAT, CGNAT, changing residential IPs, and absent DNS
-  as long as the host can make outbound HTTPS/WebSocket connections.
-- A shared bot service would introduce a new multi-tenant system that must
-  isolate installations, guilds, profiles, tokens, and IP addresses.
-
-A future shared relay may be considered if installation complexity becomes a
-real problem. It is not part of the first project. In particular, do not assume
-that the same bot token can be independently run by many hosts; a shared bot
-application requires a deliberate relay/sharding design.
+- Discord sees one always-online bot, even when no Minecraft hosts are online.
+- Each host receives an installation identity and connector secret; the relay
+  never uses a global host credential or broadcasts all connected profiles.
+- Public IP and status data are sent only from a host to the relay, then only to
+  the exact paired application/guild/channel.
+- Oracle is best-effort hosting. Docker restart supervision, reconnecting host
+  connectors, heartbeats, and stale status labels are required because the VM
+  may restart or be reclaimed.
 
 ## Pairing and authorization model
 
@@ -165,23 +160,22 @@ connections should receive a generic “not paired or not authorized” response
 They should not reveal whether a Blockstead installation, profile, or public IP
 exists.
 
-### Local bridge authentication
+### Relay connector authentication
 
-The bridge should communicate with Blockstead through a Unix domain socket on a
-native Linux install, or an authenticated loopback channel for the Docker
-deployment. The browser must never receive the Discord bot token or the bridge
-credential.
+The host connector uses an outbound secure WebSocket with an
+installation-scoped secret. The relay stores only a hash of that secret. The
+host also uses the relay CA/certificate setting when configured, so deployments
+can pin a private CA or a specific certificate bundle.
 
-The bridge credential should be random, installation-scoped, stored with the
-same local secret protections as other app secrets, rotatable, and revocable.
-The local API must still enforce the connection ID and profile ID on every
-request; possession of a local credential must not create a general Blockstead
-admin channel.
+The connector sends only the selected profile's bounded status snapshot,
+sequence number, and heartbeat. It accepts only refresh, pairing, connection,
+and revocation events for its own installation. The dashboard and browser never
+receive the bot token or connector secret.
 
-If a future relay is introduced, replace local IPC with an outbound HTTPS
-connector using a per-installation credential, signed requests with timestamp
-and replay protection, bounded payloads, rotation, and strict tenant scoping.
-Do not make the relay a trust shortcut.
+The relay control API requires the same installation credential for pairing,
+confirmation, sharing-toggle, and revocation changes. The Discord side never
+uses a host credential; every lookup is keyed by application, guild, channel,
+and active connection.
 
 ## Status contract
 
@@ -304,26 +298,26 @@ authorization, player-impact confirmations, and a recovery story.
 
 ### Phase 0 — decisions and boundary tests
 
-- Confirm self-hosted bridge as the MVP deployment model.
+- Confirm shared relay as the MVP deployment model.
 - Define the connection, pairing-attempt, status-snapshot, and command-audit
   records without reusing a generic webhook record for bot identity.
-- Decide native service versus Docker sidecar packaging.
+- Decide relay VM and Docker packaging, with the host connector embedded in
+  Blockstead.
 - Write security tests for pairing expiry, guild/channel/user scoping, token
   redaction, stale status, and profile deletion/revocation.
 
 ### Phase 1 — pairing and connection management
 
-- Add the Blockstead settings flow to generate, confirm, rotate, disable, and
-  revoke one connection per selected profile.
-- Add the bridge's Discord application configuration without exposing the bot
-  token to the frontend.
+- Add the relay settings flow to generate, confirm, disable, and revoke one
+  connection per selected profile.
+- Keep the Discord application token only in the relay deployment.
 - Implement `/blockstead pair` pending claims and owner confirmation.
 - Show the paired guild, channel, authorized principals, last heartbeat, and
   last delivery result in the dashboard.
 
 ### Phase 2 — host publisher and status message
 
-- Build the host-side bridge process and authenticated local IPC.
+- Build the outbound host connector and authenticated relay protocol.
 - Subscribe to lifecycle/player/status events and publish the versioned
   snapshot with debouncing, heartbeat, retries, and stale handling.
 - Create or update one status message per connection.
@@ -340,8 +334,12 @@ authorization, player-impact confirmations, and a recovery story.
 
 ### Phase 4 — reliability and release hardening
 
-- Test reconnects, duplicate events, Discord rate limits, host sleep, changing
-  public IP, server crashes, profile deletion, token rotation, and clock skew.
+- Test relay/host reconnects, duplicate events, Discord rate limits, host sleep,
+  changing public IP, server crashes, profile deletion, token rotation, and
+  clock skew.
+- Deploy the relay on one Oracle Always Free Linux VM with restart supervision,
+  restricted firewall rules, IP TLS certificate renewal, health checks, budget
+  alerts, and a documented deletion procedure.
 - Add a manual setup/revocation guide and a support report section that omits
   secrets and private network details unless explicitly requested by the owner.
 - Verify native install, Docker, backend, frontend, and real Discord sandbox
@@ -366,11 +364,11 @@ authorization, player-impact confirmations, and a recovery story.
 
 ## Deliberately deferred
 
-- A hosted multi-tenant relay or central database of household IP addresses.
+- Additional relay regions or a high-availability cluster.
 - Automatic DNS, Dynamic DNS, router configuration, port forwarding, or VPN
   provisioning.
 - Start/stop/restart, console, backup/restore, file editing, settings, or player
   moderation through Discord.
 - Publishing player names, chat, raw logs, exact host details, or backup state.
-- Supporting multiple profiles per Discord channel before one profile per
-  connection is reliable and understandable.
+- Supporting multiple profiles per Discord channel; V1 deliberately requires
+  one channel per profile.
