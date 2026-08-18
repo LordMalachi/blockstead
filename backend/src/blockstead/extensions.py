@@ -8,8 +8,10 @@ prove some incompatibilities, but it can never prove compatibility.
 import hashlib
 import json
 import zipfile
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
 from typing import Literal
 
 import yaml
@@ -24,6 +26,12 @@ from .distributions import DISTRIBUTIONS
 
 MAX_JARS = 200
 MAX_METADATA_BYTES = 1_000_000
+MAX_INVENTORY_CACHE_ENTRIES = 128
+
+_DirectorySignature = tuple[tuple[str, int, int, int, int], ...]
+_InventoryKey = tuple[str, str, _DirectorySignature | None, _DirectorySignature | None]
+_inventory_cache: OrderedDict[_InventoryKey, "ExtensionsView"] = OrderedDict()
+_inventory_cache_lock = RLock()
 
 Kind = Literal["paper-plugin", "fabric-mod", "quilt-mod", "neoforge-mod", "forge-mod", "unknown"]
 
@@ -368,6 +376,67 @@ def _collect_warnings(distribution: str, entries: list[ExtensionEntry]) -> list[
     return warnings
 
 
+def _directory_signature(folder: Path) -> _DirectorySignature | None:
+    """Return a cheap fingerprint for the jars relevant to an inventory."""
+    try:
+        if folder.is_symlink():
+            return (("<symlink>", 0, 0, 0, 0),)
+        if not folder.is_dir():
+            return (("<missing>", 0, 0, 0, 0),)
+        directory = folder.stat()
+        records: list[tuple[str, int, int, int, int]] = [
+            (
+                "<directory>",
+                directory.st_dev,
+                directory.st_ino,
+                directory.st_size,
+                directory.st_mtime_ns,
+            )
+        ]
+        for entry in folder.iterdir():
+            if not entry.is_file() or entry.is_symlink() or entry.suffix.casefold() != ".jar":
+                continue
+            stat = entry.stat()
+            records.append((entry.name, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns))
+        return tuple(sorted(records))
+    except OSError:
+        # An unreadable directory must be rescanned on the next request rather
+        # than turning a transient filesystem error into cached evidence.
+        return None
+
+
+def _inventory_key(
+    server_directory: Path, distribution: str, folder: Path, disabled: Path
+) -> _InventoryKey:
+    return (
+        str(server_directory),
+        distribution,
+        _directory_signature(folder),
+        _directory_signature(disabled),
+    )
+
+
+def _cached_inventory(key: _InventoryKey) -> ExtensionsView | None:
+    if key[2] is None or key[3] is None:
+        return None
+    with _inventory_cache_lock:
+        cached = _inventory_cache.get(key)
+        if cached is None:
+            return None
+        _inventory_cache.move_to_end(key)
+        return cached.model_copy(deep=True)
+
+
+def _store_inventory(key: _InventoryKey, view: ExtensionsView) -> None:
+    if key[2] is None or key[3] is None:
+        return
+    with _inventory_cache_lock:
+        _inventory_cache[key] = view.model_copy(deep=True)
+        _inventory_cache.move_to_end(key)
+        while len(_inventory_cache) > MAX_INVENTORY_CACHE_ENTRIES:
+            _inventory_cache.popitem(last=False)
+
+
 def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView:
     # Active readable entries are the only inventory evidence that may unlock
     # extension command packs; disabled entries are installer state only.
@@ -395,9 +464,13 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
         )
     folder = server_directory / info.extension_directory
     disabled = server_directory / f"{info.extension_directory}-disabled"
+    key = _inventory_key(server_directory, distribution, folder, disabled)
+    cached = _cached_inventory(key)
+    if cached is not None:
+        return cached
     disabled_entries = [inspect_extension_jar(jar) for jar in _list_jars(disabled)[:MAX_JARS]]
     if not folder.is_dir():
-        return ExtensionsView(
+        view = ExtensionsView(
             directory=info.extension_directory,
             present=False,
             entries=[],
@@ -405,9 +478,12 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
             warnings=[],
             truncated=False,
         )
+        if _inventory_key(server_directory, distribution, folder, disabled) == key:
+            _store_inventory(key, view)
+        return view
     jars = _list_jars(folder)
     entries = [inspect_extension_jar(jar) for jar in jars[:MAX_JARS]]
-    return ExtensionsView(
+    view = ExtensionsView(
         directory=info.extension_directory,
         present=True,
         entries=entries,
@@ -415,6 +491,9 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
         warnings=_collect_warnings(distribution, entries),
         truncated=len(jars) > MAX_JARS,
     )
+    if _inventory_key(server_directory, distribution, folder, disabled) == key:
+        _store_inventory(key, view)
+    return view
 
 
 def _list_jars(folder: Path) -> list[Path]:

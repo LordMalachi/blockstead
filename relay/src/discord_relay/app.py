@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -134,6 +134,9 @@ def render_status(connection: Connection, snapshot: dict[str, Any] | None) -> st
 
 
 class RelayRuntime:
+    refresh_cooldown_seconds = 15
+    max_refresh_entries = 10_000
+
     def __init__(self, settings: RelaySettings) -> None:
         self.settings = settings
         self.store = RelayStore(settings.database_path)
@@ -226,8 +229,20 @@ class RelayRuntime:
             key = (connection.id, interaction.user_id)
             previous = self.refreshes.get(key)
             now = datetime.now(UTC)
-            if previous is not None and (now - previous).total_seconds() < 15:
+            cutoff = now - timedelta(seconds=self.refresh_cooldown_seconds)
+            self.refreshes = {
+                entry_key: timestamp
+                for entry_key, timestamp in self.refreshes.items()
+                if timestamp >= cutoff
+            }
+            if (
+                previous is not None
+                and (now - previous).total_seconds() < self.refresh_cooldown_seconds
+            ):
                 return "Please wait a few seconds before requesting another refresh."
+            if len(self.refreshes) >= self.max_refresh_entries:
+                oldest = min(self.refreshes, key=self.refreshes.get)
+                self.refreshes.pop(oldest, None)
             self.refreshes[key] = now
             await self.send_host(
                 connection.installation_id, {"type": "refresh", "connection_id": connection.id}
@@ -332,6 +347,7 @@ def create_app(settings: RelaySettings | None = None) -> FastAPI:
             connection = runtime.store.update_connection(
                 connection_id,
                 payload.installation_id,
+                payload.connector_secret,
                 enabled=payload.enabled,
                 publish_address=payload.publish_address,
             )

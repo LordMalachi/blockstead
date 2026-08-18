@@ -8,7 +8,7 @@ python3 -c 'import venv, ensurepip' >/dev/null 2>&1 \
   || { echo "Python cannot create virtual environments here. On Ubuntu-based systems: sudo apt install python3-venv" >&2; exit 1; }
 python3 -m venv "$root/.venv"
 "$root/.venv/bin/python" -m pip install --upgrade pip
-"$root/.venv/bin/python" -m pip install -e "$root/backend[dev]"
+"$root/.venv/bin/python" -m pip install -e "$root/backend[dev]" -e "$root/relay[dev]"
 npm --prefix "$root/frontend" ci
 mkdir -p "$root/data"
 cp -n "$root/.env.example" "$root/.env" || true

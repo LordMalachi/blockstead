@@ -248,17 +248,18 @@ class RelayStore:
                 "SELECT * FROM pairings WHERE code_hash = ? AND status = 'pending'",
                 (digest(code),),
             ).fetchone()
-            if (
-                row is None
-                or row["claimed_at"] is not None
-                or self._dt(row["expires_at"]) is None
-                or self._dt(row["expires_at"]) <= now
-            ):
-                if row is not None:
-                    self._db.execute(
-                        "UPDATE pairings SET status = 'expired' WHERE id = ?", (row["id"],)
-                    )
-                    self._db.commit()
+            if row is None:
+                raise LookupError("pairing code is invalid or expired")
+            if row["claimed_at"] is not None:
+                # A duplicate Discord delivery or a second claimant must not
+                # invalidate the owner's already-claimed request.
+                raise LookupError("pairing code is invalid or expired")
+            expires_at = self._dt(row["expires_at"])
+            if expires_at is None or expires_at <= now:
+                self._db.execute(
+                    "UPDATE pairings SET status = 'expired' WHERE id = ?", (row["id"],)
+                )
+                self._db.commit()
                 raise LookupError("pairing code is invalid or expired")
             conflict = self._db.execute(
                 "SELECT 1 FROM connections WHERE application_id = ? AND guild_id = ? "
@@ -368,12 +369,17 @@ class RelayStore:
             return [self._connection(row) for row in rows]
 
     def update_connection(
-        self, connection_id: str, installation_id: str, **changes: object
+        self,
+        connection_id: str,
+        installation_id: str,
+        connector_secret: str,
+        **changes: object,
     ) -> Connection:
         allowed = {"enabled", "publish_address"}
         if set(changes) - allowed:
             raise ValueError("unsupported connection change")
         with self._lock, self._db:
+            self._check_installation(installation_id, connector_secret)
             row = self._db.execute(
                 "SELECT * FROM connections WHERE id = ? AND installation_id = ?",
                 (connection_id, installation_id),

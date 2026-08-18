@@ -2,6 +2,7 @@ import json
 import zipfile
 from pathlib import Path
 
+import blockstead.extensions as extensions
 from blockstead.extensions import read_extensions
 
 FABRIC_MOD = {
@@ -167,3 +168,30 @@ def test_missing_directory_is_calm(tmp_path: Path) -> None:
     view = read_extensions(server, "paper")
     assert view.directory == "plugins" and view.present is False
     assert view.entries == [] and view.warnings == []
+
+
+def test_unchanged_inventory_reuses_jar_metadata_and_invalidates_on_change(
+    tmp_path: Path, monkeypatch
+) -> None:
+    server = make_server(tmp_path, "plugins")
+    jar = server / "plugins" / "sample.jar"
+    write_jar(jar, {"plugin.yml": PLUGIN_YML})
+    calls = 0
+    inspect = extensions.inspect_extension_jar
+
+    def counted(path: Path):
+        nonlocal calls
+        calls += 1
+        return inspect(path)
+
+    monkeypatch.setattr(extensions, "inspect_extension_jar", counted)
+    first = read_extensions(server, "paper")
+    second = read_extensions(server, "paper")
+    assert calls == 1
+    assert first is not second
+    assert first.entries[0].identifier == second.entries[0].identifier
+
+    write_jar(jar, {"plugin.yml": PLUGIN_YML.replace("Essentials", "Changed")})
+    refreshed = read_extensions(server, "paper")
+    assert calls == 2
+    assert refreshed.entries[0].identifier == "Changed"

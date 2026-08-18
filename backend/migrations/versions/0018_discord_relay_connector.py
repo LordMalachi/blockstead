@@ -19,14 +19,19 @@ def upgrade() -> None:
         ["relay_pairing_id"],
         unique=True,
     )
-    op.add_column("discord_connections", sa.Column("relay_connection_id", sa.String(36), nullable=True))
+    op.add_column(
+        "discord_connections", sa.Column("relay_connection_id", sa.String(36), nullable=True)
+    )
     op.create_index(
         "uq_discord_connections_relay_id",
         "discord_connections",
         ["relay_connection_id"],
         unique=True,
     )
-    op.add_column("discord_connections", sa.Column("last_relay_heartbeat_at", sa.DateTime(timezone=True), nullable=True))
+    op.add_column(
+        "discord_connections",
+        sa.Column("last_relay_heartbeat_at", sa.DateTime(timezone=True), nullable=True),
+    )
 
 
 def downgrade() -> None:

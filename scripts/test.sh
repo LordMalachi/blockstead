@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export PYTHONPATH="$root/backend/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$root/backend/src:$root/relay/src${PYTHONPATH:+:$PYTHONPATH}"
 "$root/.venv/bin/python" -c 'import sys; assert sys.version_info[:2] == (3, 12), "Blockstead requires a Python 3.12 virtual environment; run ./scripts/bootstrap-dev.sh"'
-"$root/.venv/bin/ruff" check "$root/backend"
+"$root/.venv/bin/ruff" check "$root/backend" "$root/relay"
 "$root/.venv/bin/mypy" --config-file "$root/backend/pyproject.toml" "$root/backend/src"
-"$root/.venv/bin/pytest" "$root/backend"
+"$root/.venv/bin/pytest" "$root/backend" "$root/relay"
 npm --prefix "$root/frontend" run lint
 npm --prefix "$root/frontend" test
 npm --prefix "$root/frontend" run build

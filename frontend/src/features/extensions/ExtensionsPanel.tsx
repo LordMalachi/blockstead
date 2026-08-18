@@ -36,6 +36,9 @@ const SORT_OPTIONS = [
 ] as const;
 const MAX_CATALOG_OFFSET = 1000;
 const MAX_MANUAL_FILES = 20;
+const INVENTORY_STALE_TIME = 5_000;
+const CATALOG_STALE_TIME = 60_000;
+const SHARED_MAP_STALE_TIME = 5 * 60_000;
 
 export type CatalogSource = "modrinth" | "hangar" | "curseforge";
 
@@ -75,6 +78,8 @@ function VersionChooser({
     queryFn: () => api<{ versions: CatalogVersion[] }>(
       `/profiles/${profileId}/catalog/versions?source=${source}&project_id=${encodeURIComponent(projectId)}`,
     ),
+    staleTime: CATALOG_STALE_TIME,
+    refetchOnWindowFocus: false,
   });
 
   return <div className="version-drawer">
@@ -290,6 +295,8 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   const inventory = useQuery({
     queryKey: ["extensions", profileId],
     queryFn: () => api<ExtensionsView>(`/profiles/${profileId}/extensions`),
+    staleTime: INVENTORY_STALE_TIME,
+    refetchOnWindowFocus: false,
   });
   // Curated recommendations belong beside the existing catalog; their install
   // and version actions intentionally reuse the same verified workflow.
@@ -297,10 +304,14 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     queryKey: ["extension-recommendations", profileId],
     queryFn: () => api<ExtensionRecommendations>(`/profiles/${profileId}/extensions/recommendations`),
     enabled: inventory.data?.directory != null,
+    staleTime: CATALOG_STALE_TIME,
+    refetchOnWindowFocus: false,
   });
   const sharedMap = useQuery({
     queryKey: ["shared-map", profileId],
     queryFn: () => api<SharedMapView>(`/profiles/${profileId}/shared-map`),
+    staleTime: INVENTORY_STALE_TIME,
+    refetchOnWindowFocus: false,
   });
   const sharedMapVersions = useQuery({
     queryKey: ["shared-map-versions", profileId],
@@ -308,11 +319,15 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
       `/profiles/${profileId}/catalog/versions?source=modrinth&project_id=${SHARED_MAP_PROJECT_ID}`,
     ),
     enabled: inventory.data?.directory != null,
+    staleTime: SHARED_MAP_STALE_TIME,
+    refetchOnWindowFocus: false,
   });
   const curseforge = useQuery({
     queryKey: ["curseforge-settings"],
     queryFn: () => api<{ configured: boolean }>("/settings/curseforge"),
     enabled: source === "curseforge",
+    staleTime: SHARED_MAP_STALE_TIME,
+    refetchOnWindowFocus: false,
   });
   const catalogReady = source !== "curseforge" || curseforge.data?.configured === true;
   const categories = useQuery({
@@ -320,6 +335,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     queryFn: () => api<{ categories: string[] }>(`/profiles/${profileId}/catalog/categories?source=${source}`),
     enabled: inventory.data?.directory != null && catalogReady,
     staleTime: Infinity,
+    refetchOnWindowFocus: false,
   });
   const results = useQuery({
     queryKey: ["extension-search", profileId, source, searched, chosenCategories, sort, offset],
@@ -327,6 +343,8 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
       `/profiles/${profileId}/catalog/search?source=${source}&query=${encodeURIComponent(searched)}&categories=${encodeURIComponent(chosenCategories.join(","))}&sort=${sort}&offset=${offset}`,
     ),
     enabled: Boolean(searched) && catalogReady,
+    staleTime: CATALOG_STALE_TIME,
+    refetchOnWindowFocus: false,
   });
   const updates = useQuery({
     queryKey: ["extension-updates", profileId],

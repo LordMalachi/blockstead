@@ -503,6 +503,8 @@ def test_update_check_and_apply(
     world.mkdir()
     (world / "level.dat").write_bytes(b"world")
     old_hash = hashlib.sha512(b"old bytes").hexdigest()
+    new_jar = jar_bytes()
+    dependency_jar = jar_bytes()
 
     planned = PlannedFile(
         project_id="proj",
@@ -511,7 +513,7 @@ def test_update_check_and_apply(
         file_name="old-plugin-2.0.jar",
         url="https://cdn.example/new.jar",
         checksum_algorithm="sha512",
-        checksum=hashlib.sha512(b"https://cdn.example/new.jar").hexdigest(),
+        checksum=hashlib.sha512(new_jar).hexdigest(),
         required_by=None,
     )
     dependency = PlannedFile(
@@ -521,7 +523,7 @@ def test_update_check_and_apply(
         file_name="new-core-3.0.jar",
         url="https://cdn.example/core.jar",
         checksum_algorithm="sha512",
-        checksum=hashlib.sha512(b"https://cdn.example/core.jar").hexdigest(),
+        checksum=hashlib.sha512(dependency_jar).hexdigest(),
         required_by="old-plugin-2.0.jar",
     )
 
@@ -544,7 +546,7 @@ def test_update_check_and_apply(
         checksum: str | None,
     ) -> str:
         assert url in {"https://cdn.example/new.jar", "https://cdn.example/core.jar"}
-        raw = jar_bytes()
+        raw = new_jar if url.endswith("/new.jar") else dependency_jar
         (directory / file_name).write_bytes(raw)
         return hashlib.sha256(raw).hexdigest()
 
@@ -794,6 +796,7 @@ def test_install_downloads_planned_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, root = api
+    downloaded_jar = jar_bytes()
     planned = [
         PlannedFile(
             project_id="proj",
@@ -802,7 +805,7 @@ def test_install_downloads_planned_files(
             file_name="thing.jar",
             url="https://cdn.example/thing.jar",
             checksum_algorithm="sha512",
-            checksum=hashlib.sha512(b"downloaded").hexdigest(),
+            checksum=hashlib.sha512(downloaded_jar).hexdigest(),
             required_by=None,
         )
     ]
@@ -825,8 +828,8 @@ def test_install_downloads_planned_files(
         checksum_algorithm: str | None,
         checksum: str | None,
     ) -> str:
-        (directory / file_name).write_bytes(jar_bytes())
-        return "c" * 64
+        (directory / file_name).write_bytes(downloaded_jar)
+        return hashlib.sha256(downloaded_jar).hexdigest()
 
     monkeypatch.setattr("blockstead.app.plan_install", fake_plan)
     monkeypatch.setattr("blockstead.app.download_verified_file", fake_download)

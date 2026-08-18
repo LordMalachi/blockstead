@@ -97,3 +97,42 @@ def test_pairing_rejects_active_channel_conflicts() -> None:
             store.claim_pairing("CHANNEL2", APP, "guild-1", "channel-1", "user-2")
     finally:
         store.close()
+
+
+def test_duplicate_claim_does_not_expire_the_pending_confirmation() -> None:
+    store = RelayStore()
+    try:
+        pairing = store.register_pairing(
+            installation_id="installation-one",
+            connector_secret="a" * 32,
+            profile_id="profile-one",
+            profile_name="One",
+            code="DUPLICATE1",
+        )
+        claimed = store.claim_pairing("DUPLICATE1", APP, "guild-1", "channel-1", "user-1")
+        with pytest.raises(LookupError):
+            store.claim_pairing("DUPLICATE1", APP, "guild-1", "channel-1", "user-1")
+        confirmed = store.confirm_pairing(pairing.id, "installation-one", "a" * 32)
+        assert confirmed.channel_id == claimed.claimed_channel_id
+    finally:
+        store.close()
+
+
+def test_connection_changes_require_the_connector_secret() -> None:
+    store = RelayStore()
+    try:
+        connection = connected(
+            store, "installation-one", "a" * 32, "profile-one", "AUTHCHECK", "channel-1"
+        )
+        with pytest.raises(PermissionError):
+            store.update_connection(
+                connection.id, "installation-one", "b" * 32, publish_address=True
+            )
+        unchanged = store.connection(connection.id)
+        assert unchanged is not None and unchanged.publish_address is False
+        updated = store.update_connection(
+            connection.id, "installation-one", "a" * 32, publish_address=True
+        )
+        assert updated.publish_address is True
+    finally:
+        store.close()

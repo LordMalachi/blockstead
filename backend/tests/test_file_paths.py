@@ -233,7 +233,9 @@ def test_host_display_path_defaults_to_the_real_path() -> None:
 def test_host_display_path_substitutes_the_configured_host_root() -> None:
     path = Path("/srv/minecraft/family-server/eula.txt")
     roots = ((Path("/srv/minecraft"), "/Users/owner/Blockstead/servers"),)
-    assert host_display_path(path, roots) == "/Users/owner/Blockstead/servers/family-server/eula.txt"
+    assert host_display_path(path, roots) == (
+        "/Users/owner/Blockstead/servers/family-server/eula.txt"
+    )
 
 
 def test_host_display_path_checks_roots_in_order_and_falls_through() -> None:
