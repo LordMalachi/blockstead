@@ -16,7 +16,7 @@ from blockstead.extension_origins import (
     record_catalog_files,
     record_local_files,
 )
-from blockstead.models import Profile
+from blockstead.models import AuditEvent, Profile
 from blockstead.modrinth import PlannedFile, ProjectVersion, SearchPage
 
 
@@ -292,6 +292,57 @@ def test_manual_import_moves_and_registers_uppercase_jar_names(
     assert inventory.status_code == 200
     assert inventory.json()["entries"][0]["file_name"] == "Uppercase.JAR"
     assert applied.json()["source_verified"] is False
+
+
+@pytest.mark.parametrize("mutation", ["delete", "truncate", "replace"])
+def test_manual_import_rejects_changed_staged_jars(
+    api: tuple[TestClient, Path],
+    headers: dict[str, str],
+    paper_profile: str,
+    mutation: str,
+) -> None:
+    client, root = api
+    review = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/manual-import/review",
+        headers=headers,
+        files=[
+            (
+                "files",
+                ("reviewed.jar", paper_plugin_bytes("Reviewed"), "application/java-archive"),
+            )
+        ],
+    )
+    assert review.status_code == 201, review.text
+    review_id = review.json()["review_id"]
+    staging = root / "paper-server" / "plugins" / f".blockstead-manual-{review_id}"
+    staged_jar = staging / "reviewed.jar"
+    if mutation == "delete":
+        staged_jar.unlink()
+    elif mutation == "truncate":
+        staged_jar.write_bytes(b"")
+    else:
+        staged_jar.write_bytes(paper_plugin_bytes("Replacement"))
+
+    applied = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/manual-import/apply",
+        headers=headers,
+        json={"review_id": review_id, "acknowledge_unknown": False},
+    )
+
+    assert applied.status_code == 409
+    assert applied.json()["error"]["message"] == (
+        "A staged jar changed after review. Choose the files again."
+    )
+    assert not (root / "paper-server" / "plugins" / "reviewed.jar").exists()
+    assert not staging.exists()
+    factory = create_session_factory(root.parent / "data" / "blockstead.db")
+    with factory() as db:
+        successful_uploads = db.query(AuditEvent).filter_by(
+            profile_id=paper_profile,
+            category="extension_upload",
+            result="success",
+        )
+        assert successful_uploads.count() == 0
 
 
 def test_player_pack_download_requires_a_fresh_review(

@@ -5571,10 +5571,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for item in raw_files
             if isinstance(item, dict) and isinstance(item.get("file_name"), str)
         }
-        entries = [inspect_extension_jar(staging / name) for name in reviewed]
-        if len(entries) != len(raw_files) or any(
-            entry.sha256 != reviewed[entry.file_name].get("sha256") for entry in entries
-        ):
+        staged_files_changed = False
+        try:
+            entries = [inspect_extension_jar(staging / name) for name in reviewed]
+            staged_files_changed = (
+                len(entries) != len(raw_files)
+                or any(not entry.readable or not entry.sha256 for entry in entries)
+                or any(
+                    entry.sha256 != reviewed[entry.file_name].get("sha256")
+                    for entry in entries
+                )
+            )
+        except Exception:
+            staged_files_changed = True
+            entries = []
+        if staged_files_changed:
+            try:
+                if staging.is_symlink():
+                    staging.unlink()
+                elif staging.is_dir():
+                    shutil.rmtree(staging)
+            except OSError:
+                pass
             raise HTTPException(409, "A staged jar changed after review. Choose the files again.")
 
         native = (
