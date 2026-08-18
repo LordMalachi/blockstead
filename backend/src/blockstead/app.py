@@ -125,6 +125,7 @@ from .extension_ops import (
     set_all_enabled,
     set_enabled,
     stage_uploaded_jar,
+    validate_jar_archive,
 )
 from .extension_ops import (
     remove as remove_extension,
@@ -4462,6 +4463,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if item.checksum_algorithm not in SUPPORTED_CHECKSUMS
             or not isinstance(item.checksum, str)
             or not re.fullmatch(r"[0-9a-fA-F]+", item.checksum)
+            or len(item.checksum)
+            != {"sha1": 40, "sha256": 64, "sha512": 128}.get(
+                item.checksum_algorithm or "", -1
+            )
         ]
         if invalid:
             raise HTTPException(
@@ -4522,6 +4527,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         planned_file.checksum,
                     )
                 except ProvisionError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+                try:
+                    validate_jar_archive(staging / planned_file.file_name)
+                except ExtensionOpsError as exc:
                     raise HTTPException(400, str(exc)) from exc
                 staged.append((planned_file, sha256))
 

@@ -17,6 +17,7 @@ from blockstead.provisioning import (
     QUILT_INSTALLER_MAVEN,
     QUILT_LOADER,
     ProvisionError,
+    download_verified_file,
     list_versions,
     provision_profile,
     resolve_plan,
@@ -165,6 +166,32 @@ async def test_provision_places_verified_file(client: httpx.AsyncClient, tmp_pat
     assert result.sha256 == JAR_SHA256
     assert not list(target.glob(".*.part"))
     assert not (target / "eula.txt").exists()
+
+
+async def test_download_follows_cdn_redirects_and_accepts_uppercase_hash(
+    tmp_path: Path,
+) -> None:
+    source = "https://catalog.example/mod.jar"
+    edge = "https://cdn.example/signed/mod.jar"
+
+    def redirecting_handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == source:
+            return httpx.Response(302, headers={"location": edge})
+        if str(request.url) == edge:
+            return httpx.Response(200, content=JAR_BYTES)
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(redirecting_handler)) as client:
+        await download_verified_file(
+            client,
+            source,
+            tmp_path,
+            "mod.jar",
+            "sha256",
+            JAR_SHA256.upper(),
+        )
+    assert (tmp_path / "mod.jar").read_bytes() == JAR_BYTES
+    assert not list(tmp_path.glob(".*.part"))
 
 
 async def test_checksum_mismatch_discards_download(

@@ -376,7 +376,7 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
         stray = [
             name
             for name in ("plugins", "mods")
-            if (server_directory / name).is_dir() and any((server_directory / name).glob("*.jar"))
+            if (server_directory / name).is_dir() and _list_jars(server_directory / name)
         ]
         warnings = (
             [
@@ -424,7 +424,7 @@ def _list_jars(folder: Path) -> list[Path]:
         (
             entry
             for entry in folder.iterdir()
-            if entry.is_file() and not entry.is_symlink() and entry.suffix == ".jar"
+            if entry.is_file() and not entry.is_symlink() and entry.suffix.casefold() == ".jar"
         ),
         key=lambda entry: entry.name,
     )

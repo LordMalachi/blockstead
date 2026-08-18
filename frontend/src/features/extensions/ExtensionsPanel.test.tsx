@@ -192,6 +192,21 @@ test("reviews downloaded jars before installing the batch", async () => {
   ));
 });
 
+test("accepts a dropped jar and rejects a mixed file selection", async () => {
+  renderPanel();
+  await screen.findByText("Lithium");
+  const dropzone = screen.getByText("Drop downloaded .jar files here").parentElement;
+  expect(dropzone).not.toBeNull();
+  const jar = new File(["jar"], "dropped.jar", { type: "application/java-archive" });
+  fireEvent.drop(dropzone!, { dataTransfer: { files: [jar] } });
+  expect(await screen.findByText("dropped.jar")).toBeVisible();
+
+  const input = screen.getByLabelText("Choose jar files");
+  fireEvent.change(input, { target: { files: [jar, new File(["text"], "notes.txt")] } });
+  expect(await screen.findByText("Choose only .jar plugin or mod files. Do not extract them first.")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Review 1 file" })).not.toBeInTheDocument();
+});
+
 test("offers the vanilla switch and disables everything through toggle-all", async () => {
   const fetch = renderPanel();
   expect(await screen.findByText("Vanilla switch")).toBeVisible();

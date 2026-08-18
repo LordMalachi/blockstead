@@ -118,14 +118,19 @@ def stage_uploaded_jar(staging: Path, file_name: str, content: bytes) -> Path:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        if not zipfile.is_zipfile(target):
-            raise ExtensionOpsError(f"{file_name} is not a valid jar archive.")
+        validate_jar_archive(target)
     except OSError as exc:
         raise ExtensionOpsError("Blockstead could not safely stage the uploaded jars.") from exc
     except ExtensionOpsError:
         target.unlink(missing_ok=True)
         raise
     return target
+
+
+def validate_jar_archive(path: Path) -> None:
+    """Reject a downloaded or uploaded file that is not a readable ZIP/JAR."""
+    if path.is_symlink() or not path.is_file() or not zipfile.is_zipfile(path):
+        raise ExtensionOpsError(f"{path.name} is not a valid jar archive.")
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -290,7 +295,7 @@ def set_all_enabled(extension_directory: Path, enabled: bool) -> tuple[list[str]
     jars = sorted(
         entry.name
         for entry in source_dir.iterdir()
-        if entry.suffix == ".jar" and entry.is_file() and not entry.is_symlink()
+        if entry.suffix.casefold() == ".jar" and entry.is_file() and not entry.is_symlink()
     )
     if jars:
         ensure_managed_directory(target_dir, create=True)

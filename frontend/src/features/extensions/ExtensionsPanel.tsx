@@ -35,6 +35,7 @@ const SORT_OPTIONS = [
   ["updated", "Recently updated"],
 ] as const;
 const MAX_CATALOG_OFFSET = 1000;
+const MAX_MANUAL_FILES = 20;
 
 export type CatalogSource = "modrinth" | "hangar" | "curseforge";
 
@@ -263,6 +264,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   const [reviewedUpdate, setReviewedUpdate] = useState<ExtensionUpdateReviewResponse | null>(null);
   const [appliedUpdate, setAppliedUpdate] = useState<ExtensionUpdateResult | null>(null);
   const [manualFiles, setManualFiles] = useState<File[]>([]);
+  const [manualDragActive, setManualDragActive] = useState(false);
   const [manualReview, setManualReview] = useState<ManualImportReview | null>(null);
   const [acknowledgeUnknown, setAcknowledgeUnknown] = useState(false);
   const [recentBatchIds, setRecentBatchIds] = useState<string[]>([]);
@@ -283,6 +285,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     }
   }, [profileId]);
   const guideTrigger = useRef<HTMLButtonElement>(null);
+  const manualInput = useRef<HTMLInputElement>(null);
 
   const inventory = useQuery({
     queryKey: ["extensions", profileId],
@@ -553,21 +556,40 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   }
 
   function chooseManualFiles(files: File[]) {
+    setManualDragActive(false);
+    if (files.length === 0) {
+      setManualFiles([]);
+      return;
+    }
+    if (files.length > MAX_MANUAL_FILES) {
+      setManualFiles([]);
+      showNotice("error", `Choose no more than ${MAX_MANUAL_FILES} jar files at a time.`);
+      return;
+    }
     const jars = files.filter(file => file.name.toLowerCase().endsWith(".jar"));
+    if (jars.length !== files.length) {
+      setManualFiles([]);
+      showNotice("error", "Choose only .jar plugin or mod files. Do not extract them first.");
+      return;
+    }
     setManualFiles(jars);
     setManualReview(null);
     setAcknowledgeUnknown(false);
-    if (jars.length !== files.length) {
-      showNotice("error", "Choose .jar plugin or mod files. Do not extract them first.");
-    } else {
-      clearNotice();
-    }
+    clearNotice();
   }
 
   function dropManualFiles(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    setManualDragActive(false);
     if (!stopped) return;
     chooseManualFiles(Array.from(event.dataTransfer.files));
+  }
+
+  function clearManualSelection() {
+    setManualFiles([]);
+    setManualReview(null);
+    setAcknowledgeUnknown(false);
+    if (manualInput.current) manualInput.current.value = "";
   }
 
   function closeGuide() {
@@ -697,21 +719,29 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
         </div>
         {!manualReview ? <>
           <div
-            className={`manual-dropzone${stopped ? "" : " is-disabled"}`}
-            onDragOver={event => event.preventDefault()}
+            className={`manual-dropzone${stopped ? "" : " is-disabled"}${manualDragActive ? " is-dragging" : ""}`}
+            onDragEnter={event => { event.preventDefault(); if (stopped) setManualDragActive(true); }}
+            onDragLeave={event => { event.preventDefault(); setManualDragActive(false); }}
+            onDragOver={event => { event.preventDefault(); if (stopped) setManualDragActive(true); }}
             onDrop={dropManualFiles}
           >
-            <strong>{stopped ? "Drop downloaded .jar files here" : "Stop the server to import downloaded files"}</strong>
-            <span>or choose up to 20 files from this computer</span>
+            <strong>{stopped ? (manualDragActive ? "Release to review these .jar files" : "Drop downloaded .jar files here") : "Stop the server to import downloaded files"}</strong>
+            <span>or choose up to {MAX_MANUAL_FILES} files from this computer</span>
             <label className="button button--secondary button--small">
               Choose jar files
               <input
+                ref={manualInput}
                 name="files"
                 type="file"
-                accept=".jar,application/java-archive"
+                accept=".jar,.JAR,application/java-archive"
                 multiple
                 disabled={!stopped}
-                onChange={event => chooseManualFiles(Array.from(event.target.files ?? []))}
+                onChange={event => {
+                  chooseManualFiles(Array.from(event.target.files ?? []));
+                  // Reset the native control so choosing the same jar again
+                  // after clearing or cancelling still emits a change event.
+                  event.currentTarget.value = "";
+                }}
               />
             </label>
           </div>
@@ -721,7 +751,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
               <Button disabled={!stopped || reviewManualImport.isPending} onClick={() => reviewManualImport.mutate(manualFiles)}>
                 {reviewManualImport.isPending ? "Inspecting jars…" : `Review ${manualFiles.length} file${manualFiles.length === 1 ? "" : "s"}`}
               </Button>
-              <Button className="button--quiet button--small" onClick={() => setManualFiles([])}>Clear</Button>
+              <Button className="button--quiet button--small" onClick={clearManualSelection}>Clear</Button>
             </div>
           </div>}
         </> : <div className="manual-import-review">
@@ -994,7 +1024,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
                       ? project.page_url
                         ? <a className="button button--secondary button--small" href={project.page_url} target="_blank" rel="noreferrer">Get in browser</a>
                         : <span className="catalog-project__unavailable">Manual download only</span>
-                      : <Button className="button--secondary button--small" aria-label={`Install ${title}`} disabled={!stopped || action.isPending} onClick={() => install(project.project_id)}>Install</Button>}
+                      : <Button className="button--secondary button--small" aria-label={`${action.isPending ? "Downloading" : "Install"} ${title}`} disabled={!stopped || action.isPending} onClick={() => install(project.project_id)}>{action.isPending ? "Downloading…" : "Install"}</Button>}
                     <Button className="button--quiet button--small" aria-label={`${versionsFor === project.project_id ? "Hide" : "Show"} versions for ${title}`} aria-expanded={versionsFor === project.project_id} onClick={() => setVersionsFor(versionsFor === project.project_id ? null : project.project_id)}>{versionsFor === project.project_id ? "Hide versions" : "Versions"}</Button>
                   </div>
                 </article>;

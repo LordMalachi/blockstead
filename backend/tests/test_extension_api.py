@@ -265,6 +265,35 @@ def test_manual_import_requires_acknowledgement_for_unidentified_jars(
     assert (root / "paper-server" / "plugins" / "mystery.jar").is_file()
 
 
+def test_manual_import_moves_and_registers_uppercase_jar_names(
+    api: tuple[TestClient, Path], headers: dict[str, str], paper_profile: str
+) -> None:
+    client, root = api
+    review = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/manual-import/review",
+        headers=headers,
+        files=[
+            (
+                "files",
+                ("Uppercase.JAR", paper_plugin_bytes("Uppercase"), "application/java-archive"),
+            )
+        ],
+    )
+    assert review.status_code == 201, review.text
+
+    applied = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/manual-import/apply",
+        headers=headers,
+        json={"review_id": review.json()["review_id"], "acknowledge_unknown": False},
+    )
+    assert applied.status_code == 201, applied.text
+    assert (root / "paper-server" / "plugins" / "Uppercase.JAR").is_file()
+    inventory = client.get(f"/api/v1/profiles/{paper_profile}/extensions")
+    assert inventory.status_code == 200
+    assert inventory.json()["entries"][0]["file_name"] == "Uppercase.JAR"
+    assert applied.json()["source_verified"] is False
+
+
 def test_player_pack_download_requires_a_fresh_review(
     api: tuple[TestClient, Path], headers: dict[str, str], paper_profile: str
 ) -> None:
@@ -515,7 +544,7 @@ def test_update_check_and_apply(
         checksum: str | None,
     ) -> str:
         assert url in {"https://cdn.example/new.jar", "https://cdn.example/core.jar"}
-        raw = url.encode()
+        raw = jar_bytes()
         (directory / file_name).write_bytes(raw)
         return hashlib.sha256(raw).hexdigest()
 
@@ -656,7 +685,7 @@ def test_hangar_source_dispatch_and_install(
         checksum_algorithm: str | None,
         checksum: str | None,
     ) -> str:
-        (directory / file_name).write_bytes(b"downloaded")
+        (directory / file_name).write_bytes(jar_bytes())
         return "e" * 64
 
     monkeypatch.setattr("blockstead.app.hangar_search", fake_hangar_search)
@@ -796,7 +825,7 @@ def test_install_downloads_planned_files(
         checksum_algorithm: str | None,
         checksum: str | None,
     ) -> str:
-        (directory / file_name).write_bytes(b"downloaded")
+        (directory / file_name).write_bytes(jar_bytes())
         return "c" * 64
 
     monkeypatch.setattr("blockstead.app.plan_install", fake_plan)
@@ -819,6 +848,55 @@ def test_install_downloads_planned_files(
     )
     assert again.status_code == 201
     assert again.json()["skipped"] == ["thing.jar"]
+
+
+def test_install_discards_a_checksum_matching_non_jar_payload(
+    api: tuple[TestClient, Path],
+    headers: dict[str, str],
+    paper_profile: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, root = api
+    payload = b"<!doctype html>not a mod"
+    planned = [
+        PlannedFile(
+            project_id="proj",
+            version_id="ver",
+            version_number="1.0",
+            file_name="not-a-mod.jar",
+            url="https://cdn.example/not-a-mod.jar",
+            checksum_algorithm="sha512",
+            checksum=hashlib.sha512(payload).hexdigest(),
+            required_by=None,
+        )
+    ]
+
+    async def fake_plan(*_args: object, **_kwargs: object) -> list[PlannedFile]:
+        return planned
+
+    async def fake_download(
+        _client: httpx.AsyncClient,
+        _url: str,
+        directory: Path,
+        file_name: str,
+        _algorithm: str | None,
+        _checksum: str | None,
+    ) -> str:
+        (directory / file_name).write_bytes(payload)
+        return hashlib.sha256(payload).hexdigest()
+
+    monkeypatch.setattr("blockstead.app.plan_install", fake_plan)
+    monkeypatch.setattr("blockstead.app.download_verified_file", fake_download)
+    response = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/install",
+        headers=headers,
+        json={"project_id": "proj"},
+    )
+    assert response.status_code == 400
+    assert "valid jar" in response.json()["error"]["message"]
+    plugins = root / "paper-server" / "plugins"
+    assert not (plugins / "not-a-mod.jar").exists()
+    assert not list(plugins.glob(".blockstead-install-*"))
 
 
 def test_failed_dependency_download_does_not_change_the_live_loadout(
@@ -866,7 +944,7 @@ def test_failed_dependency_download_does_not_change_the_live_loadout(
             from blockstead.provisioning import ProvisionError
 
             raise ProvisionError("second download failed")
-        (directory / file_name).write_bytes(b"first")
+        (directory / file_name).write_bytes(jar_bytes())
         return "c" * 64
 
     monkeypatch.setattr("blockstead.app.plan_install", fake_plan)

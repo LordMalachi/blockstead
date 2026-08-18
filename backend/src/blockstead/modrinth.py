@@ -26,7 +26,9 @@ MAX_LISTED_VERSIONS = 20
 MAX_CATEGORY_FILTERS = 5
 SORT_INDEXES = frozenset({"relevance", "downloads", "follows", "newest", "updated"})
 
-JAR_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+\- ]{0,127}\.jar$")
+JAR_NAME_PATTERN = re.compile(
+    r"\A[A-Za-z0-9][A-Za-z0-9._+\- ]{0,127}\.jar\Z", re.IGNORECASE
+)
 CATEGORY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
 LOADER_FILTERS: dict[str, list[str]] = {

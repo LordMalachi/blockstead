@@ -173,7 +173,12 @@ async def test_planned_files_download_and_verify(client: httpx.AsyncClient, tmp_
     planned = await plan_install(client, "fabric", "1.21.1", "proj-tech", "ver-tech")
     for item in planned:
         sha256 = await download_verified_file(
-            client, item.url, tmp_path, item.file_name, item.checksum_algorithm, item.checksum
+            client,
+            item.url,
+            tmp_path,
+            item.file_name,
+            item.checksum_algorithm,
+            item.checksum.upper() if item.checksum else None,
         )
         assert (tmp_path / item.file_name).read_bytes() == JAR_BYTES
         assert sha256 == hashlib.sha256(JAR_BYTES).hexdigest()

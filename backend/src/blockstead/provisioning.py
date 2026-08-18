@@ -455,11 +455,26 @@ async def download_verified_file(
     Returns the SHA-256 of the received bytes for audit records.
     """
     staging = directory / f".{file_name}.part"
-    published = hashlib.new(checksum_algorithm) if checksum_algorithm else None
+    try:
+        published = hashlib.new(checksum_algorithm) if checksum_algorithm else None
+    except ValueError as exc:
+        raise ProvisionError("The download used an unsupported checksum algorithm.") from exc
     recorded = hashlib.sha256()
     received = 0
+
+    def discard_staging() -> None:
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError:
+            # The original download error is the useful result. A best-effort
+            # cleanup failure must not turn it into an unhandled server error.
+            pass
+
     try:
-        async with client.stream("GET", url) as response:
+        # Catalog CDNs commonly redirect to a signed edge URL. Keep the
+        # download helper correct even when a caller supplied a client whose
+        # default does not follow redirects.
+        async with client.stream("GET", url, follow_redirects=True) as response:
             response.raise_for_status()
             with staging.open("wb") as handle:
                 async for chunk in response.aiter_bytes():
@@ -470,20 +485,28 @@ async def download_verified_file(
                         published.update(chunk)
                     recorded.update(chunk)
                     handle.write(chunk)
-    except httpx.HTTPError as exc:
-        staging.unlink(missing_ok=True)
+    except (httpx.HTTPError, OSError) as exc:
+        discard_staging()
         raise ProvisionError(
             f"The download failed before it completed ({type(exc).__name__})."
         ) from exc
     except ProvisionError:
-        staging.unlink(missing_ok=True)
+        discard_staging()
         raise
-    if published is not None and checksum and published.hexdigest() != checksum:
-        staging.unlink(missing_ok=True)
+    if (
+        published is not None
+        and checksum
+        and published.hexdigest().casefold() != checksum.casefold()
+    ):
+        discard_staging()
         raise ProvisionError(
             "The downloaded file did not match its published checksum and was discarded."
         )
-    staging.replace(directory / file_name)
+    try:
+        staging.replace(directory / file_name)
+    except OSError as exc:
+        discard_staging()
+        raise ProvisionError("The downloaded file could not be placed safely.") from exc
     return recorded.hexdigest()
 
 
