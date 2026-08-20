@@ -31,7 +31,7 @@ class DiscordRest:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
+    async def request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:
             response = await self._client.request(method, path, **kwargs)
             response.raise_for_status()

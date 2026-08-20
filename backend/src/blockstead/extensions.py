@@ -478,8 +478,10 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
             warnings=[],
             truncated=False,
         )
-        if _inventory_key(server_directory, distribution, folder, disabled) == key:
-            _store_inventory(key, view)
+        # A directory that changed mid-scan just produces a signature the next
+        # independent read won't match, so it self-heals without a re-verify
+        # scan here; store under the key already fingerprinted above.
+        _store_inventory(key, view)
         return view
     jars = _list_jars(folder)
     entries = [inspect_extension_jar(jar) for jar in jars[:MAX_JARS]]
@@ -491,8 +493,7 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
         warnings=_collect_warnings(distribution, entries),
         truncated=len(jars) > MAX_JARS,
     )
-    if _inventory_key(server_directory, distribution, folder, disabled) == key:
-        _store_inventory(key, view)
+    _store_inventory(key, view)
     return view
 
 

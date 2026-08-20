@@ -4460,13 +4460,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         invalid = [
             item.file_name
             for item in planned
-            if item.checksum_algorithm not in SUPPORTED_CHECKSUMS
+            if item.checksum_algorithm is None
+            or item.checksum_algorithm not in SUPPORTED_CHECKSUMS
             or not isinstance(item.checksum, str)
             or not re.fullmatch(r"[0-9a-fA-F]+", item.checksum)
-            or len(item.checksum)
-            != {"sha1": 40, "sha256": 64, "sha512": 128}.get(
-                item.checksum_algorithm or "", -1
-            )
+            or len(item.checksum) != hashlib.new(item.checksum_algorithm).digest_size * 2
         ]
         if invalid:
             raise HTTPException(
@@ -4485,7 +4483,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Download a catalog plan outside the live loadout, then promote it safely."""
         require_published_checksums(planned)
         names = [item.file_name for item in planned]
-        if len(names) != len(set(names)):
+        if len({name.casefold() for name in names}) != len(names):
             raise HTTPException(409, "The catalog returned duplicate extension file names.")
         staging: Path | None = None
         staged: list[tuple[PlannedFile, str]] = []
@@ -5445,9 +5443,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             seen: set[str] = set()
             for upload in files:
                 name = upload.filename or ""
-                if name in seen:
+                if name.casefold() in seen:
                     raise ExtensionOpsError(f"The selected files contain duplicate name {name}.")
-                seen.add(name)
+                seen.add(name.casefold())
                 content = await upload.read(MAX_UPLOAD_BYTES + 1)
                 total += len(content)
                 if total > MAX_UPLOAD_BYTES * 2:

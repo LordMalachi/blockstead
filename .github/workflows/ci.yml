@@ -82,6 +82,7 @@ jobs:
       - run: python -m pip install -e "./backend[dev]" -e "./relay[dev]"
       - run: ruff check backend relay
       - run: mypy backend/src
+      - run: mypy --config-file relay/pyproject.toml relay/src
       - run: pip-audit
   end-to-end:
     runs-on: ubuntu-latest

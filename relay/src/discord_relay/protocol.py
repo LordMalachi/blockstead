@@ -35,7 +35,7 @@ def parse_interaction(payload: Mapping[str, object]) -> RelayInteraction:
     data = payload.get("data")
     member = payload.get("member")
     user = member.get("user") if isinstance(member, dict) else payload.get("user")
-    values = {
+    values: dict[str, object] = {
         "id": payload.get("id"),
         "token": payload.get("token"),
         "application_id": payload.get("application_id"),
@@ -43,9 +43,10 @@ def parse_interaction(payload: Mapping[str, object]) -> RelayInteraction:
         "channel_id": payload.get("channel_id"),
         "user_id": user.get("id") if isinstance(user, dict) else None,
     }
-    if not isinstance(data, dict) or not all(
-        isinstance(value, str) and value for value in values.values()
-    ):
+    # Narrowed to dict[str, str]: any entry that isn't a non-empty string is
+    # simply absent here, so a length mismatch means validation failed.
+    str_values = {key: value for key, value in values.items() if isinstance(value, str) and value}
+    if not isinstance(data, dict) or len(str_values) != len(values):
         raise ValueError("Discord interaction was missing required identity")
     raw_options = data.get("options")
     subcommand = str(data.get("name", ""))
@@ -53,12 +54,12 @@ def parse_interaction(payload: Mapping[str, object]) -> RelayInteraction:
         if raw_options[0].get("type") == 1:
             subcommand = str(raw_options[0].get("name", ""))
     return RelayInteraction(
-        interaction_id=values["id"],
-        interaction_token=values["token"],
-        application_id=values["application_id"],
-        guild_id=values["guild_id"],
-        channel_id=values["channel_id"],
-        user_id=values["user_id"],
+        interaction_id=str_values["id"],
+        interaction_token=str_values["token"],
+        application_id=str_values["application_id"],
+        guild_id=str_values["guild_id"],
+        channel_id=str_values["channel_id"],
+        user_id=str_values["user_id"],
         subcommand=subcommand,
         options=_options(raw_options),
     )

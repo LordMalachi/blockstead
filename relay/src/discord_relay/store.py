@@ -412,11 +412,14 @@ class RelayStore:
             )
             self._snapshots.pop(connection_id, None)
 
-    def save_snapshot(self, connection_id: str, sequence: int, snapshot: dict[str, Any]) -> bool:
+    def save_snapshot(
+        self, connection_id: str, installation_id: str, sequence: int, snapshot: dict[str, Any]
+    ) -> bool:
         with self._lock, self._db:
             row = self._db.execute(
-                "SELECT last_sequence FROM connections WHERE id = ? AND enabled = 1",
-                (connection_id,),
+                "SELECT last_sequence FROM connections WHERE id = ? AND installation_id = ? "
+                "AND enabled = 1",
+                (connection_id, installation_id),
             ).fetchone()
             if row is None or sequence <= int(row["last_sequence"]):
                 return False
