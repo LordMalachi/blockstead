@@ -91,7 +91,7 @@ class RelayClient:
     def close(self) -> None:
         self._client.close()
 
-    def _request(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
+    def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, object]:
         try:
             response = self._client.request(method, path, **kwargs)
             response.raise_for_status()

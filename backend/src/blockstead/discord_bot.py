@@ -8,10 +8,11 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from websockets.asyncio.client import connect
+from websockets.asyncio.client import ClientConnection, connect
 
 from .config import Settings
 
@@ -120,35 +121,30 @@ def parse_interaction(payload: Mapping[str, object]) -> DiscordInteraction:
             subcommand = str(data.get("name", ""))
     else:
         subcommand = str(data.get("name", ""))
-    guild_id = payload.get("guild_id")
-    channel_id = payload.get("channel_id")
-    interaction_id = payload.get("id")
-    token = payload.get("token")
-    application_id = payload.get("application_id")
-    user_id = user.get("id")
-    if not all(
-        isinstance(value, str) and value
-        for value in (
-            guild_id,
-            channel_id,
-            interaction_id,
-            token,
-            application_id,
-            user_id,
-        )
-    ):
+    ids: dict[str, object] = {
+        "guild_id": payload.get("guild_id"),
+        "channel_id": payload.get("channel_id"),
+        "interaction_id": payload.get("id"),
+        "interaction_token": payload.get("token"),
+        "application_id": payload.get("application_id"),
+        "user_id": user.get("id"),
+    }
+    # Narrowed to dict[str, str]: any entry that isn't a non-empty string is
+    # simply absent here, so a length mismatch means validation failed.
+    str_ids = {key: value for key, value in ids.items() if isinstance(value, str) and value}
+    if len(str_ids) != len(ids):
         raise DiscordConfigurationError("The Discord interaction was missing a required ID.")
     roles = member.get("roles", []) if isinstance(member, dict) else []
     role_ids = (
         tuple(item for item in roles if isinstance(item, str)) if isinstance(roles, list) else ()
     )
     return DiscordInteraction(
-        interaction_id=interaction_id,
-        interaction_token=token,
-        application_id=application_id,
-        guild_id=guild_id,
-        channel_id=channel_id,
-        user_id=user_id,
+        interaction_id=str_ids["interaction_id"],
+        interaction_token=str_ids["interaction_token"],
+        application_id=str_ids["application_id"],
+        guild_id=str_ids["guild_id"],
+        channel_id=str_ids["channel_id"],
+        user_id=str_ids["user_id"],
         role_ids=role_ids,
         subcommand=subcommand,
         options=_option_values(command_options),
@@ -215,7 +211,7 @@ class DiscordRestClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
+    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:
             response = await self._client.request(method, path, **kwargs)
             response.raise_for_status()
@@ -281,7 +277,7 @@ class DiscordGateway:
         self._log = logger or logging.getLogger(__name__)
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
-        self._socket: object | None = None
+        self._socket: ClientConnection | None = None
         self._connected = False
         self._sequence: int | None = None
 
@@ -298,8 +294,8 @@ class DiscordGateway:
     async def stop(self) -> None:
         self._stop.set()
         socket = self._socket
-        if socket is not None and hasattr(socket, "close"):
-            await socket.close()  # type: ignore[union-attr]
+        if socket is not None:
+            await socket.close()
         if self._task is not None:
             self._task.cancel()
             try:
@@ -333,8 +329,8 @@ class DiscordGateway:
                     delay = min(60.0, delay * 2)
         self._connected = False
 
-    async def _session(self, socket: object) -> None:
-        hello = json.loads(await socket.recv())  # type: ignore[union-attr]
+    async def _session(self, socket: ClientConnection) -> None:
+        hello = json.loads(await socket.recv())
         if not isinstance(hello, dict) or hello.get("op") != 10:
             raise DiscordApiError("Discord Gateway did not send a valid hello.")
         hello_data = hello.get("d")
@@ -343,7 +339,7 @@ class DiscordGateway:
             raise DiscordApiError("Discord Gateway did not provide a heartbeat interval.")
         heartbeat = asyncio.create_task(self._heartbeat(socket, float(interval_ms) / 1000))
         await self._identify(socket)
-        async for raw in socket:  # type: ignore[union-attr]
+        async for raw in socket:
             event = json.loads(raw)
             if not isinstance(event, dict):
                 continue
@@ -353,7 +349,7 @@ class DiscordGateway:
             if op == 0:
                 await self._dispatch(event)
             elif op == 1:
-                await socket.send(json.dumps({"op": 1, "d": self._sequence}))  # type: ignore[union-attr]
+                await socket.send(json.dumps({"op": 1, "d": self._sequence}))
             elif op in {7, 9}:
                 break
         heartbeat.cancel()
@@ -362,7 +358,7 @@ class DiscordGateway:
         except asyncio.CancelledError:
             pass
 
-    async def _identify(self, socket: object) -> None:
+    async def _identify(self, socket: ClientConnection) -> None:
         await socket.send(
             json.dumps(
                 {
@@ -378,13 +374,13 @@ class DiscordGateway:
                     },
                 }
             )
-        )  # type: ignore[union-attr]
+        )
         self._connected = True
 
-    async def _heartbeat(self, socket: object, interval: float) -> None:
+    async def _heartbeat(self, socket: ClientConnection, interval: float) -> None:
         while True:
             await asyncio.sleep(interval)
-            await socket.send(json.dumps({"op": 1, "d": self._sequence}))  # type: ignore[union-attr]
+            await socket.send(json.dumps({"op": 1, "d": self._sequence}))
 
     async def _dispatch(self, event: Mapping[str, object]) -> None:
         name = event.get("t")
@@ -445,7 +441,9 @@ def discord_configuration(settings: Settings) -> dict[str, object]:
         "public_key_configured": public_key is not None and public_key_error is None,
         "bot_token_configured": legacy_token_configured,
         "bot_ready": valid_application and (relay_configured or legacy_token_configured),
-        "install_url": discord_install_url(application_id) if valid_application else None,
+        "install_url": discord_install_url(application_id)
+        if valid_application and application_id
+        else None,
         "application_error": application_error,
         "public_key_error": public_key_error,
         "mode": (

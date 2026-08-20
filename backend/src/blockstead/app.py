@@ -1182,13 +1182,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     if not connection.publish_address:
                         reply = DiscordReply("Address sharing is disabled for this connection.")
                     else:
-                        public = status["public"]
+                        raw_public = status["public"]
+                        public_status = raw_public if isinstance(raw_public, dict) else {}
                         reply = DiscordReply(
-                            f"Join address: `{public['address']}` ({public['state']})."
-                            if isinstance(public, dict) and public.get("address")
+                            f"Join address: `{public_status['address']}` "
+                            f"({public_status['state']})."
+                            if public_status.get("address")
                             else (
                                 "A public join address is unavailable "
-                                f"({public.get('state', 'unknown')})."
+                                f"({public_status.get('state', 'unknown')})."
                             )
                         )
                 else:
@@ -8787,6 +8789,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not all(
             isinstance(value, str) and value
             for value in (
+                pairing.claimed_application_id,
                 pairing.claimed_guild_id,
                 pairing.claimed_channel_id,
                 pairing.claimed_user_id,
@@ -8816,26 +8819,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         relay_connection_id: str | None = None
         if not legacy_pairing:
+            # Guaranteed by the guard above (raises unless legacy_pairing or
+            # both of these hold); re-checked here so the types the guard
+            # already promises are visible at the point of use too.
+            if relay_client is None or not pairing.relay_pairing_id:
+                raise HTTPException(
+                    503, "The Blockstead host is not connected to the Discord relay yet."
+                )
             try:
                 remote = relay_client.confirm_pairing(pairing.relay_pairing_id)
             except RelayError as exc:
                 raise HTTPException(
                     503, "The Discord relay could not confirm this pairing."
                 ) from exc
-            relay_connection_id = remote.get("id")
-            if not isinstance(relay_connection_id, str):
+            raw_relay_connection_id = remote.get("id")
+            if not isinstance(raw_relay_connection_id, str):
                 raise HTTPException(
                     503, "The Discord relay returned an invalid connection response."
                 )
+            relay_connection_id = raw_relay_connection_id
+        claimed_application_id = pairing.claimed_application_id
+        claimed_guild_id = pairing.claimed_guild_id
+        claimed_channel_id = pairing.claimed_channel_id
+        claimed_user_id = pairing.claimed_user_id
+        if not (
+            claimed_application_id and claimed_guild_id and claimed_channel_id and claimed_user_id
+        ):
+            # Guaranteed by the validation above; re-checked here only to
+            # narrow types for the ORM assignments below.
+            raise HTTPException(
+                409, "Use /blockstead pair in Discord before confirming this pairing."
+            )
         if connection is None:
             connection = DiscordConnection(
                 admin_id=owner.id,
                 profile_id=profile.id,
-                application_id=pairing.claimed_application_id,
-                guild_id=pairing.claimed_guild_id,
-                channel_id=pairing.claimed_channel_id,
-                owner_user_id=pairing.claimed_user_id,
-                authorized_user_ids=json.dumps([pairing.claimed_user_id]),
+                application_id=claimed_application_id,
+                guild_id=claimed_guild_id,
+                channel_id=claimed_channel_id,
+                owner_user_id=claimed_user_id,
+                authorized_user_ids=json.dumps([claimed_user_id]),
                 authorized_role_ids=pairing.claimed_role_ids or "[]",
                 relay_connection_id=relay_connection_id,
             )
@@ -8843,11 +8866,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.flush()
         else:
             connection.admin_id = owner.id
-            connection.application_id = pairing.claimed_application_id
-            connection.guild_id = pairing.claimed_guild_id
-            connection.channel_id = pairing.claimed_channel_id
-            connection.owner_user_id = pairing.claimed_user_id
-            connection.authorized_user_ids = json.dumps([pairing.claimed_user_id])
+            connection.application_id = claimed_application_id
+            connection.guild_id = claimed_guild_id
+            connection.channel_id = claimed_channel_id
+            connection.owner_user_id = claimed_user_id
+            connection.authorized_user_ids = json.dumps([claimed_user_id])
             connection.authorized_role_ids = pairing.claimed_role_ids or "[]"
             connection.enabled = True
             connection.relay_connection_id = relay_connection_id
