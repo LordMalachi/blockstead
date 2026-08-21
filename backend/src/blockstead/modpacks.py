@@ -21,6 +21,7 @@ import httpx
 from pydantic import BaseModel
 
 from .distributions import required_java_major
+from .host_fs import rmtree
 from .java_runtime import discover_java_runtimes, find_java
 from .modrinth import (
     MODRINTH_API,
@@ -327,7 +328,7 @@ async def install_modpack(
     target = root / directory_name
     if target.exists():
         raise ModpackError("A folder with that name already exists in the server root.")
-    target.mkdir(mode=0o755)
+    target.mkdir(mode=0o755, parents=True)
     try:
         for pack_file in index.files:
             destination = target / PurePosixPath(pack_file.path)
@@ -347,7 +348,13 @@ async def install_modpack(
         await install_loader(client, launcher, target, java_executable)
         notes.extend(launcher.notes)
     except (ModpackError, ProvisionError, ModrinthError, OSError):
-        shutil.rmtree(target, ignore_errors=True)
+        # A ModpackError/ProvisionError/etc. is raised regardless; a leftover
+        # partial profile folder is orphaned disk usage, not a mistaken
+        # "installed" report.
+        try:
+            rmtree(target)
+        except OSError:
+            pass
         raise
     return ModpackResult(
         directory=str(target),

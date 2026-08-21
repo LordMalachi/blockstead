@@ -85,6 +85,16 @@ input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px co
 .warning strong { text-transform: capitalize; }
 .warning span, .warning small { color: var(--ink); }
 
+/* Per-field validation: a red outline on the offending control plus an inline message
+   beneath it (message, formatting rule, and — when the server or a local pre-submit
+   check found one — a one-click "use suggested name" fix). */
+input.field-invalid, select.field-invalid,
+input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 14%, transparent); }
+.field-error { display: grid; gap: .35rem; margin: .35rem 0 0; padding: .7rem .85rem; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--danger) 9%, var(--surface)); border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line)); }
+.field-error > span:first-child { color: var(--danger); font-weight: 700; font-size: .84rem; }
+.field-error small { color: var(--muted); font-size: .78rem; }
+.field-error .button { justify-self: start; margin-top: .1rem; }
+
 /* Authentication */
 .auth-shell { min-height: 100vh; display: grid; grid-template-columns: minmax(360px, .9fr) minmax(520px, 1.1fr); background: var(--surface); }
 .auth-intro { position: relative; min-height: 100vh; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; padding: clamp(2rem, 5vw, 4.5rem); color: #eef6f0; background: var(--forest); isolation: isolate; }

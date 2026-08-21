@@ -162,6 +162,36 @@ def test_vanilla_with_stray_mods_is_flagged(tmp_path: Path) -> None:
     assert "mods" in view.warnings[0].files
 
 
+def test_stray_jar_in_wrong_loader_directory_is_flagged(tmp_path: Path) -> None:
+    # A Fabric mod dropped into plugins/ on a Fabric server never loads.
+    server = make_server(tmp_path, "mods")
+    (server / "plugins").mkdir()
+    write_jar(server / "plugins" / "misplaced.jar", {"fabric.mod.json": json.dumps(FABRIC_MOD)})
+    view = read_extensions(server, "fabric")
+    by_code = {warning.code: warning for warning in view.warnings}
+    assert by_code["wrong-directory"].files == ["misplaced.jar"]
+    # The stray file must not appear in the real inventory.
+    assert view.entries == []
+
+    # And the reverse: a plugin dropped into mods/ on a Paper server.
+    paper = make_server(tmp_path / "p", "plugins")
+    (paper / "mods").mkdir()
+    write_jar(paper / "mods" / "oops.jar", {"plugin.yml": PLUGIN_YML})
+    paper_view = read_extensions(paper, "paper")
+    assert any(warning.code == "wrong-directory" for warning in paper_view.warnings)
+
+
+def test_stray_directory_change_invalidates_cache(tmp_path: Path) -> None:
+    server = make_server(tmp_path, "mods")
+    first = read_extensions(server, "fabric")
+    assert first.warnings == []
+
+    (server / "plugins").mkdir()
+    write_jar(server / "plugins" / "misplaced.jar", {"fabric.mod.json": json.dumps(FABRIC_MOD)})
+    second = read_extensions(server, "fabric")
+    assert any(warning.code == "wrong-directory" for warning in second.warnings)
+
+
 def test_missing_directory_is_calm(tmp_path: Path) -> None:
     server = tmp_path / "server"
     server.mkdir()

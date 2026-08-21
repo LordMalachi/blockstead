@@ -17,6 +17,7 @@ import httpx
 from websockets.asyncio.client import connect
 
 from .config import Settings
+from .host_fs import atomic_write_text, restrict_to_owner
 
 log = logging.getLogger(__name__)
 
@@ -50,8 +51,9 @@ def ensure_relay_identity(
     except (OSError, ValueError):
         pass
     identity = RelayIdentity(str(uuid4()), secrets.token_urlsafe(48))
-    identity_path.write_text(json.dumps(identity.__dict__) + "\n", encoding="utf-8")
-    identity_path.chmod(0o600)
+    atomic_write_text(
+        identity_path, json.dumps(identity.__dict__) + "\n", before_replace=restrict_to_owner
+    )
     return identity
 
 

@@ -16,6 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
 from .extensions import ExtensionEntry
+from .host_fs import atomic_write_text
 
 TARGET_DISTRIBUTIONS = frozenset({"paper", "fabric", "forge", "quilt", "neoforge"})
 
@@ -368,7 +369,7 @@ def _write_level_name(properties: Path, level_name: str) -> None:
     if not replaced:
         updated.append(replacement)
     try:
-        properties.write_text("\n".join(updated) + "\n", encoding="utf-8")
+        atomic_write_text(properties, "\n".join(updated) + "\n")
     except OSError as exc:
         raise ValueError("The new server properties could not be written.") from exc
 

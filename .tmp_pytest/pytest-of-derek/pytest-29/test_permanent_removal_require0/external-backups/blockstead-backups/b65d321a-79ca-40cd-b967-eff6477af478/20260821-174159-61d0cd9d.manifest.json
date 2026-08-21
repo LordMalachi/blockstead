@@ -1,0 +1,22 @@
+{
+  "application_version": "1.1.0",
+  "archive": {
+    "file_name": "20260821-174159-61d0cd9d.tar.gz",
+    "sha256": "cf6e579f37405c6d2b781acb082cf736f44a3e5a9497d5aeab964a7dd46066e5",
+    "size_bytes": 268
+  },
+  "backup_id": "61d0cd9d-60fb-45a1-a4c7-bf9acc9fdbcd",
+  "created_at": "2026-08-21T17:41:59.457923+00:00",
+  "distribution": "vanilla",
+  "excluded_links": 0,
+  "included_paths": [
+    "world"
+  ],
+  "loader_version": null,
+  "manifest_version": 1,
+  "method": "world_archive",
+  "minecraft_version": "1.21.4",
+  "profile_id": "b65d321a-79ca-40cd-b967-eff6477af478",
+  "profile_name": "Family",
+  "trigger": "manual"
+}

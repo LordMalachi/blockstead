@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { vi } from "vitest";
+import { SERVER_DIRECTORY_PATTERN } from "../../lib/server-directory";
 import { ServersPage } from "./ServersPage";
 
 test("shows one guided setup workflow at a time for the first server", async () => {
@@ -93,4 +94,80 @@ test("requires a clear confirmation before removing a server", async () => {
   ));
   await waitFor(() => expect(client.getQueryData(["profiles"])).toEqual([]));
   expect(screen.queryByRole("button", { name: "Remove server" })).not.toBeInTheDocument();
+});
+
+test("derives a folder name from the picked folder that already passes the pattern", async () => {
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const body = url.endsWith("/server/state")
+      ? { state: "STOPPED", pid: null, exit_code: null, reason: "No server is running." }
+      : url.endsWith("/profiles") || url.endsWith("/schedules")
+        ? []
+        : url.includes("/provision/versions/")
+          ? { distribution: "vanilla", versions: ["1.21.1"] }
+          : {};
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
+  }));
+
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<MemoryRouter><QueryClientProvider client={client}><ServersPage /></QueryClientProvider></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("button", { name: /Use an existing server/ }));
+
+  const folderInput = screen.getByLabelText<HTMLInputElement>("Server folder");
+  const file = new File(["contents"], "server.properties");
+  Object.defineProperty(file, "webkitRelativePath", { value: "My Server Files/server.properties" });
+  fireEvent.change(folderInput, { target: { files: [file] } });
+
+  const note = await screen.findByText(/Ready to copy/);
+  expect(note).toHaveTextContent("my-server-files");
+  expect(SERVER_DIRECTORY_PATTERN.test("my-server-files")).toBe(true);
+  expect(folderInput).not.toHaveAttribute("aria-invalid");
+});
+
+test("highlights the folder control and applies the suggested name in one click when the derived folder is rejected", async () => {
+  const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.endsWith("/imports/uploads") && init?.method === "POST") {
+      return Promise.resolve(new Response(JSON.stringify({
+        error: {
+          code: "REQUEST_INVALID",
+          message: "That folder name is not allowed.",
+          recovery: "Review the highlighted fields and try again.",
+          fields: [{ field: "directory_name", reason: "RESERVED_NAME", message: "That folder name is reserved by Blockstead.", rule: null, suggestion: "my-server-files-safe" }],
+        },
+      }), { status: 422, headers: { "Content-Type": "application/json" } }));
+    }
+    const body = url.endsWith("/server/state")
+      ? { state: "STOPPED", pid: null, exit_code: null, reason: "No server is running." }
+      : url.endsWith("/profiles") || url.endsWith("/schedules")
+        ? []
+        : url.includes("/provision/versions/")
+          ? { distribution: "vanilla", versions: ["1.21.1"] }
+          : {};
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
+  });
+  vi.stubGlobal("fetch", fetch);
+
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(<MemoryRouter><QueryClientProvider client={client}><ServersPage /></QueryClientProvider></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("button", { name: /Use an existing server/ }));
+
+  const folderInput = screen.getByLabelText<HTMLInputElement>("Server folder");
+  const file = new File(["contents"], "server.properties");
+  Object.defineProperty(file, "webkitRelativePath", { value: "My Server Files/server.properties" });
+  fireEvent.change(folderInput, { target: { files: [file] } });
+  await userEvent.click(screen.getByRole("button", { name: "Copy folder in" }));
+
+  await waitFor(() => expect(folderInput).toHaveAttribute("aria-invalid", "true"));
+  expect(screen.getByText("That folder name is reserved by Blockstead.")).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: /Use suggested name.*my-server-files-safe/ }));
+  expect(folderInput).not.toHaveAttribute("aria-invalid");
+  expect(await screen.findByText(/Ready to copy/)).toHaveTextContent("my-server-files-safe");
+
+  await userEvent.click(screen.getByRole("button", { name: "Copy folder in" }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/imports/uploads",
+    expect.objectContaining({ method: "POST", body: JSON.stringify({ directory_name: "my-server-files-safe" }) }),
+  ));
 });

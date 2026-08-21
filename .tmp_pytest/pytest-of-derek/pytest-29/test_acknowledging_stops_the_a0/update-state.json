@@ -1,0 +1,12 @@
+{
+  "acknowledged_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "baseline_commit": null,
+  "last_checked_at": null,
+  "last_error": null,
+  "requested_at": null,
+  "requested_attempt": null,
+  "requested_commit": null,
+  "requested_summary": null,
+  "resume_commit": null,
+  "resume_profile_id": null
+}

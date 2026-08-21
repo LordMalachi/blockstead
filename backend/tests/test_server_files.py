@@ -96,6 +96,45 @@ def test_guided_settings_preview_and_apply_preserve_source(tmp_path: Path) -> No
     assert result.revision != result.previous_revision
 
 
+def test_guided_settings_apply_reports_a_running_server_plainly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Windows sharing violation during the final replace (the server still
+    has server.properties open) must surface as plain guidance to stop the
+    server, never a raw WinError."""
+
+    properties = tmp_path / "server.properties"
+    properties.write_text("motd=Old message\n", encoding="utf-8")
+    view = read_settings(tmp_path)
+    assert view.revision is not None
+
+    real_replace = os.replace
+
+    def sharing_violation(src: object, dst: object) -> None:
+        if Path(dst) == properties:
+            exc = PermissionError(13, "The process cannot access the file")
+            exc.winerror = 32  # type: ignore[attr-defined]
+            raise exc
+        real_replace(src, dst)
+
+    monkeypatch.setattr("blockstead.host_fs.os.replace", sharing_violation)
+
+    with pytest.raises(SettingsConflictError) as excinfo:
+        apply_settings_update(
+            tmp_path,
+            tmp_path / "private-data",
+            "profile-1",
+            view.revision,
+            {"motd": "New message"},
+        )
+
+    message = str(excinfo.value)
+    assert "running" in message.lower()
+    assert "stop" in message.lower()
+    monkeypatch.undo()
+    assert properties.read_text(encoding="utf-8") == "motd=Old message\n"
+
+
 def test_guided_settings_reject_stale_invalid_and_incompatible_edits(tmp_path: Path) -> None:
     properties = tmp_path / "server.properties"
     properties.write_text(

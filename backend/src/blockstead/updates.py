@@ -32,6 +32,8 @@ from pathlib import Path
 
 import httpx
 
+from .host_fs import restrict_to_owner
+
 #: Where the installer places the application and stamps what it installed.
 APP_DIR = Path("/opt/blockstead")
 BUILD_FILE = APP_DIR / "BUILD"
@@ -244,7 +246,7 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(handle.name, 0o600)
+        restrict_to_owner(Path(handle.name))
         os.replace(handle.name, path)
         if os.name == "posix":
             try:

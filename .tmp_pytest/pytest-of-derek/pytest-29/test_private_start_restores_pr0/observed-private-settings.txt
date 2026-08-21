@@ -1,0 +1,12 @@
+# owner settings
+level-name=precious
+server-port=25565
+level-name=blockstead-validation-0123456789abcdef
+server-ip=127.0.0.1
+server-port=0
+enable-query=false
+enable-rcon=false
+enable-status=false
+white-list=true
+enforce-whitelist=true
+max-players=1

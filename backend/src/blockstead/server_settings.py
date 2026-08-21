@@ -2,7 +2,6 @@
 
 import hashlib
 import ipaddress
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,6 +10,8 @@ from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel
+
+from .host_fs import atomic_write_bytes, copy_mode, describe_os_error, restrict_to_owner
 
 MAX_FILE_BYTES = 1_000_000
 
@@ -558,7 +559,7 @@ def apply_raw_settings(
         raise SettingsValidationError("Nothing changed in server.properties.")
 
     snapshot_name = _write_snapshot(snapshot_root, profile_id, raw)
-    _replace_atomically(server_directory, path, raw, restored.encode("utf-8"))
+    _replace_atomically(path, raw, restored.encode("utf-8"))
 
     view = read_settings(server_directory)
     assert view.revision is not None
@@ -722,42 +723,29 @@ def _updated_text(text: str, changes: dict[str, SettingValue]) -> str:
 
 def _write_snapshot(snapshot_root: Path, profile_id: str, raw: bytes) -> str:
     snapshot_directory = snapshot_root / "settings-snapshots" / profile_id
-    snapshot_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    snapshot_directory.chmod(0o700)
+    snapshot_directory.mkdir(parents=True, exist_ok=True)
+    restrict_to_owner(snapshot_directory)
     stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     snapshot_name = f"{stamp}-{uuid4().hex[:8]}.properties"
     snapshot = snapshot_directory / snapshot_name
-    with snapshot.open("xb") as handle:
-        # Keep the path-swap-resistant descriptor operation on POSIX. Windows
-        # exposes chmod(path) but not fchmod(fd), and its mode bits cannot
-        # express Unix ownership, so use the path only on that platform.
-        fchmod = getattr(os, "fchmod", None)
-        if fchmod is not None:
-            fchmod(handle.fileno(), 0o600)
-        else:
-            snapshot.chmod(0o600)
-        handle.write(raw)
-        handle.flush()
-        os.fsync(handle.fileno())
+    atomic_write_bytes(snapshot, raw, before_replace=restrict_to_owner)
     return snapshot_name
 
 
-def _replace_atomically(server_directory: Path, path: Path, raw: bytes, updated: bytes) -> None:
-    staging = server_directory / f".server.properties.{uuid4().hex}.tmp"
-    try:
-        with staging.open("xb") as handle:
-            handle.write(updated)
-            handle.flush()
-            os.fsync(handle.fileno())
-        staging.chmod(path.stat().st_mode & 0o777)
+def _replace_atomically(path: Path, raw: bytes, updated: bytes) -> None:
+    def before_replace(staging: Path) -> None:
         if path.read_bytes() != raw:
             raise SettingsConflictError(
                 "server.properties changed while the update was being prepared. Reload and retry."
             )
-        os.replace(staging, path)
-    except (OSError, SettingsConflictError):
-        staging.unlink(missing_ok=True)
+        copy_mode(path, staging)
+
+    try:
+        atomic_write_bytes(path, updated, before_replace=before_replace)
+    except SettingsConflictError:
         raise
+    except OSError as exc:
+        raise SettingsConflictError(describe_os_error(exc, path)) from exc
 
 
 def apply_settings_update(
@@ -775,7 +763,7 @@ def apply_settings_update(
 
     snapshot_name = _write_snapshot(snapshot_root, profile_id, raw)
     updated = _updated_text(text, validated).encode("utf-8")
-    _replace_atomically(server_directory, path, raw, updated)
+    _replace_atomically(path, raw, updated)
 
     view = read_settings(server_directory)
     assert view.revision is not None

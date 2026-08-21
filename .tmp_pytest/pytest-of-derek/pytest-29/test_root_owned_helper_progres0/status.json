@@ -1,0 +1,1 @@
+{"state": "failed", "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "detail": "Installing Blockstead bbbbbbb.", "at": "2026-07-20T12:00:00+00:00", "rolled_back": true, "retryable": true, "retry_after": "2026-07-20T12:30:00+00:00", "attempt": "11111111111111111111111111111111"}

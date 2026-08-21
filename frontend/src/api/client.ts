@@ -1,4 +1,15 @@
-export interface ApiError { error: { code: string; message: string; recovery?: string } }
+/**
+ * One invalid request field, per `docs/validation-contract.md`. `field` is the request
+ * body key (dotted for nesting, e.g. `variants.0.name`) and matches a form control's name.
+ */
+export interface FieldError {
+  field: string;
+  reason: string;
+  message: string;
+  rule?: string | null;
+  suggestion?: string | null;
+}
+export interface ApiError { error: { code: string; message: string; recovery?: string; fields?: FieldError[] } }
 export type AppRole = "owner" | "viewer"
 export interface Session { username: string; role?: AppRole; csrf_token?: string }
 export interface Account { id: string; username: string; role: AppRole; disabled: boolean }
@@ -604,10 +615,25 @@ export interface ArchiveExtractResult { promoted: string[]; preserved: string[] 
  * `message` would have to throw that away and ask again.
  */
 export class ApiRequestError extends Error {
+  /** The stable machine code from the envelope, e.g. `REQUEST_INVALID` — `""` when the body wasn't a parsed error envelope. */
+  readonly code: string;
+  readonly recovery?: string;
+  /** Per-field validation failures, keyed by request body field name. Empty when the server didn't send any. */
+  readonly fields: FieldError[];
   constructor(message: string, readonly status: number, readonly body: unknown) {
     super(message);
     this.name = "ApiRequestError";
+    const envelope = (body as ApiError | null)?.error;
+    this.code = envelope?.code ?? "";
+    this.recovery = envelope?.recovery;
+    this.fields = envelope?.fields ?? [];
   }
+}
+
+/** Maps a caught error's per-field failures by `field`, so a form can look up its own controls. Returns an empty map for anything else. */
+export function fieldErrorsOf(error: unknown): Map<string, FieldError> {
+  if (!(error instanceof ApiRequestError) || error.fields.length === 0) return new Map();
+  return new Map(error.fields.map(field => [field.field, field]));
 }
 
 let csrfToken = sessionStorage.getItem("blockstead_csrf") ?? "";
@@ -627,7 +653,7 @@ export async function apiBlob(path: string): Promise<Blob> {
   reportAuthExpired(response.status);
   if (!response.ok) {
     const body = await response.json().catch(() => null) as ApiError | null;
-    throw new Error(body?.error?.message ?? `Request failed (${response.status})`);
+    throw new ApiRequestError(body?.error?.message ?? `Request failed (${response.status})`, response.status, body);
   }
   return response.blob();
 }
@@ -646,7 +672,8 @@ export function apiUpload<T>(path: string, form: FormData, onProgress?: (loadedB
       if (request.status >= 200 && request.status < 300) resolve(body as T);
       else {
         reportAuthExpired(request.status);
-        reject(new Error(body?.error?.recovery ? `${body.error.message} ${body.error.recovery}` : body?.error?.message ?? "Upload failed."));
+        const message = body?.error?.recovery ? `${body.error.message} ${body.error.recovery}` : body?.error?.message ?? "Upload failed.";
+        reject(new ApiRequestError(message, request.status, body));
       }
     };
     request.send(form);

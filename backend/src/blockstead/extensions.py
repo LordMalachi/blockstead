@@ -29,9 +29,17 @@ MAX_METADATA_BYTES = 1_000_000
 MAX_INVENTORY_CACHE_ENTRIES = 128
 
 _DirectorySignature = tuple[tuple[str, int, int, int, int], ...]
-_InventoryKey = tuple[str, str, _DirectorySignature | None, _DirectorySignature | None]
+_InventoryKey = tuple[
+    str, str, _DirectorySignature | None, _DirectorySignature | None, _DirectorySignature | None
+]
 _inventory_cache: OrderedDict[_InventoryKey, "ExtensionsView"] = OrderedDict()
 _inventory_cache_lock = RLock()
+
+#: The counterpart extension folder for each loader-defined one. A jar sitting
+#: in the wrong one of these two (e.g. a Fabric mod dropped into ``plugins/``
+#: on a Fabric server, or a Paper plugin dropped into ``mods/``) never loads,
+#: so it is surfaced the same way stray jars on a vanilla profile are.
+_STRAY_EXTENSION_DIRECTORY = {"plugins": "mods", "mods": "plugins"}
 
 Kind = Literal["paper-plugin", "fabric-mod", "quilt-mod", "neoforge-mod", "forge-mod", "unknown"]
 
@@ -406,18 +414,19 @@ def _directory_signature(folder: Path) -> _DirectorySignature | None:
 
 
 def _inventory_key(
-    server_directory: Path, distribution: str, folder: Path, disabled: Path
+    server_directory: Path, distribution: str, folder: Path, disabled: Path, stray: Path | None
 ) -> _InventoryKey:
     return (
         str(server_directory),
         distribution,
         _directory_signature(folder),
         _directory_signature(disabled),
+        _directory_signature(stray) if stray is not None else (),
     )
 
 
 def _cached_inventory(key: _InventoryKey) -> ExtensionsView | None:
-    if key[2] is None or key[3] is None:
+    if any(component is None for component in key[2:]):
         return None
     with _inventory_cache_lock:
         cached = _inventory_cache.get(key)
@@ -428,7 +437,7 @@ def _cached_inventory(key: _InventoryKey) -> ExtensionsView | None:
 
 
 def _store_inventory(key: _InventoryKey, view: ExtensionsView) -> None:
-    if key[2] is None or key[3] is None:
+    if any(component is None for component in key[2:]):
         return
     with _inventory_cache_lock:
         _inventory_cache[key] = view.model_copy(deep=True)
@@ -464,18 +473,34 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
         )
     folder = server_directory / info.extension_directory
     disabled = server_directory / f"{info.extension_directory}-disabled"
-    key = _inventory_key(server_directory, distribution, folder, disabled)
+    stray_name = _STRAY_EXTENSION_DIRECTORY[info.extension_directory]
+    stray_dir = server_directory / stray_name
+    key = _inventory_key(server_directory, distribution, folder, disabled, stray_dir)
     cached = _cached_inventory(key)
     if cached is not None:
         return cached
     disabled_entries = [inspect_extension_jar(jar) for jar in _list_jars(disabled)[:MAX_JARS]]
+    stray_jars = [jar.name for jar in _list_jars(stray_dir)]
+    stray_warnings = (
+        [
+            ExtensionWarning(
+                code="wrong-directory",
+                message=f"These files are in {stray_name}/, which this {info.label} server "
+                f"does not load. Move them into {info.extension_directory}/ if they belong "
+                f"here, or remove them.",
+                files=sorted(stray_jars),
+            )
+        ]
+        if stray_jars
+        else []
+    )
     if not folder.is_dir():
         view = ExtensionsView(
             directory=info.extension_directory,
             present=False,
             entries=[],
             disabled_entries=disabled_entries,
-            warnings=[],
+            warnings=stray_warnings,
             truncated=False,
         )
         # A directory that changed mid-scan just produces a signature the next
@@ -490,7 +515,7 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
         present=True,
         entries=entries,
         disabled_entries=disabled_entries,
-        warnings=_collect_warnings(distribution, entries),
+        warnings=[*_collect_warnings(distribution, entries), *stray_warnings],
         truncated=len(jars) > MAX_JARS,
     )
     _store_inventory(key, view)

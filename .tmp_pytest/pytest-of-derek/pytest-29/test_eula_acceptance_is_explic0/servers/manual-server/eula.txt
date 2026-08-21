@@ -1,0 +1,3 @@
+# Accepted through the Blockstead dashboard.
+# By changing this you agree to the Minecraft EULA (https://aka.ms/MinecraftEULA).
+eula=true

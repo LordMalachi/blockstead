@@ -1,0 +1,5 @@
+{
+  // updated
+  renderDistance: 16,
+  extra: ['a', 'b',],
+}

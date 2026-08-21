@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from .host_fs import restrict_to_owner, rmtree
+
 
 def tree_size(path: Path) -> int | None:
     """Return a regular-file tree size, or ``None`` when the view is incomplete."""
@@ -297,7 +299,7 @@ def remove_cleanup_targets(data_directory: Path, targets: list[CleanupTarget]) -
         if target.kind == "file":
             resolved.unlink()
         else:
-            shutil.rmtree(resolved)
+            rmtree(resolved)
         removed += 1
     return removed
 
@@ -326,7 +328,8 @@ def check_backup_destination(target_directory: Path, required_root: Path) -> dic
 
     try:
         target_directory.relative_to(required_root)
-        target_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target_directory.mkdir(parents=True, exist_ok=True)
+        restrict_to_owner(target_directory)
         target = target_directory.resolve(strict=True)
         target.relative_to(root)
         if target.is_symlink() or not target.is_dir():

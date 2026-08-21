@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
+from .host_fs import atomic_write_text, describe_os_error, fsync_path, restrict_to_owner, rmtree
+
 MANIFEST_VERSION = 1
 #: Extra free space demanded beyond the extracted size before a restore begins.
 RESTORE_DISK_MARGIN_BYTES = 64 * 1024 * 1024
@@ -46,7 +48,11 @@ def mirror_backup_archive(
             for name in (archive.file_name, archive.manifest_name):
                 temporary = target / f".{name}.partial"
                 shutil.copyfile(source / name, temporary)
-                os.chmod(temporary, 0o600)
+                # copyfile does not fsync; force the mirrored copy to disk
+                # before it becomes visible under its real name, since a
+                # mirror destination is often removable or network storage.
+                fsync_path(temporary)
+                restrict_to_owner(temporary)
                 os.replace(temporary, target / name)
             copied.append(str(root))
         except OSError:
@@ -196,15 +202,14 @@ def create_backup_archive(
         raise BackupError("No world directory was found for this server.")
 
     destination = backup_directory(destination_root, profile_id)
-    destination.mkdir(parents=True, exist_ok=True, mode=0o700)
-    destination.chmod(0o700)
+    destination.mkdir(parents=True, exist_ok=True)
+    restrict_to_owner(destination)
     stamp = created_at.strftime("%Y%m%d-%H%M%S")
     file_name = f"{stamp}-{backup_id[:8]}.tar.gz"
     manifest_name = f"{stamp}-{backup_id[:8]}.manifest.json"
     archive_path = destination / file_name
     manifest_path = destination / manifest_name
     partial_path = destination / f".{file_name}.partial"
-    manifest_partial = destination / f".{manifest_name}.partial"
 
     excluded_links = 0
 
@@ -221,7 +226,8 @@ def create_backup_archive(
         with tarfile.open(partial_path, "w:gz", format=tarfile.PAX_FORMAT) as archive:
             for root in roots:
                 archive.add(root, arcname=root.name, recursive=True, filter=keep_member)
-        partial_path.chmod(0o600)
+        fsync_path(partial_path)
+        restrict_to_owner(partial_path)
         sha256 = _sha256_of(partial_path)
         size_bytes = partial_path.stat().st_size
         manifest = {
@@ -244,19 +250,18 @@ def create_backup_archive(
             },
             "application_version": application_version,
         }
-        manifest_partial.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        manifest_partial.chmod(0o600)
         os.replace(partial_path, archive_path)
         try:
-            os.replace(manifest_partial, manifest_path)
+            atomic_write_text(
+                manifest_path,
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                before_replace=restrict_to_owner,
+            )
         except OSError:
             archive_path.unlink(missing_ok=True)
             raise
     except (OSError, tarfile.TarError) as exc:
         partial_path.unlink(missing_ok=True)
-        manifest_partial.unlink(missing_ok=True)
         raise BackupError("The world archive could not be written.") from exc
 
     return BackupArchive(
@@ -441,9 +446,13 @@ def perform_restore(
     )
     archive_path = _stored_file(destination_root, profile_id, file_name)
     staging = server_directory / _STAGING_NAME
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(mode=0o700)
+    try:
+        if staging.exists():
+            rmtree(staging)
+        staging.mkdir()
+        restrict_to_owner(staging)
+    except OSError as exc:
+        raise RestoreError(describe_os_error(exc, staging)) from exc
 
     try:
         with tarfile.open(archive_path, "r:gz") as archive:
@@ -454,12 +463,20 @@ def perform_restore(
                 # fresh service-account ownership and umask permissions.
                 archive.extract(member, path=staging, set_attrs=False)
     except (OSError, tarfile.TarError) as exc:
-        shutil.rmtree(staging, ignore_errors=True)
+        # A RestoreError is about to be raised regardless of whether this
+        # cleanup succeeds, so a failure here is genuinely best-effort.
+        try:
+            rmtree(staging)
+        except OSError:
+            pass
         raise RestoreError("The backup could not be unpacked for restore.") from exc
 
     present = [name for name in plan.included_paths if (staging / name).is_dir()]
     if tuple(present) != plan.included_paths:
-        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            rmtree(staging)
+        except OSError:
+            pass
         raise RestoreError("The unpacked backup is missing an expected world folder.")
 
     stamp = now.strftime("pre-restore-%Y%m%d-%H%M%S")
@@ -503,7 +520,13 @@ def perform_restore(
             f"{stamp} names."
         ) from exc
 
-    shutil.rmtree(staging, ignore_errors=True)
+    # The world swap above already fully succeeded; removing the now-empty
+    # staging folder is tidiness, not correctness. A leftover folder is
+    # picked up and removed by the next restore's leading cleanup instead.
+    try:
+        rmtree(staging)
+    except OSError:
+        pass
     return RestoreResult(restored_paths=tuple(swapped), preserved_paths=tuple(preserved))
 
 
@@ -533,11 +556,11 @@ def perform_recovery_drill(
         expected_sha256,
     )
     try:
-        drill_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        drill_root.chmod(0o700)
+        drill_root.mkdir(parents=True, exist_ok=True)
+        restrict_to_owner(drill_root)
         available = shutil.disk_usage(drill_root).free
     except OSError as exc:
-        raise RestoreError("Private recovery staging storage is unavailable.") from exc
+        raise RestoreError(describe_os_error(exc, drill_root)) from exc
     if available < plan.required_bytes:
         raise RestoreError(
             "There is not enough free disk space to stage this recovery drill safely. "

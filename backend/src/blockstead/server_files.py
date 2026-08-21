@@ -21,6 +21,7 @@ from .file_paths import (
     promote_extracted,
     resolve_target,
 )
+from .host_fs import atomic_write_bytes, copy_mode, describe_os_error, restrict_to_owner
 from .player_sessions import PlayerSessionInfo
 from .server_settings import MAX_FILE_BYTES as MAX_FILE_BYTES
 from .server_settings import read_settings as read_settings
@@ -410,39 +411,29 @@ def _write_snapshot(
     snapshot_root: Path, profile_id: str, category: FileCategory, name: str, raw: bytes
 ) -> str:
     snapshot_directory = snapshot_root / "file-snapshots" / profile_id / category
-    snapshot_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    snapshot_directory.chmod(0o700)
+    snapshot_directory.mkdir(parents=True, exist_ok=True)
+    restrict_to_owner(snapshot_directory)
     stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     snapshot_name = f"{stamp}-{uuid4().hex[:8]}-{name}"
     snapshot = snapshot_directory / snapshot_name
-    with snapshot.open("xb") as handle:
-        fchmod = getattr(os, "fchmod", None)
-        if fchmod is not None:
-            fchmod(handle.fileno(), 0o600)
-        else:
-            snapshot.chmod(0o600)
-        handle.write(raw)
-        handle.flush()
-        os.fsync(handle.fileno())
+    atomic_write_bytes(snapshot, raw, before_replace=restrict_to_owner)
     return snapshot_name
 
 
 def _replace_atomically(path: Path, raw: bytes, updated: bytes) -> None:
-    staging = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    try:
-        with staging.open("xb") as handle:
-            handle.write(updated)
-            handle.flush()
-            os.fsync(handle.fileno())
-        staging.chmod(path.stat().st_mode & 0o777)
+    def before_replace(staging: Path) -> None:
         if path.read_bytes() != raw:
             raise FileConflictError(
                 "This file changed while the update was being prepared. Reload and retry."
             )
-        os.replace(staging, path)
-    except (OSError, FileConflictError):
-        staging.unlink(missing_ok=True)
+        copy_mode(path, staging)
+
+    try:
+        atomic_write_bytes(path, updated, before_replace=before_replace)
+    except FileConflictError:
         raise
+    except OSError as exc:
+        raise FileConflictError(describe_os_error(exc, path)) from exc
 
 
 def apply_file_edit(

@@ -85,6 +85,64 @@ def test_upload_start_refuses_existing_folder(
     )
     assert response.status_code == 409
     assert "already exists" in response.json()["error"]["message"]
+    field_error = response.json()["error"]["fields"][0]
+    assert field_error["field"] == "directory_name"
+    assert field_error["reason"] == "ALREADY_EXISTS"
+    assert field_error["suggestion"] == "my-server-2"
+
+
+def test_upload_start_rejects_invalid_directory_name_with_field_error(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    response = client.post(
+        "/api/v1/imports/uploads", headers=auth, json={"directory_name": "My Server!"}
+    )
+    assert response.status_code == 400
+    field_error = response.json()["error"]["fields"][0]
+    assert field_error["field"] == "directory_name"
+    assert field_error["reason"]
+    assert field_error["rule"]
+    assert field_error["suggestion"] == "my-server"
+
+
+def test_upload_finish_rejects_invalid_directory_name_with_field_error(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    started = client.post(
+        "/api/v1/imports/uploads", headers=auth, json={"directory_name": "my-server"}
+    )
+    upload_id = started.json()["upload_id"]
+    upload_files(client, auth, upload_id, [("files", ("server.properties", b"motd=hi\n"))])
+    response = client.post(
+        f"/api/v1/imports/uploads/{upload_id}/finish",
+        headers=auth,
+        json={"name": "New World", "directory_name": "Bad Name!"},
+    )
+    assert response.status_code == 400
+    field_error = response.json()["error"]["fields"][0]
+    assert field_error["field"] == "directory_name"
+    assert field_error["suggestion"] == "bad-name"
+
+
+def test_upload_finish_refuses_existing_folder_with_field_error(
+    client: TestClient, auth: dict[str, str], tmp_path: Path
+) -> None:
+    started = client.post(
+        "/api/v1/imports/uploads", headers=auth, json={"directory_name": "my-server"}
+    )
+    upload_id = started.json()["upload_id"]
+    upload_files(client, auth, upload_id, [("files", ("server.properties", b"motd=hi\n"))])
+    (tmp_path / "servers" / "my-server").mkdir()
+    response = client.post(
+        f"/api/v1/imports/uploads/{upload_id}/finish",
+        headers=auth,
+        json={"name": "New World", "directory_name": "my-server"},
+    )
+    assert response.status_code == 409
+    field_error = response.json()["error"]["fields"][0]
+    assert field_error["field"] == "directory_name"
+    assert field_error["reason"] == "ALREADY_EXISTS"
+    assert field_error["suggestion"] == "my-server-2"
 
 
 def test_upload_unknown_id_is_not_found(client: TestClient, auth: dict[str, str]) -> None:

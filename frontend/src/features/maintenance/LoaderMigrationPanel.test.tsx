@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { vi } from "vitest";
+import { SERVER_DIRECTORY_PATTERN } from "../../lib/server-directory";
 import { LoaderMigrationPanel } from "./LoaderMigrationPanel";
 
 const review = {
@@ -119,4 +120,97 @@ test("normalizes an uppercase custom server folder before creating the copy", as
       }),
     }),
   ));
+});
+
+test("the pre-filled folder placeholder already satisfies the server folder pattern", async () => {
+  const fetch = vi.fn().mockImplementation((url: string) => {
+    const body = url.endsWith("/profiles")
+      ? [{ id: "profile-1", name: "Family", server_directory: "/servers/family", distribution: "fabric", minecraft_version: "1.21.1", loader_version: "1", is_fixture: false }]
+      : review;
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
+  });
+  vi.stubGlobal("fetch", fetch);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter><LoaderMigrationPanel profileId="profile-1" /></MemoryRouter>
+    </QueryClientProvider>,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Review modded copy" }));
+  await screen.findByText("Extension rebuild checklist");
+  const directory = screen.getByLabelText<HTMLInputElement>("New server folder");
+  const placeholder = directory.placeholder;
+  expect(placeholder).toBeTruthy();
+  expect(SERVER_DIRECTORY_PATTERN.test(placeholder)).toBe(true);
+  expect(directory).not.toHaveAttribute("aria-invalid");
+});
+
+test("shows a live suggestion while typing an invalid folder name, before submit", async () => {
+  const fetch = vi.fn().mockImplementation((url: string) => {
+    const body = url.endsWith("/profiles")
+      ? [{ id: "profile-1", name: "Family", server_directory: "/servers/family", distribution: "fabric", minecraft_version: "1.21.1", loader_version: "1", is_fixture: false }]
+      : review;
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
+  });
+  vi.stubGlobal("fetch", fetch);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter><LoaderMigrationPanel profileId="profile-1" /></MemoryRouter>
+    </QueryClientProvider>,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Review modded copy" }));
+  await screen.findByText("Extension rebuild checklist");
+  const directory = screen.getByLabelText("New server folder");
+
+  fireEvent.change(directory, { target: { value: "Bad__Folder!!" } });
+
+  expect(directory).toHaveAttribute("aria-invalid", "true");
+  const notice = screen.getByRole("alert");
+  expect(notice).toHaveTextContent(/Use only lowercase letters/);
+  fireEvent.click(screen.getByRole("button", { name: /Use suggested name.*bad_folder/ }));
+  expect(directory).toHaveValue("bad_folder");
+  expect(directory).not.toHaveAttribute("aria-invalid");
+});
+
+test("highlights the folder field when the API rejects the apply request", async () => {
+  const fetch = vi.fn().mockImplementation((url: string) => {
+    if (url.endsWith("/profiles")) return Promise.resolve(new Response(JSON.stringify([{ id: "profile-1", name: "Family", server_directory: "/servers/family", distribution: "fabric", minecraft_version: "1.21.1", loader_version: "1", is_fixture: false }]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    if (url.includes("/loader-migration/review")) return Promise.resolve(new Response(JSON.stringify(review), { status: 200, headers: { "Content-Type": "application/json" } }));
+    return Promise.resolve(new Response(JSON.stringify({
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Some submitted information was invalid.",
+        recovery: "Review the highlighted fields and try again.",
+        fields: [{
+          field: "directory_name",
+          reason: "ALREADY_EXISTS",
+          message: "A server already uses this folder name.",
+          rule: null,
+          suggestion: "family-paper-2",
+        }],
+      },
+    }), { status: 422, headers: { "Content-Type": "application/json" } }));
+  });
+  vi.stubGlobal("fetch", fetch);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter><LoaderMigrationPanel profileId="profile-1" /></MemoryRouter>
+    </QueryClientProvider>,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Review modded copy" }));
+  await screen.findByText("Extension rebuild checklist");
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: "Create Paper copy" }));
+
+  const directory = await screen.findByLabelText("New server folder");
+  await waitFor(() => expect(directory).toHaveAttribute("aria-invalid", "true"));
+  expect(screen.getByText("A server already uses this folder name.")).toBeVisible();
+
+  fireEvent.click(screen.getByRole("button", { name: /Use suggested name.*family-paper-2/ }));
+  expect(directory).toHaveValue("family-paper-2");
 });

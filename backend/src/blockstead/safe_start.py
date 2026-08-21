@@ -38,6 +38,7 @@ from .extension_ops import (
     ensure_managed_directory,
 )
 from .extensions import ExtensionEntry
+from .host_fs import apply_mode, describe_os_error, rmtree
 from .modrinth import JAR_NAME_PATTERN
 from .process import InvalidTransition, LogEvent, ProcessManager, ProcessState
 
@@ -378,7 +379,7 @@ def cleanup_validation_workspaces(
                 <= VALIDATION_WORKSPACE_RETENTION_SECONDS
             ):
                 continue
-            shutil.rmtree(candidate)
+            rmtree(candidate)
             removed.append(candidate.name)
         except OSError:
             continue
@@ -585,7 +586,8 @@ class _PropertiesSnapshot:
             self._replace(self.content + suffix + private, self.mode)
         except OSError as exc:
             raise SafeStartError(
-                "Blockstead could not apply private validation settings."
+                f"Blockstead could not apply private validation settings: "
+                f"{describe_os_error(exc, self.path)}"
             ) from exc
 
     def restore(self) -> None:
@@ -597,7 +599,8 @@ class _PropertiesSnapshot:
                 _fsync_directory(self.path.parent)
         except OSError as exc:
             raise SafeStartError(
-                "Blockstead could not restore server.properties after validation."
+                f"Blockstead could not restore server.properties after validation: "
+                f"{describe_os_error(exc, self.path)}"
             ) from exc
 
     def _replace(self, content: bytes, mode: int) -> None:
@@ -607,7 +610,7 @@ class _PropertiesSnapshot:
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
-            staging.chmod(mode)
+            apply_mode(staging, mode)
             os.replace(staging, self.path)
             _fsync_directory(self.path.parent)
         finally:
@@ -695,7 +698,13 @@ def _prepare_validation_workspace(plan: SafeStartPlan) -> Path:
     try:
         shutil.copytree(source, target, symlinks=False, ignore=ignore)
     except OSError as exc:
-        shutil.rmtree(target, ignore_errors=True)
+        # A SafeStartError is raised regardless; the partial workspace is
+        # also swept up later by cleanup_abandoned_validation_workspaces,
+        # so a failure to remove it here right away is not a lost rollback.
+        try:
+            rmtree(target)
+        except OSError:
+            pass
         raise SafeStartError(
             "Blockstead could not create the disposable validation workspace."
         ) from exc
@@ -716,7 +725,7 @@ def _remove_validation_worlds(directory: Path, world_name: str) -> tuple[bool, l
             )
             continue
         try:
-            shutil.rmtree(candidate)
+            rmtree(candidate)
         except OSError:
             clean = False
             warnings.append(
@@ -734,7 +743,7 @@ def _remove_validation_workspace(directory: Path) -> tuple[bool, str | None]:
             "The private validation workspace became unsafe and was left in place.",
         )
     try:
-        shutil.rmtree(directory)
+        rmtree(directory)
     except OSError:
         return (
             False,

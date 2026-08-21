@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from .catalog import PlannedFile
 from .extension_ops import ExtensionOpsError, ensure_managed_directory
+from .host_fs import atomic_write_text, restrict_to_owner, rmtree
 from .modrinth import JAR_NAME_PATTERN
 
 RECOVERY_ID_LENGTH = 24
@@ -145,15 +146,13 @@ def _manifest_path(directory: Path) -> Path:
 
 def _write_manifest(directory: Path, payload: dict[str, object]) -> None:
     path = _manifest_path(directory)
-    temporary = directory / ".recovery.json.partial"
     try:
-        temporary.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        atomic_write_text(
+            path,
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            before_replace=restrict_to_owner,
         )
-        temporary.chmod(0o600)
-        os.replace(temporary, path)
     except OSError as exc:
-        temporary.unlink(missing_ok=True)
         raise ExtensionRecoveryError(
             "Blockstead could not record the extension recovery instructions."
         ) from exc
@@ -175,10 +174,10 @@ def prepare_recovery(
     recovery_id = secrets.token_hex(RECOVERY_ID_LENGTH // 2)
     recovery = recovery_root / "extension-updates" / profile_id / recovery_id
     try:
-        recovery.mkdir(parents=True, mode=0o700)
-        recovery.chmod(0o700)
+        recovery.mkdir(parents=True)
+        restrict_to_owner(recovery)
         shutil.copy2(source, recovery / review.file_name)
-        (recovery / review.file_name).chmod(0o600)
+        restrict_to_owner(recovery / review.file_name)
         _write_manifest(
             recovery,
             {
@@ -195,7 +194,12 @@ def prepare_recovery(
             },
         )
     except (OSError, ExtensionOpsError, ExtensionRecoveryError):
-        shutil.rmtree(recovery, ignore_errors=True)
+        # A failure is already about to be raised either way; removing the
+        # abandoned recovery folder is tidiness, not correctness.
+        try:
+            rmtree(recovery)
+        except OSError:
+            pass
         raise
     return recovery_id, recovery
 
@@ -224,7 +228,14 @@ def finalize_recovery(
 
 
 def discard_recovery(recovery: Path) -> None:
-    shutil.rmtree(recovery, ignore_errors=True)
+    # Called after the live extension state has already been restored by
+    # extension_ops's own rollback (which does report its failures); a
+    # leftover, never-finalized recovery folder here is orphaned disk usage,
+    # not a mistaken "restored" report, so this stays best-effort.
+    try:
+        rmtree(recovery)
+    except OSError:
+        pass
 
 
 def _read_recovery(

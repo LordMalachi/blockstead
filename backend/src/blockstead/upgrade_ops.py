@@ -17,12 +17,12 @@ import hashlib
 import json
 import os
 import secrets
-import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .distributions import LaunchPlanError, launch_arguments
+from .host_fs import atomic_write_text, describe_os_error, restrict_to_owner, rmtree
 
 DIRECT_UPGRADE_DISTRIBUTIONS = frozenset({"vanilla", "paper", "fabric"})
 RECOVERY_ID_LENGTH = 24
@@ -98,15 +98,13 @@ def create_upgrade_staging(server_directory: Path) -> Path:
 
 
 def _write_manifest(path: Path, payload: dict[str, object]) -> None:
-    temporary = path.with_name(f".{path.name}.partial")
     try:
-        temporary.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        atomic_write_text(
+            path,
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            before_replace=restrict_to_owner,
         )
-        temporary.chmod(0o600)
-        os.replace(temporary, path)
     except OSError as exc:
-        temporary.unlink(missing_ok=True)
         raise UpgradeOperationError(
             "Blockstead could not record the launch-file recovery instructions."
         ) from exc
@@ -148,12 +146,10 @@ def promote_launch_upgrade(
             ) from exc
 
     try:
-        recovery_directory.mkdir(parents=True, mode=0o700)
-        recovery_directory.chmod(0o700)
+        recovery_directory.mkdir(parents=True)
+        restrict_to_owner(recovery_directory)
     except OSError as exc:
-        raise UpgradeOperationError(
-            "Blockstead could not prepare the launch-file recovery folder."
-        ) from exc
+        raise UpgradeOperationError(describe_os_error(exc, recovery_directory)) from exc
 
     promoted = False
     try:
@@ -190,7 +186,12 @@ def promote_launch_upgrade(
                 os.replace(previous, active)
             except OSError:
                 rollback_failed = True
-        shutil.rmtree(recovery_directory, ignore_errors=True)
+        # An UpgradeOperationError is raised either way below; removing the
+        # never-finalized recovery folder here is tidiness, not correctness.
+        try:
+            rmtree(recovery_directory)
+        except OSError:
+            pass
         if rollback_failed:
             raise UpgradeOperationError(
                 "The replacement could not be activated and Blockstead could not fully "

@@ -1,0 +1,12 @@
+{
+  "acknowledged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "baseline_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "last_checked_at": "2026-07-20T12:00:00+00:00",
+  "last_error": null,
+  "requested_at": "2026-07-20T12:00:00+00:00",
+  "requested_attempt": "11111111111111111111111111111111",
+  "requested_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "requested_summary": "Add a thing",
+  "resume_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "resume_profile_id": "profile-1"
+}

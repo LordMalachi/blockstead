@@ -8,8 +8,9 @@ import {
   type Profile,
 } from "../../api/client";
 import { Button } from "../../components/Button";
+import { FieldNotice, useFieldErrors } from "../../components/FieldError";
 import { formatBytes } from "../../lib/format";
-import { normalizeServerDirectoryName } from "../../lib/server-directory";
+import { describeServerDirectoryName, normalizeServerDirectoryName } from "../../lib/server-directory";
 
 const targets = [
   ["paper", "Paper", "Server plugins; players use normal Minecraft."],
@@ -34,6 +35,7 @@ export function LoaderMigrationPanel({ profileId }: { profileId: string }) {
   const [name, setName] = useState("");
   const [directory, setDirectory] = useState("");
   const [acknowledge, setAcknowledge] = useState(false);
+  const fieldErrors = useFieldErrors();
 
   const review = useMutation({
     mutationFn: () => api<LoaderMigrationReview>(`/profiles/${profileId}/loader-migration/review`, {
@@ -59,19 +61,31 @@ export function LoaderMigrationPanel({ profileId }: { profileId: string }) {
       }),
     }),
     onSuccess: result => {
+      fieldErrors.clear();
       sessionStorage.setItem(`blockstead_migration_${result.id}`, JSON.stringify(result));
       void client.invalidateQueries({ queryKey: ["profiles"] });
       void navigate(result.next_route);
     },
+    onError: error => fieldErrors.setFromError(error),
   });
 
   function changeTarget(value: typeof target) {
     setTarget(value);
     setName("");
     setDirectory("");
+    fieldErrors.clear();
     review.reset();
     apply.reset();
   }
+
+  // Live-check the folder name as the owner types, so an invalid value shows its
+  // suggestion immediately instead of only after submit or on blur.
+  function changeDirectory(value: string) {
+    setDirectory(value);
+    fieldErrors.setField("directory_name", value.trim() ? describeServerDirectoryName(value, normalizeServerDirectoryName(suggestedName, "modded-server")) : null);
+  }
+  const nameError = fieldErrors.get("name");
+  const directoryError = fieldErrors.get("directory_name");
 
   return <section className="maintenance-migration" aria-labelledby="migration-heading">
     <div>
@@ -126,8 +140,10 @@ export function LoaderMigrationPanel({ profileId }: { profileId: string }) {
         </li>)}</ul>
       </div>}
       {plan.ready && <div className="migration-create">
-        <label>New profile name<input value={name} placeholder={suggestedName} maxLength={80} onChange={event => setName(event.target.value)} /></label>
-        <label>New server folder<input value={directory} placeholder={normalizeServerDirectoryName(suggestedName, "modded-server")} pattern="[a-z0-9][a-z0-9_-]*" maxLength={64} onChange={event => setDirectory(event.target.value)} onBlur={() => setDirectory(current => current.trim() ? chosenDirectory : current)} /></label>
+        <label>New profile name<input value={name} placeholder={suggestedName} maxLength={80} onChange={event => setName(event.target.value)} {...fieldErrors.controlProps("name")} /></label>
+        {nameError && <FieldNotice id={fieldErrors.noticeId("name")} error={nameError} onUseSuggestion={value => setName(value)} />}
+        <label>New server folder<input value={directory} placeholder={normalizeServerDirectoryName(suggestedName, "modded-server")} pattern="[a-z0-9][a-z0-9_-]*" maxLength={64} onChange={event => changeDirectory(event.target.value)} onBlur={() => { if (directory.trim()) changeDirectory(chosenDirectory); }} {...fieldErrors.controlProps("directory_name")} /></label>
+        {directoryError && <FieldNotice id={fieldErrors.noticeId("directory_name")} error={directoryError} onUseSuggestion={value => changeDirectory(value)} />}
         <small>The complete destination will be <code>{destinationDirectory}</code>.</small>
         {directory.trim() && directory.trim() !== chosenDirectory && <small className="muted-note">The folder name will be saved as <code>{chosenDirectory}</code> so it works on every supported host.</small>}
         {plan.modded_world_warning && <label className="maintenance-booking-toggle">
