@@ -1,5 +1,0 @@
-settings:
-  internal-webserver:
-    enabled: false
-    bind: 0.0.0.0
-    port: 9000
