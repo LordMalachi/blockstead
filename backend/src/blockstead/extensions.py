@@ -7,6 +7,7 @@ prove some incompatibilities, but it can never prove compatibility.
 
 import hashlib
 import json
+import re
 import zipfile
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -65,6 +66,7 @@ class ExtensionEntry(BaseModel):
     minecraft_constraint: str | None
     environment: str | None
     dependencies: list[str]
+    dependency_constraints: dict[str, str] = {}
     readable: bool
 
 
@@ -92,6 +94,7 @@ class _Metadata:
     minecraft_constraint: str | None = None
     environment: str | None = None
     dependencies: list[str] = field(default_factory=list)
+    dependency_constraints: dict[str, str] = field(default_factory=dict)
 
     def fill(self, attribute: str, value: str | None) -> None:
         """Record a value only when nothing earlier already claimed the field."""
@@ -136,19 +139,17 @@ def _parse_fabric(raw: bytes, found: _Metadata) -> None:
     depends = data.get("depends")
     if isinstance(depends, dict):
         found.fill("minecraft_constraint", _clean(depends.get("minecraft")))
+        excluded = {"minecraft", "java", "fabricloader", "quilt_loader", "forge", "neoforge"}
         if not found.dependencies:
             found.dependencies = sorted(
-                str(key)[:100]
-                for key in depends
-                if key not in {
-                    "minecraft",
-                    "java",
-                    "fabricloader",
-                    "quilt_loader",
-                    "forge",
-                    "neoforge",
-                }
+                str(key)[:100] for key in depends if key not in excluded
             )
+        if not found.dependency_constraints:
+            found.dependency_constraints = {
+                str(key)[:100]: cleaned
+                for key, value in depends.items()
+                if key not in excluded and (cleaned := _clean(value)) is not None
+            }
 
 
 def _parse_quilt(raw: bytes, found: _Metadata) -> None:
@@ -170,6 +171,7 @@ def _parse_quilt(raw: bytes, found: _Metadata) -> None:
     depends = loader.get("depends")
     records = depends if isinstance(depends, list) else []
     declared: list[str] = []
+    declared_constraints: dict[str, str] = {}
     for record in records:
         if not isinstance(record, dict):
             continue
@@ -180,8 +182,13 @@ def _parse_quilt(raw: bytes, found: _Metadata) -> None:
             found.fill("minecraft_constraint", _clean(constraint))
         elif isinstance(dep_id, str) and dep_id not in {"java", "quilt_loader"}:
             declared.append(dep_id[:100])
+            cleaned = _clean(constraint)
+            if cleaned is not None:
+                declared_constraints[dep_id[:100]] = cleaned
     if declared and not found.dependencies:
         found.dependencies = sorted(declared)
+    if declared_constraints and not found.dependency_constraints:
+        found.dependency_constraints = declared_constraints
 
 
 def _parse_mods_toml(raw: bytes, loader: str, found: _Metadata) -> None:
@@ -200,6 +207,7 @@ def _parse_mods_toml(raw: bytes, loader: str, found: _Metadata) -> None:
     mod_id = first.get("modId")
     dependencies = data.get("dependencies")
     declared: list[str] = []
+    declared_constraints: dict[str, str] = {}
     records = (
         dependencies.get(mod_id)
         if isinstance(dependencies, dict) and isinstance(mod_id, str)
@@ -213,8 +221,13 @@ def _parse_mods_toml(raw: bytes, loader: str, found: _Metadata) -> None:
             found.fill("minecraft_constraint", _clean(record.get("versionRange")))
         elif isinstance(dep_id, str) and dep_id != loader:
             declared.append(dep_id[:100])
+            cleaned = _clean(record.get("versionRange"))
+            if cleaned is not None:
+                declared_constraints[dep_id[:100]] = cleaned
     if declared and not found.dependencies:
         found.dependencies = sorted(declared)
+    if declared_constraints and not found.dependency_constraints:
+        found.dependency_constraints = declared_constraints
 
 
 def _parse_plugin_yml(raw: bytes, found: _Metadata) -> None:
@@ -259,6 +272,136 @@ def _parse_plugin_yml(raw: bytes, found: _Metadata) -> None:
             )
     if required and not found.dependencies:
         found.dependencies = sorted(set(required))
+
+
+#: Simple Fabric/Quilt-style comparator prefixes, longest first so "==" is not
+#: mis-split by the single-character "=" branch.
+_SIMPLE_VERSION_OPERATORS = (">=", "<=", "==", "^", "~", ">", "<", "=")
+_NUMERIC_VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
+
+
+def _numeric_version_tuple(text: str) -> tuple[int, ...] | None:
+    text = text.strip()
+    if not _NUMERIC_VERSION_RE.match(text):
+        return None
+    return tuple(int(part) for part in text.split("."))
+
+
+def _compare_numeric_versions(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+    length = max(len(left), len(right))
+    left_padded = left + (0,) * (length - len(left))
+    right_padded = right + (0,) * (length - len(right))
+    if left_padded < right_padded:
+        return -1
+    if left_padded > right_padded:
+        return 1
+    return 0
+
+
+def semver_constraint_satisfied(installed_version: str, constraint: str) -> bool | None:
+    """Evaluate one simple Fabric/Quilt-style dependency version constraint.
+
+    Supports a single ``>=``, ``<=``, ``>``, ``<``, ``=``/``==``, ``~``
+    (tilde: same major.minor), ``^`` (caret: same major, or same
+    major.minor when major is 0), a bare exact version, or ``*``.
+
+    Returns ``True``/``False`` only when confidently determined. Returns
+    ``None`` for syntax this cannot evaluate safely — comma/``||`` lists
+    (Fabric and Quilt both allow multiple alternatives), wildcards, or a
+    non-numeric version component — so a caller never turns a constraint it
+    misread into a false "incompatible" verdict that blocks a legitimate
+    install.
+    """
+    text = constraint.strip()
+    if not text or text == "*":
+        return True
+    if "," in text or "||" in text or " - " in text or "x" in text.lower():
+        return None
+    operator = "="
+    for candidate in _SIMPLE_VERSION_OPERATORS:
+        if text.startswith(candidate):
+            operator = "=" if candidate == "==" else candidate
+            text = text[len(candidate) :].strip()
+            break
+    target = _numeric_version_tuple(text)
+    current = _numeric_version_tuple(installed_version)
+    if target is None or current is None:
+        return None
+    order = _compare_numeric_versions(current, target)
+    if operator == "=":
+        return order == 0
+    if operator == ">=":
+        return order >= 0
+    if operator == "<=":
+        return order <= 0
+    if operator == ">":
+        return order > 0
+    if operator == "<":
+        return order < 0
+    if operator == "~":
+        return _compare_numeric_versions(current[:2], target[:2]) == 0 and order >= 0
+    if operator == "^":
+        if target[:1] != (0,):
+            return current[:1] == target[:1] and order >= 0
+        return current[:2] == target[:2] and order >= 0
+    return None  # pragma: no cover - every branch above is exhaustive
+
+
+def maven_range_satisfied(installed_version: str, range_text: str) -> bool | None:
+    """Evaluate a Forge/NeoForge Maven-style version range, e.g. ``[1.20,1.21)``.
+
+    This syntax is an unambiguous, documented Maven format, so unlike
+    :func:`semver_constraint_satisfied` this evaluates the full grammar:
+    inclusive ``[``/``]`` and exclusive ``(``/``)`` bounds, an open bound on
+    either side (``[1.20,)``), and a single bracketed version meaning an
+    exact match (``[1.20.1]``). Returns ``None`` for a bare "recommended"
+    version with no brackets — Maven treats that as a soft suggestion, not
+    an enforced bound — or when a bound is not a plain numeric version.
+    """
+    text = range_text.strip()
+    if len(text) < 2 or text[0] not in "[(" or text[-1] not in "])":
+        return None
+    body = text[1:-1]
+    current = _numeric_version_tuple(installed_version)
+    if current is None:
+        return None
+    if "," in body:
+        low_text, _, high_text = body.partition(",")
+    else:
+        low_text = high_text = body
+    low_text, high_text = low_text.strip(), high_text.strip()
+    if low_text:
+        low = _numeric_version_tuple(low_text)
+        if low is None:
+            return None
+        comparison = _compare_numeric_versions(current, low)
+        if text[0] == "[" and comparison < 0:
+            return False
+        if text[0] == "(" and comparison <= 0:
+            return False
+    if high_text:
+        high = _numeric_version_tuple(high_text)
+        if high is None:
+            return None
+        comparison = _compare_numeric_versions(current, high)
+        if text[-1] == "]" and comparison > 0:
+            return False
+        if text[-1] == ")" and comparison >= 0:
+            return False
+    return True
+
+
+def dependency_version_satisfied(kind: str, installed_version: str, constraint: str) -> bool | None:
+    """Dispatch to the right evaluator for a dependency's declaring loader.
+
+    Returns ``None`` (cannot verify) for any loader without a defined
+    evaluator, or when the underlying evaluator itself cannot verify.
+    """
+    if kind in ("forge-mod", "neoforge-mod"):
+        return maven_range_satisfied(installed_version, constraint)
+    if kind in ("fabric-mod", "quilt-mod"):
+        return semver_constraint_satisfied(installed_version, constraint)
+    return None
 
 
 def _kind_of(loaders: list[str]) -> Kind:
@@ -327,6 +470,7 @@ def inspect_extension_jar(path: Path) -> ExtensionEntry:
         minecraft_constraint=found.minecraft_constraint,
         environment=found.environment,
         dependencies=found.dependencies,
+        dependency_constraints=found.dependency_constraints,
         readable=readable,
     )
 

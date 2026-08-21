@@ -156,7 +156,13 @@ from .extension_updates import (
 from .extension_updates import (
     rollback_update as rollback_extension_update,
 )
-from .extensions import ExtensionEntry, ExtensionsView, inspect_extension_jar, read_extensions
+from .extensions import (
+    ExtensionEntry,
+    ExtensionsView,
+    dependency_version_satisfied,
+    inspect_extension_jar,
+    read_extensions,
+)
 from .file_paths import CATEGORIES as FILE_CATEGORIES
 from .file_paths import FileCategory, FilePathError
 from .hangar import (
@@ -5593,6 +5599,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 },
                 key=str.casefold,
             )
+            # A dependency can be present yet still the wrong build — e.g. an
+            # older Fabric API than a mod's declared minimum. Version ranges
+            # that Blockstead cannot confidently parse (compound ranges,
+            # wildcards) are skipped rather than guessed at; see
+            # extensions.dependency_version_satisfied.
+            known_versions: dict[str, str] = {}
+            for item in [*installed_view.entries, *installed_view.disabled_entries]:
+                if item.identifier and item.version:
+                    known_versions.setdefault(item.identifier.casefold(), item.version)
+            for item in staged_entries:
+                if item.identifier and item.version:
+                    known_versions.setdefault(item.identifier.casefold(), item.version)
+            version_mismatches = sorted(
+                {
+                    f"{dependency_id} needs {constraint} but "
+                    f"{known_versions[dependency_id.casefold()]} is present"
+                    for item in staged_entries
+                    for dependency_id, constraint in item.dependency_constraints.items()
+                    if dependency_id.casefold() in known_versions
+                    and dependency_version_satisfied(
+                        item.kind, known_versions[dependency_id.casefold()], constraint
+                    )
+                    is False
+                }
+            )
             conflicts = sorted(
                 item.file_name
                 for item in staged_entries
@@ -5615,6 +5646,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "Add these required dependencies to this batch or install them from "
                     f"the catalog first: {', '.join(missing)}."
                 )
+            if version_mismatches:
+                blockers.append(
+                    "These dependency versions do not satisfy what was declared: "
+                    f"{'; '.join(version_mismatches)}."
+                )
             manifest = {
                 "created_at": time.time(),
                 "review_id": review_id,
@@ -5634,6 +5670,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             **manifest,
             "blockers": blockers,
             "missing_dependencies": missing,
+            "dependency_version_mismatches": version_mismatches,
             "requires_acknowledgement": bool(unknown),
             "expires_in_seconds": 60 * 60,
         }
@@ -5712,6 +5749,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             blockers.append(
                 "Required dependencies are still missing: "
                 + ", ".join(sorted(missing, key=str.casefold))
+                + "."
+            )
+        known_versions: dict[str, str] = {}
+        for item in [*installed.entries, *installed.disabled_entries, *entries]:
+            if item.identifier and item.version:
+                known_versions.setdefault(item.identifier.casefold(), item.version)
+        version_mismatches = sorted(
+            {
+                f"{dependency_id} needs {constraint} but "
+                f"{known_versions[dependency_id.casefold()]} is present"
+                for item in entries
+                for dependency_id, constraint in item.dependency_constraints.items()
+                if dependency_id.casefold() in known_versions
+                and dependency_version_satisfied(
+                    item.kind, known_versions[dependency_id.casefold()], constraint
+                )
+                is False
+            }
+        )
+        if version_mismatches:
+            blockers.append(
+                "These dependency versions do not satisfy what was declared: "
+                + "; ".join(version_mismatches)
                 + "."
             )
         unknown = [item for item in entries if not item.loaders or not item.identifier]

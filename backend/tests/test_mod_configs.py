@@ -77,3 +77,34 @@ def test_refuses_invalid_syntax_traversal_and_symlinks(tmp_path: Path) -> None:
     (server / "config" / "link.json").symlink_to(outside)
     with pytest.raises(ModConfigError, match="not found"):
         read_mod_config(server, "link.json")
+
+
+def test_failed_write_never_corrupts_the_original_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import blockstead.mod_configs as mod_configs
+
+    server, target = make_config(tmp_path, "settings.toml", "enabled = true\n")
+    document = read_mod_config(server, "settings.toml")
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(mod_configs, "atomic_write_bytes", boom)
+    with pytest.raises(ModConfigError):
+        write_mod_config(server, document.path, document.revision, "enabled = false\n")
+
+    # The original file must be byte-for-byte untouched after a failed write.
+    assert target.read_text(encoding="utf-8") == "enabled = true\n"
+    read_again = read_mod_config(server, "settings.toml")
+    assert read_again.revision == document.revision
+
+
+def test_absolute_and_hidden_segment_paths_are_refused(tmp_path: Path) -> None:
+    server, _ = make_config(tmp_path, "settings.toml", "enabled = true\n")
+    with pytest.raises(ModConfigError, match="not an editable"):
+        read_mod_config(server, "/etc/passwd")
+    with pytest.raises(ModConfigError, match="not an editable"):
+        read_mod_config(server, ".hidden/settings.toml")
+    with pytest.raises(ModConfigError, match="not an editable"):
+        read_mod_config(server, "settings.exe")

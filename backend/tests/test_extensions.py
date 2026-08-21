@@ -89,6 +89,7 @@ def test_fabric_mods_are_inventoried(tmp_path: Path) -> None:
     # The loader itself is satisfied by the profile and is not an installable
     # extension dependency.
     assert entry.dependencies == ["fabric-api"]
+    assert entry.dependency_constraints == {"fabric-api": "*"}
     assert entry.sha256 is not None and entry.readable is True
     assert view.warnings == []
 
@@ -102,6 +103,7 @@ def test_neoforge_and_plugin_metadata(tmp_path: Path) -> None:
     assert entry.identifier == "machines"
     assert entry.minecraft_constraint == "[1.21,1.22)"
     assert entry.dependencies == ["somecore"]
+    assert entry.dependency_constraints == {"somecore": "[2.0,)"}
 
     paper = make_server(tmp_path / "p", "plugins")
     write_jar(paper / "plugins" / "essentials.jar", {"plugin.yml": PLUGIN_YML})
@@ -225,3 +227,68 @@ def test_unchanged_inventory_reuses_jar_metadata_and_invalidates_on_change(
     refreshed = read_extensions(server, "paper")
     assert calls == 2
     assert refreshed.entries[0].identifier == "Changed"
+
+
+QUILT_MOD = {
+    "quilt_loader": {
+        "id": "voxel-lib",
+        "version": "1.4.0",
+        "metadata": {"name": "Voxel Library"},
+        "depends": [
+            {"id": "minecraft", "versions": ["1.21.x"]},
+            {"id": "qsl", "versions": [">=7.0.0"]},
+            {"id": "java", "versions": [">=21"]},
+        ],
+    }
+}
+
+
+def test_quilt_mod_captures_qsl_dependency_constraint(tmp_path: Path) -> None:
+    server = make_server(tmp_path, "mods")
+    write_jar(server / "mods" / "voxel-lib.jar", {"quilt.mod.json": json.dumps(QUILT_MOD)})
+    entry = read_extensions(server, "quilt").entries[0]
+    assert entry.kind == "quilt-mod"
+    assert entry.dependencies == ["qsl"]
+    assert entry.dependency_constraints == {"qsl": ">=7.0.0"}
+
+
+def test_semver_constraint_satisfied_handles_common_fabric_operators() -> None:
+    satisfied = extensions.semver_constraint_satisfied
+    assert satisfied("0.95.0", ">=0.92.0") is True
+    assert satisfied("0.80.0", ">=0.92.0") is False
+    assert satisfied("1.2.3", "^1.0.0") is True
+    assert satisfied("2.0.0", "^1.0.0") is False
+    assert satisfied("0.1.5", "^0.1.0") is True
+    assert satisfied("0.2.0", "^0.1.0") is False
+    assert satisfied("1.2.9", "~1.2.0") is True
+    assert satisfied("1.3.0", "~1.2.0") is False
+    assert satisfied("1.2.3", "1.2.3") is True
+    assert satisfied("1.2.4", "1.2.3") is False
+    assert satisfied("1.0.0", "*") is True
+    # Compound/OR ranges and wildcards are refused rather than guessed at.
+    assert satisfied("1.0.0", ">=1.0.0 <2.0.0") is None
+    assert satisfied("1.0.0", "1.x") is None
+    assert satisfied("1.0.0", "1.0.0 || 2.0.0") is None
+
+
+def test_maven_range_satisfied_handles_forge_neoforge_ranges() -> None:
+    satisfied = extensions.maven_range_satisfied
+    assert satisfied("1.20.5", "[1.20,1.21)") is True
+    assert satisfied("1.21.0", "[1.20,1.21)") is False
+    assert satisfied("1.19.9", "[1.20,1.21)") is False
+    assert satisfied("1.20.0", "[1.20,)") is True
+    assert satisfied("1.19.9", "[1.20,)") is False
+    assert satisfied("1.19.0", "(,1.20)") is True
+    assert satisfied("1.20.1", "[1.20.1]") is True
+    assert satisfied("1.20.2", "[1.20.1]") is False
+    # A bare recommended version with no brackets is not an enforced bound.
+    assert satisfied("1.20.1", "1.20.1") is None
+
+
+def test_dependency_version_satisfied_dispatches_by_kind() -> None:
+    check = extensions.dependency_version_satisfied
+    assert check("forge-mod", "1.20.1", "[1.19,1.21)") is True
+    assert check("neoforge-mod", "1.20.1", "[1.21,)") is False
+    assert check("fabric-mod", "0.95.0", ">=0.92.0") is True
+    assert check("quilt-mod", "6.0.0", ">=7.0.0") is False
+    assert check("paper-plugin", "1.0", ">=1.0") is None
