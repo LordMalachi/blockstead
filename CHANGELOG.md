@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Prepare Milestone 12 release acceptance with explicit Linux Mint scenarios
+  for isolated saved setups, viewer authorization and recovery, and durable,
+  redacted Discord alerts. Add a dated non-authoritative Ubuntu rehearsal record
+  so the remaining clean Mint 22.3 gates cannot be mistaken for completed
+  acceptance. Refresh React Router and vulnerable transitive frontend tooling
+  dependencies after the rehearsal audit reported high-severity findings.
+
 - Complete Milestone 11 with a compact, evidence-labelled Today summary and
   deep-linkable incident stories. The summary shows the observed playable
   state, actual local join address, player capacity, last recorded verified
