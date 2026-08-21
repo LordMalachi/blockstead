@@ -273,6 +273,10 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   const [manualReview, setManualReview] = useState<ManualImportReview | null>(null);
   const [acknowledgeUnknown, setAcknowledgeUnknown] = useState(false);
   const [recentBatchIds, setRecentBatchIds] = useState<string[]>([]);
+  // Tracks which catalog project the shared `action` mutation is currently
+  // installing, so unrelated toggle/remove/bulk actions sharing that same
+  // mutation don't make every search result claim to be downloading.
+  const [installingProjectId, setInstallingProjectId] = useState<string | null>(null);
   const [migrationContext, setMigrationContext] = useState<LoaderMigrationResult | null>(() => {
     try {
       const raw = sessionStorage.getItem(`blockstead_migration_${profileId}`);
@@ -387,6 +391,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
       refresh();
     },
     onError: error => showNotice("error", error.message),
+    onSettled: () => setInstallingProjectId(null),
   });
   const applySharedMapLowResource = useMutation({
     mutationFn: () => api<SharedMapLowResourceResult>(
@@ -552,6 +557,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
 
   function install(projectId: string, versionId?: string, installSource: CatalogSource = source) {
     clearNotice();
+    setInstallingProjectId(projectId);
     action.mutate({
       endpoint: `/profiles/${profileId}/extensions/install`,
       init: { method: "POST", body: JSON.stringify({ project_id: projectId, source: installSource, ...(versionId ? { version_id: versionId } : {}) }) },
@@ -575,19 +581,21 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
 
   function chooseManualFiles(files: File[]) {
     setManualDragActive(false);
+    setManualFiles([]);
     if (files.length === 0) {
-      setManualFiles([]);
+      clearNotice();
       return;
     }
-    if (files.length > MAX_MANUAL_FILES) {
-      setManualFiles([]);
-      showNotice("error", `Choose no more than ${MAX_MANUAL_FILES} jar files at a time.`);
-      return;
-    }
+    // Filter before counting: a folder with a handful of jars alongside many
+    // non-jar files (READMEs, configs) should be told about the non-jar
+    // files, not misdiagnosed as "too many jars".
     const jars = files.filter(file => file.name.toLowerCase().endsWith(".jar"));
     if (jars.length !== files.length) {
-      setManualFiles([]);
       showNotice("error", "Choose only .jar plugin or mod files. Do not extract them first.");
+      return;
+    }
+    if (jars.length > MAX_MANUAL_FILES) {
+      showNotice("error", `Choose no more than ${MAX_MANUAL_FILES} jar files at a time.`);
       return;
     }
     setManualFiles(jars);
@@ -739,7 +747,16 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
           <div
             className={`manual-dropzone${stopped ? "" : " is-disabled"}${manualDragActive ? " is-dragging" : ""}`}
             onDragEnter={event => { event.preventDefault(); if (stopped) setManualDragActive(true); }}
-            onDragLeave={event => { event.preventDefault(); setManualDragActive(false); }}
+            onDragLeave={event => {
+              event.preventDefault();
+              // dragleave bubbles from child elements (the heading, the
+              // "Choose jar files" label) whenever the pointer crosses onto
+              // them; only deactivate once the pointer has actually left the
+              // dropzone itself, not just moved over something inside it.
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setManualDragActive(false);
+              }
+            }}
             onDragOver={event => { event.preventDefault(); if (stopped) setManualDragActive(true); }}
             onDrop={dropManualFiles}
           >
@@ -943,20 +960,23 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
         disabledEntries={view.disabled_entries}
         map={sharedMap.data}
         stopped={stopped}
-        busy={action.isPending}
+        busy={action.isPending && installingProjectId === SHARED_MAP_PROJECT_ID}
         lowResourceBusy={applySharedMapLowResource.isPending}
         applyLowResource={() => applySharedMapLowResource.mutate()}
         lowResourceResult={applySharedMapLowResource.data}
         lowResourceError={applySharedMapLowResource.error?.message ?? null}
-        install={() => action.mutate({
-          endpoint: `/profiles/${profileId}/extensions/install`,
-          init: { method: "POST", body: JSON.stringify({ project_id: SHARED_MAP_PROJECT_ID }) },
-          success: "squaremap installed and verified. Run a safe test start before inviting players.",
-          afterSuccess: result => {
-            const installed = result as ExtensionInstallResult;
-            if (installed.batch_id) setRecentBatchIds([installed.batch_id]);
-          },
-        })}
+        install={() => {
+          setInstallingProjectId(SHARED_MAP_PROJECT_ID);
+          action.mutate({
+            endpoint: `/profiles/${profileId}/extensions/install`,
+            init: { method: "POST", body: JSON.stringify({ project_id: SHARED_MAP_PROJECT_ID }) },
+            success: "squaremap installed and verified. Run a safe test start before inviting players.",
+            afterSuccess: result => {
+              const installed = result as ExtensionInstallResult;
+              if (installed.batch_id) setRecentBatchIds([installed.batch_id]);
+            },
+          });
+        }}
       />}
 
       <section className="workspace-section catalog-workbench" id="extension-catalog" aria-labelledby="catalog-heading">
@@ -1042,7 +1062,10 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
                       ? project.page_url
                         ? <a className="button button--secondary button--small" href={project.page_url} target="_blank" rel="noreferrer">Get in browser</a>
                         : <span className="catalog-project__unavailable">Manual download only</span>
-                      : <Button className="button--secondary button--small" aria-label={`${action.isPending ? "Downloading" : "Install"} ${title}`} disabled={!stopped || action.isPending} onClick={() => install(project.project_id)}>{action.isPending ? "Downloading…" : "Install"}</Button>}
+                      : (() => {
+                          const installingThis = action.isPending && installingProjectId === project.project_id;
+                          return <Button className="button--secondary button--small" aria-label={`${installingThis ? "Downloading" : "Install"} ${title}`} disabled={!stopped || action.isPending} onClick={() => install(project.project_id)}>{installingThis ? "Downloading…" : "Install"}</Button>;
+                        })()}
                     <Button className="button--quiet button--small" aria-label={`${versionsFor === project.project_id ? "Hide" : "Show"} versions for ${title}`} aria-expanded={versionsFor === project.project_id} onClick={() => setVersionsFor(versionsFor === project.project_id ? null : project.project_id)}>{versionsFor === project.project_id ? "Hide versions" : "Versions"}</Button>
                   </div>
                 </article>;

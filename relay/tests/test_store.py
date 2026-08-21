@@ -42,12 +42,28 @@ def test_installations_and_channels_are_isolated() -> None:
 
         first_snapshot = {"state": "running", "players": {"online": 1, "max": 20}}
         second_snapshot = {"state": "stopped", "players": {"online": 0, "max": 20}}
-        assert store.save_snapshot(first.id, 2, first_snapshot) is True
-        assert store.save_snapshot(first.id, 2, {"state": "spoofed"}) is False
-        assert store.save_snapshot(first.id, 1, {"state": "old"}) is False
-        assert store.save_snapshot(second.id, 1, second_snapshot) is True
+        assert store.save_snapshot(first.id, "installation-one", 2, first_snapshot) is True
+        assert store.save_snapshot(first.id, "installation-one", 2, {"state": "spoofed"}) is False
+        assert store.save_snapshot(first.id, "installation-one", 1, {"state": "old"}) is False
+        assert store.save_snapshot(second.id, "installation-two", 1, second_snapshot) is True
         assert store.snapshot(first, 180)["state"] == "running"
         assert store.snapshot(second, 180)["state"] == "stopped"
+    finally:
+        store.close()
+
+
+def test_save_snapshot_requires_the_owning_installation() -> None:
+    store = RelayStore()
+    try:
+        first = connected(
+            store, "installation-one", "a" * 32, "profile-one", "CODEONE1", "channel-1"
+        )
+        # A second installation that knows another connection's id (e.g. from a
+        # leaked payload) must not be able to write a snapshot for it.
+        assert store.save_snapshot(first.id, "installation-two", 1, {"state": "running"}) is False
+        assert store.snapshot(first, 180) is None
+        assert store.save_snapshot(first.id, "installation-one", 1, {"state": "running"}) is True
+        assert store.snapshot(first, 180)["state"] == "running"
     finally:
         store.close()
 

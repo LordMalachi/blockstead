@@ -19,3 +19,4 @@ data/
 *.log
 *.jar
 secrets/
+.claude/worktrees/

@@ -22,7 +22,11 @@ log() { printf '%s\n' "$*"; }
 open_url() {
   case "$(uname -s)" in
     Darwin) open "$1" ;;
-    Linux) command -v xdg-open >/dev/null 2>&1 && xdg-open "$1" >/dev/null 2>&1 || true ;;
+    Linux)
+      if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$1" >/dev/null 2>&1 || true
+      fi
+      ;;
   esac
 }
 

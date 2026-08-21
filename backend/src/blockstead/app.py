@@ -1182,13 +1182,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     if not connection.publish_address:
                         reply = DiscordReply("Address sharing is disabled for this connection.")
                     else:
-                        public = status["public"]
+                        raw_public = status["public"]
+                        public_status = raw_public if isinstance(raw_public, dict) else {}
                         reply = DiscordReply(
-                            f"Join address: `{public['address']}` ({public['state']})."
-                            if isinstance(public, dict) and public.get("address")
+                            f"Join address: `{public_status['address']}` "
+                            f"({public_status['state']})."
+                            if public_status.get("address")
                             else (
                                 "A public join address is unavailable "
-                                f"({public.get('state', 'unknown')})."
+                                f"({public_status.get('state', 'unknown')})."
                             )
                         )
                 else:
@@ -4460,13 +4462,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         invalid = [
             item.file_name
             for item in planned
-            if item.checksum_algorithm not in SUPPORTED_CHECKSUMS
+            if item.checksum_algorithm is None
+            or item.checksum_algorithm not in SUPPORTED_CHECKSUMS
             or not isinstance(item.checksum, str)
             or not re.fullmatch(r"[0-9a-fA-F]+", item.checksum)
-            or len(item.checksum)
-            != {"sha1": 40, "sha256": 64, "sha512": 128}.get(
-                item.checksum_algorithm or "", -1
-            )
+            or len(item.checksum) != hashlib.new(item.checksum_algorithm).digest_size * 2
         ]
         if invalid:
             raise HTTPException(
@@ -4485,7 +4485,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Download a catalog plan outside the live loadout, then promote it safely."""
         require_published_checksums(planned)
         names = [item.file_name for item in planned]
-        if len(names) != len(set(names)):
+        if len({name.casefold() for name in names}) != len(names):
             raise HTTPException(409, "The catalog returned duplicate extension file names.")
         staging: Path | None = None
         staged: list[tuple[PlannedFile, str]] = []
@@ -5445,9 +5445,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             seen: set[str] = set()
             for upload in files:
                 name = upload.filename or ""
-                if name in seen:
+                if name.casefold() in seen:
                     raise ExtensionOpsError(f"The selected files contain duplicate name {name}.")
-                seen.add(name)
+                seen.add(name.casefold())
                 content = await upload.read(MAX_UPLOAD_BYTES + 1)
                 total += len(content)
                 if total > MAX_UPLOAD_BYTES * 2:
@@ -8789,6 +8789,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not all(
             isinstance(value, str) and value
             for value in (
+                pairing.claimed_application_id,
                 pairing.claimed_guild_id,
                 pairing.claimed_channel_id,
                 pairing.claimed_user_id,
@@ -8818,26 +8819,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         relay_connection_id: str | None = None
         if not legacy_pairing:
+            # Guaranteed by the guard above (raises unless legacy_pairing or
+            # both of these hold); re-checked here so the types the guard
+            # already promises are visible at the point of use too.
+            if relay_client is None or not pairing.relay_pairing_id:
+                raise HTTPException(
+                    503, "The Blockstead host is not connected to the Discord relay yet."
+                )
             try:
                 remote = relay_client.confirm_pairing(pairing.relay_pairing_id)
             except RelayError as exc:
                 raise HTTPException(
                     503, "The Discord relay could not confirm this pairing."
                 ) from exc
-            relay_connection_id = remote.get("id")
-            if not isinstance(relay_connection_id, str):
+            raw_relay_connection_id = remote.get("id")
+            if not isinstance(raw_relay_connection_id, str):
                 raise HTTPException(
                     503, "The Discord relay returned an invalid connection response."
                 )
+            relay_connection_id = raw_relay_connection_id
+        claimed_application_id = pairing.claimed_application_id
+        claimed_guild_id = pairing.claimed_guild_id
+        claimed_channel_id = pairing.claimed_channel_id
+        claimed_user_id = pairing.claimed_user_id
+        if not (
+            claimed_application_id and claimed_guild_id and claimed_channel_id and claimed_user_id
+        ):
+            # Guaranteed by the validation above; re-checked here only to
+            # narrow types for the ORM assignments below.
+            raise HTTPException(
+                409, "Use /blockstead pair in Discord before confirming this pairing."
+            )
         if connection is None:
             connection = DiscordConnection(
                 admin_id=owner.id,
                 profile_id=profile.id,
-                application_id=pairing.claimed_application_id,
-                guild_id=pairing.claimed_guild_id,
-                channel_id=pairing.claimed_channel_id,
-                owner_user_id=pairing.claimed_user_id,
-                authorized_user_ids=json.dumps([pairing.claimed_user_id]),
+                application_id=claimed_application_id,
+                guild_id=claimed_guild_id,
+                channel_id=claimed_channel_id,
+                owner_user_id=claimed_user_id,
+                authorized_user_ids=json.dumps([claimed_user_id]),
                 authorized_role_ids=pairing.claimed_role_ids or "[]",
                 relay_connection_id=relay_connection_id,
             )
@@ -8845,11 +8866,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.flush()
         else:
             connection.admin_id = owner.id
-            connection.application_id = pairing.claimed_application_id
-            connection.guild_id = pairing.claimed_guild_id
-            connection.channel_id = pairing.claimed_channel_id
-            connection.owner_user_id = pairing.claimed_user_id
-            connection.authorized_user_ids = json.dumps([pairing.claimed_user_id])
+            connection.application_id = claimed_application_id
+            connection.guild_id = claimed_guild_id
+            connection.channel_id = claimed_channel_id
+            connection.owner_user_id = claimed_user_id
+            connection.authorized_user_ids = json.dumps([claimed_user_id])
             connection.authorized_role_ids = pairing.claimed_role_ids or "[]"
             connection.enabled = True
             connection.relay_connection_id = relay_connection_id

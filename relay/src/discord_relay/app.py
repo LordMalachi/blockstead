@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -143,7 +145,7 @@ class RelayRuntime:
         self.gateway: DiscordGateway | None = None
         self.hosts: dict[str, WebSocket] = {}
         self.host_lock = asyncio.Lock()
-        self.refreshes: dict[tuple[str, str], datetime] = {}
+        self.refreshes: OrderedDict[tuple[str, str], datetime] = OrderedDict()
 
     async def send_host(self, installation_id: str, message: dict[str, object]) -> bool:
         async with self.host_lock:
@@ -230,19 +232,22 @@ class RelayRuntime:
             previous = self.refreshes.get(key)
             now = datetime.now(UTC)
             cutoff = now - timedelta(seconds=self.refresh_cooldown_seconds)
-            self.refreshes = {
-                entry_key: timestamp
-                for entry_key, timestamp in self.refreshes.items()
-                if timestamp >= cutoff
-            }
+            # self.refreshes is kept in chronological (oldest-first) order by
+            # always re-inserting a written key at the end, so both pruning
+            # and capacity eviction only ever need to look at the front.
+            while self.refreshes:
+                oldest_key = next(iter(self.refreshes))
+                if self.refreshes[oldest_key] >= cutoff:
+                    break
+                del self.refreshes[oldest_key]
             if (
                 previous is not None
                 and (now - previous).total_seconds() < self.refresh_cooldown_seconds
             ):
                 return "Please wait a few seconds before requesting another refresh."
+            self.refreshes.pop(key, None)
             if len(self.refreshes) >= self.max_refresh_entries:
-                oldest = min(self.refreshes, key=self.refreshes.get)
-                self.refreshes.pop(oldest, None)
+                self.refreshes.popitem(last=False)
             self.refreshes[key] = now
             await self.send_host(
                 connection.installation_id, {"type": "refresh", "connection_id": connection.id}
@@ -287,7 +292,7 @@ def create_app(settings: RelaySettings | None = None) -> FastAPI:
     runtime = RelayRuntime(config)
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI):
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         runtime.gateway = DiscordGateway(
             config.application_id, config.bot_token, runtime.interaction, logger=log
         )
@@ -410,7 +415,7 @@ def create_app(settings: RelaySettings | None = None) -> FastAPI:
                     sequence = int(message.get("sequence", 0))
                     snapshot = message.get("snapshot")
                     if isinstance(snapshot, dict) and runtime.store.save_snapshot(
-                        connection_id, sequence, bounded_snapshot(snapshot)
+                        connection_id, installation_id, sequence, bounded_snapshot(snapshot)
                     ):
                         updated = runtime.store.connection(connection_id)
                         if updated is not None:

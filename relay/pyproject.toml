@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.1.1", "pytest-asyncio==1.3.0", "ruff==0.9.7"]
+dev = ["pytest==9.1.1", "pytest-asyncio==1.3.0", "ruff==0.9.7", "mypy==1.15.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/discord_relay"]
@@ -24,6 +24,11 @@ packages = ["src/discord_relay"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
 
 [tool.ruff]
 target-version = "py312"

@@ -184,7 +184,9 @@ def promote_staged_files(
     retired = list(retire_names)
     if not names:
         raise ExtensionOpsError("The catalog did not provide any extension files to install.")
-    if len(names) != len(set(names)) or len(retired) != len(set(retired)):
+    names_casefold = {name.casefold() for name in names}
+    retired_casefold = {name.casefold() for name in retired}
+    if len(names) != len(names_casefold) or len(retired) != len(retired_casefold):
         raise ExtensionOpsError("The extension change contains duplicate file names.")
     for name in [*names, *retired]:
         if not JAR_NAME_PATTERN.match(name):
@@ -351,8 +353,7 @@ def place_upload(extension_directory: Path, file_name: str, content: bytes) -> P
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        if not zipfile.is_zipfile(staging):
-            raise ExtensionOpsError("The uploaded file is not a valid jar archive.")
+        validate_jar_archive(staging)
         os.replace(staging, target)
         _fsync_directory(directory)
     except OSError as exc:
