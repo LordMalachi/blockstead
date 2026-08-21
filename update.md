@@ -75,8 +75,13 @@ baseline. Milestone 12 implementation is complete in the working tree: saved
 setups use isolated profile variants, trusted helpers are scoped owner/viewer
 accounts, and Discord is an owner-configured outbound alert destination with a
 durable redacted queue. It remains **in progress** until the clean Linux Mint
-22.3 acceptance checklist is run; release notes must wait for that gate. The
-The shared always-online Discord relay is now the active focused project. The
+22.3 acceptance checklist is run; release notes must wait for that gate. A
+2026-08-21 Ubuntu CI-equivalent rehearsal passed the available backend, relay,
+frontend, quality, and packaging checks and repaired frontend audit findings,
+but Docker, Playwright, the clean Mint host, and manual disposable-profile and
+Discord scenarios were unavailable; the dated acceptance record retains those
+open gates. The shared always-online Discord relay is now the active focused
+project. The
 relay service, installation-isolated outbound host connector, pairing records,
 read-only Gateway commands, migration, dashboard controls, Docker packaging,
 and deployment runbook are implemented in the working tree. Oracle provisioning,

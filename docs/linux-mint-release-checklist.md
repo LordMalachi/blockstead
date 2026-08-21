@@ -96,5 +96,59 @@ Blockstead revision, tester, and date with the results.
       Minecraft process runs.
 - [ ] Hardened unit permits Java, networking, configured imports, and backups.
 
+## Milestone 12 acceptance scenarios
+
+Run these scenarios with disposable profiles and a disposable Discord channel.
+Use distinct, non-sensitive marker values when checking that data does not cross
+profile or account boundaries. Record only redacted evidence in the release
+record.
+
+### Saved setups
+
+- [ ] Create a named saved setup from a disposable source profile, activate it,
+      and verify that the activated profile has its own identifier, folder,
+      runtime state, settings, extension lockfile, and backup history.
+- [ ] Change settings and files in the activated profile, then verify that the
+      source profile and its world remain byte-for-byte unchanged and can still
+      start independently.
+- [ ] Force activation to fail once during staging and once during promotion;
+      verify that no runnable partial profile, database row, or abandoned
+      staging directory remains and that the source is unchanged.
+- [ ] Verify Activity records creation, activation, the injected failure, and
+      cleanup with the saved-setup and source identifiers, a useful outcome,
+      and a recovery route, without recording private paths or credentials.
+
+### Viewer access and recovery
+
+- [ ] Sign in as a viewer and verify that summaries, status, and allowed
+      activity are readable, while console input, raw files and logs, settings,
+      backups/restores, saved-setup changes, account administration, host
+      controls, and Discord configuration are absent and rejected server-side.
+- [ ] Change the viewer password; verify the old password is rejected, the new
+      password works, and all other sessions for that viewer are invalidated.
+- [ ] Generate a one-time viewer recovery credential, use it exactly once to
+      set a new password, and verify that neither reuse nor a superseded
+      recovery credential succeeds.
+- [ ] Disable the viewer and verify that every active viewer session is
+      invalidated immediately and that sign-in and recovery remain unavailable
+      until an owner explicitly enables the account.
+
+### Discord alerts
+
+- [ ] As the owner, configure and test a disposable Discord webhook; verify the
+      UI and API return only a stable masked value and that viewers cannot read
+      or change any webhook configuration.
+- [ ] Deliver representative lifecycle, failure, recovery, and backup alerts;
+      verify message content is bounded and excludes webhook values,
+      credentials, player addresses, private world paths, and raw logs.
+- [ ] Submit the same logical alert repeatedly and verify exactly one durable
+      delivery is queued and sent for its deduplication key.
+- [ ] Inject rate limiting and transient network failure, restart Blockstead
+      with a delivery pending, and verify bounded backoff resumes after restart
+      and eventually delivers without creating a duplicate.
+- [ ] Review delivery history as the owner and verify queued, retrying,
+      delivered, and permanently failed outcomes are useful and redacted;
+      verify a viewer cannot access that history.
+
 Attach command output and observations to the release record. Do not mark Linux
 Mint support verified based only on Ubuntu CI.
