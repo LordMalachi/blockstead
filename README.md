@@ -182,6 +182,13 @@ sudo bash ./scripts/install-linux.sh
    That's it — the dashboard, and any schedule you
    set, now survive reboots.
 
+On native Linux installs, the installer adds the desktop account that started
+the install to the `blockstead-files` group and keeps managed server folders
+under `/srv/minecraft` group-accessible. Log out and back in once after a fresh
+install or update so Mint reloads that group membership. The Files workspace
+shows the exact folder path, offers **Open this folder** where the browser
+allows local file links, and always keeps a copy-path fallback.
+
 ### Recover a forgotten administrator password
 
 On the Linux computer running Blockstead, open a terminal and run:

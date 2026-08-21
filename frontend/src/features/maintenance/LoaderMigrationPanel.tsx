@@ -9,6 +9,7 @@ import {
 } from "../../api/client";
 import { Button } from "../../components/Button";
 import { formatBytes } from "../../lib/format";
+import { normalizeServerDirectoryName } from "../../lib/server-directory";
 
 const targets = [
   ["paper", "Paper", "Server plugins; players use normal Minecraft."],
@@ -17,10 +18,6 @@ const targets = [
   ["neoforge", "NeoForge", "Modern Forge-derived loader for newer mod releases."],
   ["quilt", "Quilt", "Fabric-derived loader with support for many Fabric mods."],
 ] as const;
-
-function folderFrom(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "modded-server";
-}
 
 function childPath(parent: string, child: string) {
   const separator = parent.includes("\\") ? "\\" : "/";
@@ -46,7 +43,7 @@ export function LoaderMigrationPanel({ profileId }: { profileId: string }) {
     onMutate: () => setAcknowledge(false),
   });
   const plan = review.data?.target_distribution === target ? review.data : null;
-  const chosenDirectory = directory.trim() || folderFrom(suggestedName);
+  const chosenDirectory = normalizeServerDirectoryName(directory, normalizeServerDirectoryName(suggestedName, "modded-server"));
   const destinationDirectory = plan ? childPath(plan.destination_root, chosenDirectory) : "";
   const apply = useMutation({
     mutationFn: () => api<LoaderMigrationResult>(`/profiles/${profileId}/loader-migration/apply`, {
@@ -57,7 +54,7 @@ export function LoaderMigrationPanel({ profileId }: { profileId: string }) {
         backup_id: plan?.protection.backup_id,
         loader_version: plan?.loader_version,
         name: name.trim() || suggestedName,
-        directory_name: directory.trim() || folderFrom(suggestedName),
+        directory_name: chosenDirectory,
         acknowledge_modded_world: acknowledge,
       }),
     }),
@@ -130,8 +127,9 @@ export function LoaderMigrationPanel({ profileId }: { profileId: string }) {
       </div>}
       {plan.ready && <div className="migration-create">
         <label>New profile name<input value={name} placeholder={suggestedName} maxLength={80} onChange={event => setName(event.target.value)} /></label>
-        <label>New server folder<input value={directory} placeholder={folderFrom(suggestedName)} pattern="[a-z0-9][a-z0-9_-]*" maxLength={64} onChange={event => setDirectory(event.target.value)} /></label>
+        <label>New server folder<input value={directory} placeholder={normalizeServerDirectoryName(suggestedName, "modded-server")} pattern="[a-z0-9][a-z0-9_-]*" maxLength={64} onChange={event => setDirectory(event.target.value)} onBlur={() => setDirectory(current => current.trim() ? chosenDirectory : current)} /></label>
         <small>The complete destination will be <code>{destinationDirectory}</code>.</small>
+        {directory.trim() && directory.trim() !== chosenDirectory && <small className="muted-note">The folder name will be saved as <code>{chosenDirectory}</code> so it works on every supported host.</small>}
         {plan.modded_world_warning && <label className="maintenance-booking-toggle">
           <input type="checkbox" checked={acknowledge} onChange={event => setAcknowledge(event.target.checked)} />
           <span>I understand unavailable source mods may leave custom world content unreadable in the new loader.</span>

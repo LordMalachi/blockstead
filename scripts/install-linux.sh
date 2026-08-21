@@ -11,6 +11,7 @@ UPDATE_LOG_DIR=/var/log/blockstead-update
 UPDATE_LOG=$UPDATE_LOG_DIR/update.log
 UPDATE_LOCK=/run/blockstead-update.lock
 SERVER_ROOT=/srv/minecraft
+FILES_GROUP=blockstead-files
 DATABASE=$DATA_DIR/blockstead.db
 ROLLBACK_DIR=$UPDATE_STATE_DIR/previous
 SERVICE=blockstead.service
@@ -30,6 +31,19 @@ MANIFEST_URL=https://github.com/LordMalachi/blockstead/releases/download/update-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPDATE_ATTEMPT=${BLOCKSTEAD_UPDATE_ATTEMPT:-}
 STAGED_APP=""
+
+resolve_desktop_user() {
+  local candidate=${BLOCKSTEAD_INSTALL_USER:-${SUDO_USER:-}}
+  if [[ -z $candidate && ${PKEXEC_UID:-} =~ ^[0-9]+$ ]]; then
+    candidate=$(getent passwd "$PKEXEC_UID" | cut -d: -f1 || true)
+  fi
+  if [[ -n $candidate ]] && id "$candidate" >/dev/null 2>&1 \
+      && [[ $(id -u "$candidate") -ne 0 ]]; then
+    printf '%s\n' "$candidate"
+  fi
+}
+
+DESKTOP_USER=$(resolve_desktop_user)
 
 if [[ ${EUID} -ne 0 ]]; then echo "Run this installer with sudo." >&2; exit 1; fi
 if [[ $(uname -s) != Linux ]]; then echo "Blockstead deployment requires Linux." >&2; exit 1; fi
@@ -787,6 +801,7 @@ Blockstead will $action.
   Private data:     $DATA_DIR
   Application logs: $LOG_DIR
   Managed servers:  $SERVER_ROOT
+  Server access:    $FILES_GROUP${DESKTOP_USER:+ (desktop user $DESKTOP_USER)}
   Terminal helper:  $CLI_PATH
   Menu entry:       "Blockstead" in the applications menu
 
@@ -799,10 +814,29 @@ EOF
   [[ $answer =~ ^[Yy]$ ]] || { echo "Installation cancelled."; exit 0; }
 fi
 
+if [[ -L $SERVER_ROOT || ( -e $SERVER_ROOT && ! -d $SERVER_ROOT ) ]]; then
+  echo "Refusing an unsafe managed server root: $SERVER_ROOT" >&2
+  exit 1
+fi
+if ! getent group "$FILES_GROUP" >/dev/null 2>&1; then
+  groupadd --system "$FILES_GROUP"
+fi
 if ! id -u blockstead >/dev/null 2>&1; then
   useradd --system --home-dir "$DATA_DIR" --create-home --shell /usr/sbin/nologin blockstead
 fi
-install -d -o blockstead -g blockstead -m 0750 "$DATA_DIR" "$LOG_DIR" "$SERVER_ROOT"
+usermod -aG "$FILES_GROUP" blockstead
+if [[ -n $DESKTOP_USER ]]; then
+  usermod -aG "$FILES_GROUP" "$DESKTOP_USER"
+fi
+install -d -o blockstead -g blockstead -m 0750 "$DATA_DIR" "$LOG_DIR"
+install -d -o blockstead -g "$FILES_GROUP" -m 2770 "$SERVER_ROOT"
+chown blockstead:"$FILES_GROUP" "$SERVER_ROOT"
+chmod 2770 "$SERVER_ROOT"
+# Existing installs used the private service group for server files. Reconcile
+# only the configured server root, never symlink targets or another host path,
+# so the desktop account can work with existing worlds after re-login.
+find -P "$SERVER_ROOT" -xdev -type d -exec chgrp "$FILES_GROUP" {} + -exec chmod g+rwx {} +
+find -P "$SERVER_ROOT" -xdev -type f -exec chgrp "$FILES_GROUP" {} + -exec chmod g+rw {} +
 install -d -o root -g blockstead -m 0750 "$CONFIG_DIR"
 
 if [[ ! -f $CONFIG_DIR/blockstead.env ]]; then
@@ -1229,9 +1263,9 @@ install -o root -g root -m 0755 "$ROOT/packaging/blockstead-power" "$POWER_HELPE
 install -o root -g root -m 0440 "$ROOT/packaging/sudoers/blockstead-power" "$SUDOERS_PATH"
 install -m 0644 "$ROOT/packaging/systemd/$SERVICE" "$UNIT_PATH"
 
-# Blockstead updates itself through a root-owned path unit rather than sudo:
-# the dashboard's own unit sets NoNewPrivileges and cannot write /opt, and an
-# update has to outlive the dashboard restart it causes. The dashboard only
+# Blockstead updates itself through a root-owned path unit rather than running
+# the application as root. The dashboard service cannot safely write /opt, and
+# an update has to outlive the dashboard restart it causes. The dashboard only
 # writes a request file into its data directory; systemd notices it and runs
 # the helper. Root owns the helper, so the service account cannot edit what
 # will later run as root.
@@ -1300,10 +1334,6 @@ install -o root -g root -m 0644 "$ROOT/packaging/desktop/blockstead.desktop" "$D
 # Install a desktop launcher for the person who started either the sudo or the
 # graphical PolicyKit installer. Environment input is accepted only when it
 # resolves to a real, non-root local account.
-DESKTOP_USER=${BLOCKSTEAD_INSTALL_USER:-${SUDO_USER:-}}
-if [[ -z $DESKTOP_USER && ${PKEXEC_UID:-} =~ ^[0-9]+$ ]]; then
-  DESKTOP_USER=$(getent passwd "$PKEXEC_UID" | cut -d: -f1 || true)
-fi
 if [[ -n $DESKTOP_USER ]] && id "$DESKTOP_USER" >/dev/null 2>&1 \
     && [[ $(id -u "$DESKTOP_USER") -ne 0 ]]; then
   DESKTOP_GROUP=$(id -gn "$DESKTOP_USER")

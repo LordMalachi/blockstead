@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Navigate, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ProcessState, type Profile } from "../../api/client";
 import { Button } from "../../components/Button";
@@ -24,7 +24,7 @@ export function ServerLayout() {
 
   const profile = profiles.data?.find(entry => entry.id === profileId);
   if (!profiles.data) return <section className="card"><p className="empty-note">Opening this server…</p></section>;
-  if (!profile) return <section className="card"><p className="eyebrow">Server workspace</p><h2>That server is not here</h2><p>This link points at a profile Blockstead does not know about. It may have been removed.</p><Link className="button" to="/servers">Back to your servers</Link></section>;
+  if (!profile) return <Navigate to="/servers" replace />;
 
   const snapshot = state.data ?? { state: "UNKNOWN" as const, pid: null, exit_code: null, reason: "Checking server state" };
   const scope = scopeFor(profile, snapshot, profiles.data);

@@ -51,6 +51,10 @@ async function downloadEntry(profileId: string, category: FileCategory, path: st
   URL.revokeObjectURL(url);
 }
 
+function openHostFolder(path: string) {
+  window.open(`file://${encodeURI(path)}`, "_blank", "noopener");
+}
+
 export function FilesPanel({
   profileId,
   distribution,
@@ -186,7 +190,11 @@ export function FilesPanel({
       <button type="button" aria-label={`${category[0].toUpperCase() + category.slice(1)} root folder`} onClick={() => setPath("")} disabled={!path}>{category[0].toUpperCase() + category.slice(1)}</button>
       {segments(path).map(segment => <span key={segment.path}><span aria-hidden="true">/</span><button type="button" onClick={() => setPath(segment.path)} disabled={segment.path === path}>{segment.name}</button></span>)}
     </nav>
-    {listing.data && <CopyableText label="This folder is at" value={listing.data.host_path} />}
+    {listing.data && <div className="copyable-text file-location">
+      <CopyableText label="This folder is at" value={listing.data.host_path} />
+      <Button className="button--secondary button--small" onClick={() => openHostFolder(listing.data.host_path)}>Open this folder</Button>
+      <Tooltip label="What does Open this folder do?">Opens the displayed path in a new local browser tab or file handler. This works only when you use Blockstead on the same computer that stores the server files; Copy remains available if the browser blocks local folders.</Tooltip>
+    </div>}
 
     {locked && <p className="warning">Stop the server before uploading, renaming, deleting, or extracting archives in this category.</p>}
     {notice && <p className="success" role="status">{notice}</p>}

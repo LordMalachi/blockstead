@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Profile, type SavedSetup, type SavedSetupSwitchReview, type SavedSetupVariantReview } from "../../api/client";
 import { Button } from "../../components/Button";
+import { normalizeServerDirectoryName } from "../../lib/server-directory";
 
 const distributions = ["vanilla", "paper", "fabric", "forge", "quilt", "neoforge"];
 
@@ -24,12 +25,12 @@ export function SavedSetupsPanel({ profiles }: { profiles: Profile[] }) {
     onError: error => setNotice(error.message),
   });
   const createReview = useMutation({
-    mutationFn: (setupId: string) => api<SavedSetupVariantReview>(`/saved-setups/${setupId}/variants/review`, { method: "POST", body: JSON.stringify({ source_profile_id: sourceProfileId, name: variantName, directory_name: directoryName, target_distribution: distribution }) }),
+    mutationFn: (setupId: string) => api<SavedSetupVariantReview>(`/saved-setups/${setupId}/variants/review`, { method: "POST", body: JSON.stringify({ source_profile_id: sourceProfileId, name: variantName, directory_name: normalizeServerDirectoryName(directoryName, "creative-snapshot"), target_distribution: distribution }) }),
     onSuccess: data => { setReview(data); setNotice(""); },
     onError: error => setNotice(error.message),
   });
   const createVariant = useMutation({
-    mutationFn: (setupId: string) => api<unknown>(`/saved-setups/${setupId}/variants`, { method: "POST", body: JSON.stringify({ source_profile_id: sourceProfileId, name: variantName, directory_name: directoryName, target_distribution: distribution, review_id: review?.review_id, backup_id: review?.protection.backup_id, acknowledge_modded_world: acknowledge }) }),
+    mutationFn: (setupId: string) => api<unknown>(`/saved-setups/${setupId}/variants`, { method: "POST", body: JSON.stringify({ source_profile_id: sourceProfileId, name: variantName, directory_name: normalizeServerDirectoryName(directoryName, "creative-snapshot"), target_distribution: distribution, review_id: review?.review_id, backup_id: review?.protection.backup_id, acknowledge_modded_world: acknowledge }) }),
     onSuccess: async () => { setReview(null); setNotice("Protected setup variant created; the source profile remains unchanged."); await client.invalidateQueries({ queryKey: ["saved-setups"] }); await client.invalidateQueries({ queryKey: ["profiles"] }); },
     onError: error => setNotice(error.message),
   });
@@ -64,7 +65,7 @@ export function SavedSetupsPanel({ profiles }: { profiles: Profile[] }) {
       <ul className="care-list">{setup.variants.map(variant => <li key={variant.id}><div><strong>{variant.name}</strong><small>{variant.distribution} {variant.minecraft_version ?? ""} · {variant.active ? "active" : "stopped"}</small><small>Protection: {variant.protection_status === "verified" ? "verified" : "source enrollment or backup unavailable"}</small></div><Button className="button--secondary button--small" disabled={variant.active || reviewSwitch.isPending} onClick={() => reviewSwitch.mutate(variant.profile_id)}>Review switch</Button></li>)}</ul>
       <form className="inline-form" onSubmit={event => reviewVariant(event, setup.id)}>
         <label>Variant name<input value={variantName} onChange={event => setVariantName(event.target.value)} placeholder="Creative snapshot" required maxLength={80} /></label>
-        <label>Folder name<input value={directoryName} onChange={event => setDirectoryName(event.target.value)} placeholder="creative-snapshot" required pattern="[a-z0-9][a-z0-9_-]*" /></label>
+        <label>Folder name<input value={directoryName} onChange={event => setDirectoryName(event.target.value)} onBlur={() => setDirectoryName(current => normalizeServerDirectoryName(current, "creative-snapshot"))} placeholder="creative-snapshot" required pattern="[a-z0-9][a-z0-9_-]*" /></label>
         <label>Target loader<select value={distribution} onChange={event => setDistribution(event.target.value)}>{distributions.map(item => <option key={item} value={item}>{item}</option>)}</select></label>
         <label>Copy from<select value={sourceProfileId} onChange={event => setSourceProfileId(event.target.value)}>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
         <Button disabled={createReview.isPending}>{createReview.isPending ? "Reviewing…" : "Review protected copy"}</Button>

@@ -671,7 +671,9 @@ Use a dedicated unprivileged service account such as `blockstead`. The installer
 The service unit should be hardened without preventing required behavior. Evaluate settings such as:
 
 ```ini
-NoNewPrivileges=true
+Group=blockstead-files
+SupplementaryGroups=blockstead
+UMask=0007
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
@@ -684,7 +686,12 @@ MemoryDenyWriteExecute=true
 ReadWritePaths=/var/lib/blockstead /var/log/blockstead /srv/minecraft
 ```
 
-Every hardening setting must be tested. Do not copy a hardening template that prevents Java, networking, backups, or imported server paths from working.
+The native unit must not set `NoNewPrivileges=true`: scheduled host power-off
+uses the exact installer-owned helper allowed by the root-owned sudoers rule,
+and that narrow privilege transition is required. Docker keeps its own
+`no-new-privileges` hardening and does not expose host power controls. Every
+other hardening setting must be tested. Do not copy a hardening template that
+prevents Java, networking, backups, or imported server paths from working.
 
 ---
 

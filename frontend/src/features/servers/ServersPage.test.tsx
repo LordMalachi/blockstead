@@ -38,12 +38,14 @@ test("shows one guided setup workflow at a time for the first server", async () 
 });
 
 test("requires a clear confirmation before removing a server", async () => {
+  let deleted = false;
   const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.endsWith("/profiles/server-1") && init?.method === "DELETE") deleted = true;
     const body = url.endsWith("/server/state")
       ? { state: "STOPPED", pid: null, exit_code: null, reason: "No server is running." }
       : url.endsWith("/profiles")
-        ? [{ id: "server-1", name: "Family", server_directory: "/srv/minecraft/family", distribution: "vanilla", minecraft_version: "1.21.1", loader_version: null, is_fixture: false }]
+        ? deleted ? [] : [{ id: "server-1", name: "Family", server_directory: "/srv/minecraft/family", distribution: "vanilla", minecraft_version: "1.21.1", loader_version: null, is_fixture: false }]
         : url.endsWith("/schedules")
           ? []
           : url.endsWith("/players")
@@ -89,4 +91,6 @@ test("requires a clear confirmation before removing a server", async () => {
     "/api/v1/profiles/server-1",
     expect.objectContaining({ method: "DELETE", body: JSON.stringify({ confirm_name: "Family", delete_files: true }) }),
   ));
+  await waitFor(() => expect(client.getQueryData(["profiles"])).toEqual([]));
+  expect(screen.queryByRole("button", { name: "Remove server" })).not.toBeInTheDocument();
 });

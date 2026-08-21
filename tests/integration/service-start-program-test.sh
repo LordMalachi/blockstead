@@ -15,6 +15,13 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 unit=$root/packaging/systemd/blockstead.service
 app_dir=/opt/blockstead
 
+grep -Fx 'Group=blockstead-files' "$unit" >/dev/null \
+  || { echo "FAIL: the native unit does not use the shared server-files group." >&2; exit 1; }
+grep -Fx 'SupplementaryGroups=blockstead' "$unit" >/dev/null \
+  || { echo "FAIL: the native unit cannot read its private service-owned data." >&2; exit 1; }
+grep -Fx 'NoNewPrivileges=true' "$unit" >/dev/null \
+  && { echo "FAIL: NoNewPrivileges blocks the approved native power helper." >&2; exit 1; }
+
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
 

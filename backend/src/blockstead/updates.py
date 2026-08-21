@@ -7,14 +7,13 @@ same release version, so the version string alone cannot say whether an
 installation is behind; the commit itself is the identity, and the version is
 kept only as the label an owner recognises.
 
-The application runs as an unprivileged service that cannot write ``/opt`` and
-cannot use ``sudo`` — the systemd unit sets ``NoNewPrivileges`` and mounts the
-system read-only apart from a few owner-data paths. So the application never
-performs an update itself. It writes a small request file into its own data
-directory, and a root-owned systemd path unit notices the file and runs the
-privileged helper. That indirection also keeps the update alive: installing
-stops the Blockstead service, which would otherwise kill the very process that
-started the work.
+The application runs as an unprivileged service that cannot safely write
+``/opt`` or perform the root-owned installation itself. So the application
+never performs an update directly. It writes a small request file into its own
+data directory, and a root-owned systemd path unit notices the file and runs
+the privileged helper. That indirection also keeps the update alive:
+installing stops the Blockstead service, which would otherwise kill the very
+process that started the work.
 
 Nothing here reaches out to the Minecraft server or the database. The decision
 about *when* it is polite to update is expressed by :func:`decide`, which takes

@@ -58,6 +58,10 @@ Blockstead revision, tester, and date with the results.
       clear success or failure result. `blockstead update-logs` shows the
       corresponding privileged updater log without mixing it into app logs.
 - [ ] Service user is unprivileged and the unit passes `systemd-analyze verify`.
+- [ ] Fresh install and update create/use `blockstead-files`, add the installing
+      desktop account, preserve private `/var/lib/blockstead` permissions, and
+      let that account read/write an existing `/srv/minecraft` server after
+      logout/login.
 - [ ] Service starts at boot and binds only to `127.0.0.1` by default.
 - [ ] First admin, login, logout, and session invalidation work.
 - [ ] Forgotten-password recovery is explained on the sign-in page, and

@@ -12,8 +12,7 @@ import { scopeFor, type ServerScope } from "./scope";
 import { ProvisionPanel } from "./ProvisionPanel";
 import { SavedSetupsPanel } from "./SavedSetupsPanel";
 import { useRole } from "../shell/role";
-
-function folderFrom(value: string) { return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "minecraft-server"; }
+import { normalizeServerDirectoryName } from "../../lib/server-directory";
 
 const folderInputProps: Record<string, string> = { webkitdirectory: "" };
 
@@ -92,7 +91,13 @@ export function ServersPage() {
       setRemoveConfirmation("");
       setRemoveFiles(false);
       setNotice(result.detail);
-      await client.invalidateQueries();
+      client.setQueryData<Profile[]>(["profiles"], current => current?.filter(profile => profile.id !== result.id));
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["profiles"] }),
+        client.invalidateQueries({ queryKey: ["schedules"] }),
+        client.invalidateQueries({ queryKey: ["activity"] }),
+        client.invalidateQueries({ predicate: query => query.queryKey.includes(result.id) }),
+      ]);
     },
   });
 
@@ -105,7 +110,7 @@ export function ServersPage() {
     event.preventDefault(); setNotice("");
     if (!uploadFiles.length) return;
     const totalBytes = uploadFiles.reduce((sum, file) => sum + file.size, 0) || 1;
-    const base = folderFrom(uploadFiles[0].webkitRelativePath.split("/")[0] || importName);
+    const base = normalizeServerDirectoryName(uploadFiles[0].webkitRelativePath.split("/")[0] || importName);
     setUploadProgress(0);
     let uploadId = "";
     try {

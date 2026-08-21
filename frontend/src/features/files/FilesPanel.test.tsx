@@ -114,6 +114,18 @@ test("lists entries for the default config category", async () => {
   expect(screen.getByRole("button", { name: /How archive extraction avoids overwrites/ })).toBeVisible();
 });
 
+test("opens the displayed host folder while keeping the copy fallback", async () => {
+  const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+  renderPanel();
+  await screen.findByText("server.properties");
+
+  fireEvent.click(screen.getByRole("button", { name: "Open this folder" }));
+
+  expect(openSpy).toHaveBeenCalledWith("file:///srv/minecraft/fabric-server", "_blank", "noopener");
+  expect(screen.getByRole("button", { name: "Copy" })).toBeVisible();
+  openSpy.mockRestore();
+});
+
 test("switching category reloads the listing for that category", async () => {
   renderPanel();
   await screen.findByText("server.properties");

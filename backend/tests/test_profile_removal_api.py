@@ -129,6 +129,7 @@ def test_permanent_removal_requires_the_exact_name_and_deletes_local_data(
     assert not directory.exists()
     assert not (removal_client.app.state.settings.data_dir / "backups" / profile_id).exists()
     assert external_profile_backups.is_dir()
+    assert removal_client.get("/api/v1/profiles", headers=auth).json() == []
 
 
 def test_server_root_profile_can_never_delete_managed_servers(

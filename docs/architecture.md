@@ -58,9 +58,11 @@ explicit force request before terminating the process group.
 ## Deployment
 
 Vite assets are served by FastAPI in production. Linux installation creates an
-unprivileged `blockstead` account and hardened systemd service. Imported paths
-will require an explicit access plan; the installer does not recursively take
-ownership of existing servers.
+unprivileged `blockstead` account and hardened systemd service. The installer
+creates a dedicated `blockstead-files` group, adds the installing desktop
+account to it, and reconciles group access only inside `/srv/minecraft` so
+existing worlds remain usable from the desktop without exposing Blockstead's
+private data directory.
 
 The optional Docker Compose deployment builds the Vite application in a Node
 stage, then copies it and the Python package into a Java 21 runtime image. The

@@ -5,7 +5,8 @@ After=network.target
 [Service]
 Type=simple
 User=blockstead
-Group=blockstead
+Group=blockstead-files
+SupplementaryGroups=blockstead
 WorkingDirectory=/opt/blockstead
 EnvironmentFile=/etc/blockstead/blockstead.env
 # The interpreter is started directly. A virtual environment console script
@@ -18,8 +19,7 @@ ExecStart=/opt/blockstead/venv/bin/python -m uvicorn blockstead.app:app --host $
 Restart=on-failure
 KillMode=mixed
 TimeoutStopSec=30s
-UMask=0027
-NoNewPrivileges=true
+UMask=0007
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
