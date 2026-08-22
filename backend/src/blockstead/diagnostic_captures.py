@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from .host_fs import atomic_write_bytes, restrict_to_owner
+
 
 class DiagnosticCaptureError(RuntimeError):
     """A diagnostic capture could not be safely retained for its owner."""
@@ -26,10 +28,9 @@ def write_transcript(
     target = capture_path(data_directory, profile_id, capture_id)
     data = content.encode("utf-8", errors="replace")
     try:
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        target.parent.chmod(0o700)
-        target.write_bytes(data)
-        target.chmod(0o600)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        restrict_to_owner(target.parent)
+        atomic_write_bytes(target, data, before_replace=restrict_to_owner)
     except OSError as exc:
         raise DiagnosticCaptureError("Blockstead could not retain the diagnostic capture.") from exc
     return target.relative_to(data_directory).as_posix(), len(data)

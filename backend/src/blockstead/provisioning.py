@@ -9,7 +9,6 @@ new profile directory. This module never writes or accepts eula.txt.
 import asyncio
 import hashlib
 import re
-import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from pydantic import BaseModel
 
 from . import __version__
 from .distributions import LaunchPlanError, launch_arguments
+from .host_fs import rmtree
 
 USER_AGENT = f"blockstead/{__version__} (https://github.com/LordMalachi/blockstead)"
 MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
@@ -606,10 +606,16 @@ async def provision_profile(
     if target.exists():
         raise ProvisionError("A folder with that name already exists in the server root.")
     plan = await resolve_plan(client, distribution, version, loader_version)
-    target.mkdir(mode=0o755)
+    target.mkdir(mode=0o755, parents=True)
     try:
         sha256 = await install_loader(client, plan, target, java_executable)
     except (ProvisionError, OSError):
-        shutil.rmtree(target, ignore_errors=True)
+        # A ProvisionError is raised regardless of whether this cleanup
+        # succeeds; a leftover partial profile folder is orphaned disk
+        # usage, not a mistaken "provisioned" report.
+        try:
+            rmtree(target)
+        except OSError:
+            pass
         raise
     return ProvisionResult(plan=plan, directory=str(target), sha256=sha256)

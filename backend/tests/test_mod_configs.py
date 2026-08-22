@@ -38,6 +38,33 @@ def test_lists_reads_and_revision_safely_writes_config(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == updated.content
 
 
+def test_json5_config_is_validated_and_accepts_json5_syntax(tmp_path: Path) -> None:
+    server, _ = make_config(
+        tmp_path, "sodium-options.json5", "{\n  // a comment\n  renderDistance: 12,\n}\n"
+    )
+    document = read_mod_config(server, "sodium-options.json5")
+
+    # JSON5 comments, unquoted keys, and trailing commas are all legal and
+    # must not be rejected as "invalid" the way strict JSON would reject them.
+    updated = write_mod_config(
+        server,
+        document.path,
+        document.revision,
+        "{\n  // updated\n  renderDistance: 16,\n  extra: ['a', 'b',],\n}\n",
+    )
+    assert "renderDistance: 16" in updated.content
+
+    with pytest.raises(ModConfigError, match="not valid"):
+        write_mod_config(server, document.path, updated.revision, "{ unterminated")
+
+
+def test_yaml_config_rejects_invalid_syntax(tmp_path: Path) -> None:
+    server, _ = make_config(tmp_path, "config.yml", "enabled: true\n")
+    document = read_mod_config(server, "config.yml")
+    with pytest.raises(ModConfigError, match="not valid"):
+        write_mod_config(server, document.path, document.revision, "enabled: [true\n")
+
+
 def test_refuses_invalid_syntax_traversal_and_symlinks(tmp_path: Path) -> None:
     server, _ = make_config(tmp_path, "settings.toml", "enabled = true\n")
     document = read_mod_config(server, "settings.toml")
@@ -50,3 +77,34 @@ def test_refuses_invalid_syntax_traversal_and_symlinks(tmp_path: Path) -> None:
     (server / "config" / "link.json").symlink_to(outside)
     with pytest.raises(ModConfigError, match="not found"):
         read_mod_config(server, "link.json")
+
+
+def test_failed_write_never_corrupts_the_original_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import blockstead.mod_configs as mod_configs
+
+    server, target = make_config(tmp_path, "settings.toml", "enabled = true\n")
+    document = read_mod_config(server, "settings.toml")
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(mod_configs, "atomic_write_bytes", boom)
+    with pytest.raises(ModConfigError):
+        write_mod_config(server, document.path, document.revision, "enabled = false\n")
+
+    # The original file must be byte-for-byte untouched after a failed write.
+    assert target.read_text(encoding="utf-8") == "enabled = true\n"
+    read_again = read_mod_config(server, "settings.toml")
+    assert read_again.revision == document.revision
+
+
+def test_absolute_and_hidden_segment_paths_are_refused(tmp_path: Path) -> None:
+    server, _ = make_config(tmp_path, "settings.toml", "enabled = true\n")
+    with pytest.raises(ModConfigError, match="not an editable"):
+        read_mod_config(server, "/etc/passwd")
+    with pytest.raises(ModConfigError, match="not an editable"):
+        read_mod_config(server, ".hidden/settings.toml")
+    with pytest.raises(ModConfigError, match="not an editable"):
+        read_mod_config(server, "settings.exe")

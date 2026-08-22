@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from blockstead.extensions import ExtensionEntry
 from blockstead.loader_migration import (
     classify_extensions,
@@ -59,6 +61,40 @@ def test_world_copy_preserves_all_dimensions_and_leaves_source_unchanged(
     assert (target / "family" / "level.dat").read_text(encoding="utf-8") == "family"
     assert (target / "server.properties").read_text(encoding="utf-8") == "level-name=family\n"
     assert (source / "family" / "level.dat").read_text(encoding="utf-8") == "family"
+
+
+def test_world_copy_server_properties_write_is_crash_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash mid-write to the new profile's server.properties must never
+    leave it truncated: the previous content (from the installer) survives
+    and the write is retried whole or not at all."""
+
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    root = source / "family"
+    root.mkdir()
+    (root / "level.dat").write_text("family", encoding="utf-8")
+    (target / "server.properties").write_text(
+        "motd=installer default\nlevel-name=world\n", encoding="utf-8"
+    )
+    roots = world_roots(source, "family")
+
+    def failing_replace(src: object, dst: object) -> None:
+        raise OSError("simulated crash during write")
+
+    monkeypatch.setattr("blockstead.host_fs.os.replace", failing_replace)
+
+    with pytest.raises(ValueError, match="could not be written"):
+        copy_worlds(roots, target, "family", "paper", "paper", "1.21.1")
+
+    monkeypatch.undo()
+    properties = target / "server.properties"
+    assert properties.read_text(encoding="utf-8") == "motd=installer default\nlevel-name=world\n"
+    leftovers = [entry.name for entry in target.iterdir() if entry.name != "family"]
+    assert leftovers == ["server.properties"]
 
 
 def test_paper_dimensions_are_merged_for_mod_loaders(tmp_path: Path) -> None:

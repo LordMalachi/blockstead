@@ -121,9 +121,12 @@ const manualResult = {
   source_verified: false,
 };
 
-function renderPanel(stopped = true, view: ExtensionsView = inventory) {
-  const fetch = vi.fn().mockImplementation((url: string) => {
+function renderPanel(stopped = true, view: ExtensionsView = inventory, options: { curseforgeSaveResponse?: () => Response } = {}) {
+  const fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
     const target = url;
+    if (target.includes("/settings/curseforge") && init?.method === "PUT" && options.curseforgeSaveResponse) {
+      return Promise.resolve(options.curseforgeSaveResponse());
+    }
     const body = target.includes("/extensions/recommendations") ? recommendationPage
       : target.includes("/catalog/categories") ? { categories: ["optimization", "technology"] }
       : target.includes("/catalog/versions") ? versionList
@@ -138,7 +141,7 @@ function renderPanel(stopped = true, view: ExtensionsView = inventory) {
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
   });
   vi.stubGlobal("fetch", fetch);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={client}><MemoryRouter><ExtensionsPanel profileId="profile-1" stopped={stopped} /></MemoryRouter></QueryClientProvider>);
   return fetch;
 }
@@ -306,6 +309,27 @@ test("curseforge asks for an API key once and saves it", async () => {
     "/api/v1/settings/curseforge",
     expect.objectContaining({ method: "PUT", body: JSON.stringify({ api_key: "my-secret-key" }) }),
   ));
+});
+
+test("highlights the CurseForge key field when the server rejects it", async () => {
+  renderPanel(true, inventory, {
+    curseforgeSaveResponse: () => new Response(JSON.stringify({
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Some submitted information was invalid.",
+        recovery: "Review the highlighted fields and try again.",
+        fields: [{ field: "api_key", reason: "NOT_ALLOWED_VALUE", message: "That key was not accepted by CurseForge.", rule: null, suggestion: null }],
+      },
+    }), { status: 422, headers: { "Content-Type": "application/json" } }),
+  });
+
+  fireEvent.change(await screen.findByLabelText("Catalog"), { target: { value: "curseforge" } });
+  const keyInput = await screen.findByLabelText("CurseForge API key");
+  fireEvent.change(keyInput, { target: { value: "bad-key" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save key" }));
+
+  await waitFor(() => expect(keyInput).toHaveAttribute("aria-invalid", "true"));
+  expect(screen.getByText("That key was not accepted by CurseForge.")).toBeVisible();
 });
 
 test("installs the curated squaremap project through the verified extension endpoint", async () => {

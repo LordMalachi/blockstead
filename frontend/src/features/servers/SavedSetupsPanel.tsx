@@ -2,7 +2,8 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Profile, type SavedSetup, type SavedSetupSwitchReview, type SavedSetupVariantReview } from "../../api/client";
 import { Button } from "../../components/Button";
-import { normalizeServerDirectoryName } from "../../lib/server-directory";
+import { FieldNotice, useFieldErrors } from "../../components/FieldError";
+import { describeServerDirectoryName, normalizeServerDirectoryName } from "../../lib/server-directory";
 
 const distributions = ["vanilla", "paper", "fabric", "forge", "quilt", "neoforge"];
 
@@ -17,22 +18,24 @@ export function SavedSetupsPanel({ profiles }: { profiles: Profile[] }) {
   const [switchReview, setSwitchReview] = useState<SavedSetupSwitchReview | null>(null);
   const [acknowledge, setAcknowledge] = useState(false);
   const [notice, setNotice] = useState("");
+  const setupFieldErrors = useFieldErrors();
+  const variantFieldErrors = useFieldErrors();
   const setups = useQuery({ queryKey: ["saved-setups"], queryFn: () => api<SavedSetup[]>("/saved-setups") });
   const setupList = Array.isArray(setups.data) ? setups.data : [];
   const createSetup = useMutation({
     mutationFn: () => api<unknown>("/saved-setups", { method: "POST", body: JSON.stringify({ name: setupName, profile_id: sourceProfileId }) }),
-    onSuccess: async () => { setSetupName(""); setNotice("Saved setup created. Review a protected variant below."); await client.invalidateQueries({ queryKey: ["saved-setups"] }); },
-    onError: error => setNotice(error.message),
+    onSuccess: async () => { setSetupName(""); setupFieldErrors.clear(); setNotice("Saved setup created. Review a protected variant below."); await client.invalidateQueries({ queryKey: ["saved-setups"] }); },
+    onError: error => { setNotice(error.message); setupFieldErrors.setFromError(error); },
   });
   const createReview = useMutation({
     mutationFn: (setupId: string) => api<SavedSetupVariantReview>(`/saved-setups/${setupId}/variants/review`, { method: "POST", body: JSON.stringify({ source_profile_id: sourceProfileId, name: variantName, directory_name: normalizeServerDirectoryName(directoryName, "creative-snapshot"), target_distribution: distribution }) }),
-    onSuccess: data => { setReview(data); setNotice(""); },
-    onError: error => setNotice(error.message),
+    onSuccess: data => { setReview(data); variantFieldErrors.clear(); setNotice(""); },
+    onError: error => { setNotice(error.message); variantFieldErrors.setFromError(error); },
   });
   const createVariant = useMutation({
     mutationFn: (setupId: string) => api<unknown>(`/saved-setups/${setupId}/variants`, { method: "POST", body: JSON.stringify({ source_profile_id: sourceProfileId, name: variantName, directory_name: normalizeServerDirectoryName(directoryName, "creative-snapshot"), target_distribution: distribution, review_id: review?.review_id, backup_id: review?.protection.backup_id, acknowledge_modded_world: acknowledge }) }),
-    onSuccess: async () => { setReview(null); setNotice("Protected setup variant created; the source profile remains unchanged."); await client.invalidateQueries({ queryKey: ["saved-setups"] }); await client.invalidateQueries({ queryKey: ["profiles"] }); },
-    onError: error => setNotice(error.message),
+    onSuccess: async () => { setReview(null); variantFieldErrors.clear(); setNotice("Protected setup variant created; the source profile remains unchanged."); await client.invalidateQueries({ queryKey: ["saved-setups"] }); await client.invalidateQueries({ queryKey: ["profiles"] }); },
+    onError: error => { setNotice(error.message); variantFieldErrors.setFromError(error); },
   });
   const reviewSwitch = useMutation({
     mutationFn: (targetProfileId: string) => api<SavedSetupSwitchReview>(`/saved-setups/${setupList.find(setup => setup.variants.some(variant => variant.profile_id === targetProfileId))?.id ?? ""}/switch/review`, { method: "POST", body: JSON.stringify({ target_profile_id: targetProfileId }) }),
@@ -51,12 +54,24 @@ export function SavedSetupsPanel({ profiles }: { profiles: Profile[] }) {
     createReview.mutate(setupId);
   }
 
+  // Live-check the folder name as the owner types, so an invalid value shows its
+  // suggestion immediately instead of only after submit or on blur.
+  function changeDirectoryName(value: string) {
+    setDirectoryName(value);
+    variantFieldErrors.setField("directory_name", describeServerDirectoryName(value, "creative-snapshot"));
+  }
+
+  const setupNameError = setupFieldErrors.get("name");
+  const variantNameError = variantFieldErrors.get("name");
+  const directoryError = variantFieldErrors.get("directory_name");
+
   return <section className="card" id="saved-setups">
     <div className="section-heading"><div><p className="eyebrow">Protected variants</p><h2>Saved Setups</h2></div><span>{setupList.length} group{setupList.length === 1 ? "" : "s"}</span></div>
     <p>Each variant is a separate Blockstead profile with its own world copy, port, launcher, backups, and logs. Switching always reviews protection and downtime first.</p>
     {notice && <p className="error" role="alert">{notice}</p>}
     <form className="inline-form" onSubmit={event => { event.preventDefault(); createSetup.mutate(); }}>
-      <label>New setup group<input value={setupName} onChange={event => setSetupName(event.target.value)} placeholder="Weekend worlds" required maxLength={80} /></label>
+      <label>New setup group<input value={setupName} onChange={event => setSetupName(event.target.value)} placeholder="Weekend worlds" required maxLength={80} {...setupFieldErrors.controlProps("name")} /></label>
+      {setupNameError && <FieldNotice id={setupFieldErrors.noticeId("name")} error={setupNameError} onUseSuggestion={value => setSetupName(value)} />}
       <label>Source profile<select value={sourceProfileId} onChange={event => setSourceProfileId(event.target.value)}>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
       <Button disabled={createSetup.isPending || !sourceProfileId}>{createSetup.isPending ? "Creating…" : "Create setup"}</Button>
     </form>
@@ -64,8 +79,10 @@ export function SavedSetupsPanel({ profiles }: { profiles: Profile[] }) {
       <div className="section-heading"><div><h3>{setup.name}</h3><small>Variants diverge independently; source profiles are never parked in place.</small></div><span>{setup.variants.length} variant{setup.variants.length === 1 ? "" : "s"}</span></div>
       <ul className="care-list">{setup.variants.map(variant => <li key={variant.id}><div><strong>{variant.name}</strong><small>{variant.distribution} {variant.minecraft_version ?? ""} · {variant.active ? "active" : "stopped"}</small><small>Protection: {variant.protection_status === "verified" ? "verified" : "source enrollment or backup unavailable"}</small></div><Button className="button--secondary button--small" disabled={variant.active || reviewSwitch.isPending} onClick={() => reviewSwitch.mutate(variant.profile_id)}>Review switch</Button></li>)}</ul>
       <form className="inline-form" onSubmit={event => reviewVariant(event, setup.id)}>
-        <label>Variant name<input value={variantName} onChange={event => setVariantName(event.target.value)} placeholder="Creative snapshot" required maxLength={80} /></label>
-        <label>Folder name<input value={directoryName} onChange={event => setDirectoryName(event.target.value)} onBlur={() => setDirectoryName(current => normalizeServerDirectoryName(current, "creative-snapshot"))} placeholder="creative-snapshot" required pattern="[a-z0-9][a-z0-9_-]*" /></label>
+        <label>Variant name<input value={variantName} onChange={event => setVariantName(event.target.value)} placeholder="Creative snapshot" required maxLength={80} {...variantFieldErrors.controlProps("name")} /></label>
+        {variantNameError && <FieldNotice id={variantFieldErrors.noticeId("name")} error={variantNameError} onUseSuggestion={value => setVariantName(value)} />}
+        <label>Folder name<input value={directoryName} onChange={event => changeDirectoryName(event.target.value)} onBlur={() => changeDirectoryName(normalizeServerDirectoryName(directoryName, "creative-snapshot"))} placeholder="creative-snapshot" required pattern="[a-z0-9][a-z0-9_-]*" {...variantFieldErrors.controlProps("directory_name")} /></label>
+        {directoryError && <FieldNotice id={variantFieldErrors.noticeId("directory_name")} error={directoryError} onUseSuggestion={value => changeDirectoryName(value)} />}
         <label>Target loader<select value={distribution} onChange={event => setDistribution(event.target.value)}>{distributions.map(item => <option key={item} value={item}>{item}</option>)}</select></label>
         <label>Copy from<select value={sourceProfileId} onChange={event => setSourceProfileId(event.target.value)}>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
         <Button disabled={createReview.isPending}>{createReview.isPending ? "Reviewing…" : "Review protected copy"}</Button>

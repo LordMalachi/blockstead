@@ -6,8 +6,11 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
+import json5
 import yaml
 from pydantic import BaseModel
+
+from .host_fs import atomic_write_bytes, copy_mode, describe_os_error
 
 try:
     import tomllib
@@ -114,6 +117,8 @@ def _validate_content(suffix: str, content: str) -> None:
     try:
         if suffix == ".json":
             json.loads(content)
+        elif suffix == ".json5":
+            json5.loads(content)
         elif suffix == ".toml":
             tomllib.loads(content)
         elif suffix in {".yaml", ".yml"}:
@@ -138,14 +143,12 @@ def write_mod_config(
     backup_root = server_directory / ".blockstead-config-backups"
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup = backup_root / f"{PurePosixPath(path).as_posix()}.{stamp}.{revision[:12]}.bak"
-    staging = target.with_name(f".{target.name}.blockstead.tmp")
     try:
         backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(target, backup)
-        staging.write_bytes(data)
-        staging.chmod(target.stat().st_mode)
-        staging.replace(target)
+        atomic_write_bytes(
+            target, data, before_replace=lambda staging: copy_mode(target, staging)
+        )
     except OSError as exc:
-        staging.unlink(missing_ok=True)
-        raise ModConfigError("Blockstead could not safely save that configuration file.") from exc
+        raise ModConfigError(describe_os_error(exc, target)) from exc
     return read_mod_config(server_directory, path)

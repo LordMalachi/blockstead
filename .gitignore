@@ -20,3 +20,6 @@ data/
 *.jar
 secrets/
 .claude/worktrees/
+
+# pytest scratch directory (TMPDIR override used by the test scripts)
+.tmp_pytest/

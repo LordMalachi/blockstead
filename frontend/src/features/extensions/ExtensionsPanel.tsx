@@ -20,6 +20,7 @@ import {
   type SharedMapView,
 } from "../../api/client";
 import { Button } from "../../components/Button";
+import { FieldNotice, useFieldErrors } from "../../components/FieldError";
 import { NavIcon } from "../../components/NavIcon";
 import { Tooltip } from "../../components/Tooltip";
 import { formatBytes } from "../../lib/format";
@@ -259,6 +260,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   const [searched, setSearched] = useState("");
   const [notice, setNotice] = useState("");
   const [noticeTone, setNoticeTone] = useState<"success" | "error">("success");
+  const curseforgeKeyErrors = useFieldErrors();
   const [chosenCategories, setChosenCategories] = useState<string[]>([]);
   const [sort, setSort] = useState<string>("relevance");
   const [offset, setOffset] = useState(0);
@@ -370,6 +372,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
   const keyAction = useMutation({
     mutationFn: async ({ endpoint, init }: ActionRequest) => api<unknown>(endpoint, init),
     onSuccess: (_result, request) => {
+      curseforgeKeyErrors.clear();
       showNotice("success", request.success);
       const configured = request.init.method !== "DELETE";
       client.setQueryData(["curseforge-settings"], { configured });
@@ -381,7 +384,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
         client.removeQueries({ queryKey: ["extension-search", profileId, "curseforge"] });
       }
     },
-    onError: error => showNotice("error", error.message),
+    onError: error => { showNotice("error", error.message); curseforgeKeyErrors.setFromError(error); },
   });
   const action = useMutation({
     mutationFn: async ({ endpoint, init }: ActionRequest) => api<unknown>(endpoint, init),
@@ -576,6 +579,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     const value = new FormData(form).get("api_key");
     if (typeof value !== "string" || !value.trim()) return;
     clearNotice();
+    curseforgeKeyErrors.clear();
     keyAction.mutate({ endpoint: "/settings/curseforge", init: { method: "PUT", body: JSON.stringify({ api_key: value.trim() }) }, success: "CurseForge key saved. You can search that catalog now." });
   }
 
@@ -1033,7 +1037,8 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
           <div className="catalog-content">
             {source === "curseforge" && curseforge.data && !curseforge.data.configured && <form className="curseforge-key-form" onSubmit={saveCurseForgeKey}>
               <div><strong>Connect your CurseForge key</strong><p>Searching CurseForge needs your own free API key. Blockstead stores it on this computer only and never shows it again.</p></div>
-              <label>CurseForge API key<input name="api_key" type="password" required minLength={8} placeholder="Paste your key" /></label>
+              <label>CurseForge API key<input name="api_key" type="password" required minLength={8} placeholder="Paste your key" {...curseforgeKeyErrors.controlProps("api_key")} /></label>
+              {curseforgeKeyErrors.get("api_key") && <FieldNotice id={curseforgeKeyErrors.noticeId("api_key")} error={curseforgeKeyErrors.get("api_key")!} />}
               <Button disabled={keyAction.isPending}>Save key</Button>
             </form>}
             {source === "curseforge" && curseforge.data?.configured && <div className="catalog-key-status"><span>CurseForge is connected on this computer.</span><Button className="button--quiet button--small" disabled={keyAction.isPending} onClick={() => { clearNotice(); keyAction.mutate({ endpoint: "/settings/curseforge", init: { method: "DELETE" }, success: "CurseForge key removed from this computer." }); }}>Remove key</Button></div>}

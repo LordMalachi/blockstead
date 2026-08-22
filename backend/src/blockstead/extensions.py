@@ -7,6 +7,7 @@ prove some incompatibilities, but it can never prove compatibility.
 
 import hashlib
 import json
+import re
 import zipfile
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -29,9 +30,17 @@ MAX_METADATA_BYTES = 1_000_000
 MAX_INVENTORY_CACHE_ENTRIES = 128
 
 _DirectorySignature = tuple[tuple[str, int, int, int, int], ...]
-_InventoryKey = tuple[str, str, _DirectorySignature | None, _DirectorySignature | None]
+_InventoryKey = tuple[
+    str, str, _DirectorySignature | None, _DirectorySignature | None, _DirectorySignature | None
+]
 _inventory_cache: OrderedDict[_InventoryKey, "ExtensionsView"] = OrderedDict()
 _inventory_cache_lock = RLock()
+
+#: The counterpart extension folder for each loader-defined one. A jar sitting
+#: in the wrong one of these two (e.g. a Fabric mod dropped into ``plugins/``
+#: on a Fabric server, or a Paper plugin dropped into ``mods/``) never loads,
+#: so it is surfaced the same way stray jars on a vanilla profile are.
+_STRAY_EXTENSION_DIRECTORY = {"plugins": "mods", "mods": "plugins"}
 
 Kind = Literal["paper-plugin", "fabric-mod", "quilt-mod", "neoforge-mod", "forge-mod", "unknown"]
 
@@ -57,6 +66,7 @@ class ExtensionEntry(BaseModel):
     minecraft_constraint: str | None
     environment: str | None
     dependencies: list[str]
+    dependency_constraints: dict[str, str] = {}
     readable: bool
 
 
@@ -84,6 +94,7 @@ class _Metadata:
     minecraft_constraint: str | None = None
     environment: str | None = None
     dependencies: list[str] = field(default_factory=list)
+    dependency_constraints: dict[str, str] = field(default_factory=dict)
 
     def fill(self, attribute: str, value: str | None) -> None:
         """Record a value only when nothing earlier already claimed the field."""
@@ -128,19 +139,17 @@ def _parse_fabric(raw: bytes, found: _Metadata) -> None:
     depends = data.get("depends")
     if isinstance(depends, dict):
         found.fill("minecraft_constraint", _clean(depends.get("minecraft")))
+        excluded = {"minecraft", "java", "fabricloader", "quilt_loader", "forge", "neoforge"}
         if not found.dependencies:
             found.dependencies = sorted(
-                str(key)[:100]
-                for key in depends
-                if key not in {
-                    "minecraft",
-                    "java",
-                    "fabricloader",
-                    "quilt_loader",
-                    "forge",
-                    "neoforge",
-                }
+                str(key)[:100] for key in depends if key not in excluded
             )
+        if not found.dependency_constraints:
+            found.dependency_constraints = {
+                str(key)[:100]: cleaned
+                for key, value in depends.items()
+                if key not in excluded and (cleaned := _clean(value)) is not None
+            }
 
 
 def _parse_quilt(raw: bytes, found: _Metadata) -> None:
@@ -162,6 +171,7 @@ def _parse_quilt(raw: bytes, found: _Metadata) -> None:
     depends = loader.get("depends")
     records = depends if isinstance(depends, list) else []
     declared: list[str] = []
+    declared_constraints: dict[str, str] = {}
     for record in records:
         if not isinstance(record, dict):
             continue
@@ -172,8 +182,13 @@ def _parse_quilt(raw: bytes, found: _Metadata) -> None:
             found.fill("minecraft_constraint", _clean(constraint))
         elif isinstance(dep_id, str) and dep_id not in {"java", "quilt_loader"}:
             declared.append(dep_id[:100])
+            cleaned = _clean(constraint)
+            if cleaned is not None:
+                declared_constraints[dep_id[:100]] = cleaned
     if declared and not found.dependencies:
         found.dependencies = sorted(declared)
+    if declared_constraints and not found.dependency_constraints:
+        found.dependency_constraints = declared_constraints
 
 
 def _parse_mods_toml(raw: bytes, loader: str, found: _Metadata) -> None:
@@ -192,6 +207,7 @@ def _parse_mods_toml(raw: bytes, loader: str, found: _Metadata) -> None:
     mod_id = first.get("modId")
     dependencies = data.get("dependencies")
     declared: list[str] = []
+    declared_constraints: dict[str, str] = {}
     records = (
         dependencies.get(mod_id)
         if isinstance(dependencies, dict) and isinstance(mod_id, str)
@@ -205,8 +221,13 @@ def _parse_mods_toml(raw: bytes, loader: str, found: _Metadata) -> None:
             found.fill("minecraft_constraint", _clean(record.get("versionRange")))
         elif isinstance(dep_id, str) and dep_id != loader:
             declared.append(dep_id[:100])
+            cleaned = _clean(record.get("versionRange"))
+            if cleaned is not None:
+                declared_constraints[dep_id[:100]] = cleaned
     if declared and not found.dependencies:
         found.dependencies = sorted(declared)
+    if declared_constraints and not found.dependency_constraints:
+        found.dependency_constraints = declared_constraints
 
 
 def _parse_plugin_yml(raw: bytes, found: _Metadata) -> None:
@@ -251,6 +272,136 @@ def _parse_plugin_yml(raw: bytes, found: _Metadata) -> None:
             )
     if required and not found.dependencies:
         found.dependencies = sorted(set(required))
+
+
+#: Simple Fabric/Quilt-style comparator prefixes, longest first so "==" is not
+#: mis-split by the single-character "=" branch.
+_SIMPLE_VERSION_OPERATORS = (">=", "<=", "==", "^", "~", ">", "<", "=")
+_NUMERIC_VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
+
+
+def _numeric_version_tuple(text: str) -> tuple[int, ...] | None:
+    text = text.strip()
+    if not _NUMERIC_VERSION_RE.match(text):
+        return None
+    return tuple(int(part) for part in text.split("."))
+
+
+def _compare_numeric_versions(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+    length = max(len(left), len(right))
+    left_padded = left + (0,) * (length - len(left))
+    right_padded = right + (0,) * (length - len(right))
+    if left_padded < right_padded:
+        return -1
+    if left_padded > right_padded:
+        return 1
+    return 0
+
+
+def semver_constraint_satisfied(installed_version: str, constraint: str) -> bool | None:
+    """Evaluate one simple Fabric/Quilt-style dependency version constraint.
+
+    Supports a single ``>=``, ``<=``, ``>``, ``<``, ``=``/``==``, ``~``
+    (tilde: same major.minor), ``^`` (caret: same major, or same
+    major.minor when major is 0), a bare exact version, or ``*``.
+
+    Returns ``True``/``False`` only when confidently determined. Returns
+    ``None`` for syntax this cannot evaluate safely — comma/``||`` lists
+    (Fabric and Quilt both allow multiple alternatives), wildcards, or a
+    non-numeric version component — so a caller never turns a constraint it
+    misread into a false "incompatible" verdict that blocks a legitimate
+    install.
+    """
+    text = constraint.strip()
+    if not text or text == "*":
+        return True
+    if "," in text or "||" in text or " - " in text or "x" in text.lower():
+        return None
+    operator = "="
+    for candidate in _SIMPLE_VERSION_OPERATORS:
+        if text.startswith(candidate):
+            operator = "=" if candidate == "==" else candidate
+            text = text[len(candidate) :].strip()
+            break
+    target = _numeric_version_tuple(text)
+    current = _numeric_version_tuple(installed_version)
+    if target is None or current is None:
+        return None
+    order = _compare_numeric_versions(current, target)
+    if operator == "=":
+        return order == 0
+    if operator == ">=":
+        return order >= 0
+    if operator == "<=":
+        return order <= 0
+    if operator == ">":
+        return order > 0
+    if operator == "<":
+        return order < 0
+    if operator == "~":
+        return _compare_numeric_versions(current[:2], target[:2]) == 0 and order >= 0
+    if operator == "^":
+        if target[:1] != (0,):
+            return current[:1] == target[:1] and order >= 0
+        return current[:2] == target[:2] and order >= 0
+    return None  # pragma: no cover - every branch above is exhaustive
+
+
+def maven_range_satisfied(installed_version: str, range_text: str) -> bool | None:
+    """Evaluate a Forge/NeoForge Maven-style version range, e.g. ``[1.20,1.21)``.
+
+    This syntax is an unambiguous, documented Maven format, so unlike
+    :func:`semver_constraint_satisfied` this evaluates the full grammar:
+    inclusive ``[``/``]`` and exclusive ``(``/``)`` bounds, an open bound on
+    either side (``[1.20,)``), and a single bracketed version meaning an
+    exact match (``[1.20.1]``). Returns ``None`` for a bare "recommended"
+    version with no brackets — Maven treats that as a soft suggestion, not
+    an enforced bound — or when a bound is not a plain numeric version.
+    """
+    text = range_text.strip()
+    if len(text) < 2 or text[0] not in "[(" or text[-1] not in "])":
+        return None
+    body = text[1:-1]
+    current = _numeric_version_tuple(installed_version)
+    if current is None:
+        return None
+    if "," in body:
+        low_text, _, high_text = body.partition(",")
+    else:
+        low_text = high_text = body
+    low_text, high_text = low_text.strip(), high_text.strip()
+    if low_text:
+        low = _numeric_version_tuple(low_text)
+        if low is None:
+            return None
+        comparison = _compare_numeric_versions(current, low)
+        if text[0] == "[" and comparison < 0:
+            return False
+        if text[0] == "(" and comparison <= 0:
+            return False
+    if high_text:
+        high = _numeric_version_tuple(high_text)
+        if high is None:
+            return None
+        comparison = _compare_numeric_versions(current, high)
+        if text[-1] == "]" and comparison > 0:
+            return False
+        if text[-1] == ")" and comparison >= 0:
+            return False
+    return True
+
+
+def dependency_version_satisfied(kind: str, installed_version: str, constraint: str) -> bool | None:
+    """Dispatch to the right evaluator for a dependency's declaring loader.
+
+    Returns ``None`` (cannot verify) for any loader without a defined
+    evaluator, or when the underlying evaluator itself cannot verify.
+    """
+    if kind in ("forge-mod", "neoforge-mod"):
+        return maven_range_satisfied(installed_version, constraint)
+    if kind in ("fabric-mod", "quilt-mod"):
+        return semver_constraint_satisfied(installed_version, constraint)
+    return None
 
 
 def _kind_of(loaders: list[str]) -> Kind:
@@ -319,6 +470,7 @@ def inspect_extension_jar(path: Path) -> ExtensionEntry:
         minecraft_constraint=found.minecraft_constraint,
         environment=found.environment,
         dependencies=found.dependencies,
+        dependency_constraints=found.dependency_constraints,
         readable=readable,
     )
 
@@ -406,18 +558,19 @@ def _directory_signature(folder: Path) -> _DirectorySignature | None:
 
 
 def _inventory_key(
-    server_directory: Path, distribution: str, folder: Path, disabled: Path
+    server_directory: Path, distribution: str, folder: Path, disabled: Path, stray: Path | None
 ) -> _InventoryKey:
     return (
         str(server_directory),
         distribution,
         _directory_signature(folder),
         _directory_signature(disabled),
+        _directory_signature(stray) if stray is not None else (),
     )
 
 
 def _cached_inventory(key: _InventoryKey) -> ExtensionsView | None:
-    if key[2] is None or key[3] is None:
+    if any(component is None for component in key[2:]):
         return None
     with _inventory_cache_lock:
         cached = _inventory_cache.get(key)
@@ -428,7 +581,7 @@ def _cached_inventory(key: _InventoryKey) -> ExtensionsView | None:
 
 
 def _store_inventory(key: _InventoryKey, view: ExtensionsView) -> None:
-    if key[2] is None or key[3] is None:
+    if any(component is None for component in key[2:]):
         return
     with _inventory_cache_lock:
         _inventory_cache[key] = view.model_copy(deep=True)
@@ -464,18 +617,34 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
         )
     folder = server_directory / info.extension_directory
     disabled = server_directory / f"{info.extension_directory}-disabled"
-    key = _inventory_key(server_directory, distribution, folder, disabled)
+    stray_name = _STRAY_EXTENSION_DIRECTORY[info.extension_directory]
+    stray_dir = server_directory / stray_name
+    key = _inventory_key(server_directory, distribution, folder, disabled, stray_dir)
     cached = _cached_inventory(key)
     if cached is not None:
         return cached
     disabled_entries = [inspect_extension_jar(jar) for jar in _list_jars(disabled)[:MAX_JARS]]
+    stray_jars = [jar.name for jar in _list_jars(stray_dir)]
+    stray_warnings = (
+        [
+            ExtensionWarning(
+                code="wrong-directory",
+                message=f"These files are in {stray_name}/, which this {info.label} server "
+                f"does not load. Move them into {info.extension_directory}/ if they belong "
+                f"here, or remove them.",
+                files=sorted(stray_jars),
+            )
+        ]
+        if stray_jars
+        else []
+    )
     if not folder.is_dir():
         view = ExtensionsView(
             directory=info.extension_directory,
             present=False,
             entries=[],
             disabled_entries=disabled_entries,
-            warnings=[],
+            warnings=stray_warnings,
             truncated=False,
         )
         # A directory that changed mid-scan just produces a signature the next
@@ -490,7 +659,7 @@ def read_extensions(server_directory: Path, distribution: str) -> ExtensionsView
         present=True,
         entries=entries,
         disabled_entries=disabled_entries,
-        warnings=_collect_warnings(distribution, entries),
+        warnings=[*_collect_warnings(distribution, entries), *stray_warnings],
         truncated=len(jars) > MAX_JARS,
     )
     _store_inventory(key, view)

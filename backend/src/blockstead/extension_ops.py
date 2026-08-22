@@ -10,11 +10,11 @@ newly required dependencies must never be left half-installed.
 import hashlib
 import os
 import secrets
-import shutil
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
 
+from .host_fs import rmtree
 from .modrinth import JAR_NAME_PATTERN
 
 MAX_UPLOAD_BYTES = 128 * 1024 * 1024
@@ -152,7 +152,7 @@ def _fsync_directory(directory: Path) -> None:
 
 def _remove_staging(staging: Path) -> None:
     try:
-        shutil.rmtree(staging)
+        rmtree(staging)
     except OSError as exc:
         raise ExtensionOpsError(
             "The extension change completed, but Blockstead could not remove its private "

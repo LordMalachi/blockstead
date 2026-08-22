@@ -5,7 +5,6 @@ import logging
 import re
 import secrets
 import shutil
-import stat
 import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
@@ -157,7 +156,13 @@ from .extension_updates import (
 from .extension_updates import (
     rollback_update as rollback_extension_update,
 )
-from .extensions import ExtensionEntry, ExtensionsView, inspect_extension_jar, read_extensions
+from .extensions import (
+    ExtensionEntry,
+    ExtensionsView,
+    dependency_version_satisfied,
+    inspect_extension_jar,
+    read_extensions,
+)
 from .file_paths import CATEGORIES as FILE_CATEGORIES
 from .file_paths import FileCategory, FilePathError
 from .hangar import (
@@ -175,6 +180,8 @@ from .hangar import (
 from .hangar import (
     search as hangar_search,
 )
+from .host_fs import remove_readonly
+from .host_fs import rmtree as host_rmtree
 from .import_scan import (
     UPLOAD_PREFIX,
     canonical_child,
@@ -318,7 +325,6 @@ from .player_sessions import (
 )
 from .process import InvalidTransition, LogEvent, ProcessManager
 from .provisioning import (
-    DIRECTORY_PATTERN,
     USER_AGENT,
     ProvisionError,
     download_verified_file,
@@ -454,6 +460,14 @@ from .upgrade_ops import (
     promote_launch_upgrade,
     rollback_launch_upgrade,
 )
+from .validation import (
+    FieldError,
+    FieldValidationError,
+    ReasonCode,
+    describe_directory_name,
+    field_errors_from_request_validation,
+    suggest_available_directory_name,
+)
 from .world_care import (
     CleanupTarget,
     check_backup_destination,
@@ -467,10 +481,20 @@ from .world_care import (
 log = logging.getLogger("blockstead.api")
 
 
-def error(status_code: int, code: str, message: str, recovery: str | None = None) -> JSONResponse:
+def error(
+    status_code: int,
+    code: str,
+    message: str,
+    recovery: str | None = None,
+    fields: list[FieldError] | None = None,
+) -> JSONResponse:
     body: dict[str, object] = {"error": {"code": code, "message": message}}
     if recovery:
         body["error"]["recovery"] = recovery  # type: ignore[index]
+    if fields:
+        body["error"]["fields"] = [  # type: ignore[index]
+            field.model_dump(mode="json") for field in fields
+        ]
     return JSONResponse(status_code=status_code, content=body)
 
 
@@ -502,21 +526,20 @@ def resolve_static_dir(configured: Path | None = None) -> Path | None:
     return next((path for path in candidates if path.is_dir()), None)
 
 
-def remove_readonly(function: Callable[..., object], path: str, error: BaseException) -> None:
-    """Retry a tree removal after making a read-only entry writable.
+async def cleanup_partial_profile_directory(target: Path) -> bool:
+    """Best-effort remove a partially-provisioned profile folder after a failed migration.
 
-    Imported Minecraft folders can legitimately contain read-only files, especially
-    after being copied from Windows media. The target tree is validated separately
-    before this callback is ever used.
+    Uses the Windows-read-only-safe :func:`host_fs.rmtree` rather than
+    ``shutil.rmtree(..., ignore_errors=True)`` so an imported world file left
+    read-only cannot silently strand the partial folder. Returns whether the
+    folder is actually gone afterward so callers can report accurately rather
+    than assuming success.
     """
-
-    if not isinstance(error, PermissionError):
-        raise error
-    target = Path(path)
-    if sys.platform != "win32" or target.is_symlink():
-        raise error
-    target.chmod(target.stat().st_mode | stat.S_IWRITE)
-    function(path)
+    try:
+        await asyncio.to_thread(host_rmtree, target)
+    except OSError:
+        pass
+    return not target.exists()
 
 
 class SpaStaticFiles(StaticFiles):
@@ -1961,10 +1984,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "REQUEST_INVALID",
             "Some submitted information was invalid.",
             "Review the highlighted fields and try again.",
+            fields=field_errors_from_request_validation(exc),
         )
 
     @app.exception_handler(HTTPException)
     async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
+        if isinstance(exc, FieldValidationError):
+            return error(
+                exc.status_code, exc.code, str(exc.detail), exc.recovery, fields=exc.fields
+            )
         code = {
             401: "AUTHENTICATION_REQUIRED",
             403: "REQUEST_FORBIDDEN",
@@ -2347,20 +2375,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def import_upload_start(payload: ImportUploadStart, request: Request, db: Db) -> dict[str, str]:
         mutation(request, db)
         purge_stale_uploads(config.server_root)
-        if not DIRECTORY_PATTERN.match(payload.directory_name):
-            raise HTTPException(
-                400,
-                "Server folder names use lowercase letters, digits, dashes, and "
-                "underscores, and start with a letter or digit.",
-            )
+        name_error = describe_directory_name(payload.directory_name)
+        if name_error is not None:
+            raise FieldValidationError(400, name_error.message, fields=[name_error])
         if (config.server_root / payload.directory_name).exists():
-            raise HTTPException(
-                409,
+            suggestion = suggest_available_directory_name(
+                payload.directory_name,
+                lambda candidate: (config.server_root / candidate).exists(),
+            )
+            message = (
                 f"A server folder named {payload.directory_name} already exists. "
-                "Choose a different name.",
+                "Choose a different name."
+            )
+            raise FieldValidationError(
+                409,
+                message,
+                fields=[
+                    FieldError(
+                        field="directory_name",
+                        reason=ReasonCode.ALREADY_EXISTS,
+                        message=f"A server folder named {payload.directory_name} already exists.",
+                        rule=None,
+                        suggestion=suggestion,
+                    )
+                ],
             )
         token = secrets.token_hex(16)
-        (config.server_root / f"{UPLOAD_PREFIX}{token}").mkdir(mode=0o755)
+        (config.server_root / f"{UPLOAD_PREFIX}{token}").mkdir(mode=0o755, parents=True)
         return {"upload_id": token}
 
     @app.post("/api/v1/imports/uploads/{upload_id}/files")
@@ -2408,13 +2449,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, object]:
         admin = mutation(request, db)
         staging = upload_staging(upload_id)
-        if not DIRECTORY_PATTERN.match(payload.directory_name):
+        name_error = describe_directory_name(payload.directory_name)
+        if name_error is not None:
             abandon_upload(staging)
-            raise HTTPException(400, "That server folder name cannot be used.")
+            raise FieldValidationError(400, name_error.message, fields=[name_error])
         if not any(staging.iterdir()):
             abandon_upload(staging)
             raise HTTPException(400, "The upload contained no files, so nothing was imported.")
         target = config.server_root / payload.directory_name
+        if target.exists():
+            abandon_upload(staging)
+            suggestion = suggest_available_directory_name(
+                payload.directory_name,
+                lambda candidate: (config.server_root / candidate).exists(),
+            )
+            message = f"A server folder named {payload.directory_name} already exists."
+            raise FieldValidationError(
+                409,
+                message,
+                fields=[
+                    FieldError(
+                        field="directory_name",
+                        reason=ReasonCode.ALREADY_EXISTS,
+                        message=message,
+                        rule=None,
+                        suggestion=suggestion,
+                    )
+                ],
+            )
         try:
             promote_staging(staging, target)
         except ValueError as exc:
@@ -3241,6 +3303,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 java_executable,
             )
         except ProvisionError as exc:
+            if "already exists" in str(exc):
+                suggestion = suggest_available_directory_name(
+                    payload.directory_name,
+                    lambda candidate: (config.server_root / candidate).exists(),
+                )
+                raise FieldValidationError(
+                    409,
+                    str(exc),
+                    fields=[
+                        FieldError(
+                            field="directory_name",
+                            reason=ReasonCode.ALREADY_EXISTS,
+                            message="That server folder name is already taken.",
+                            rule=None,
+                            suggestion=suggestion,
+                        )
+                    ],
+                ) from exc
             raise HTTPException(400, str(exc)) from exc
         except OSError as exc:
             raise HTTPException(409, "The new server folder could not be created.") from exc
@@ -3612,6 +3692,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 java_executable,
             )
         except ProvisionError as exc:
+            if "already exists" in str(exc):
+                suggestion = suggest_available_directory_name(
+                    payload.directory_name,
+                    lambda candidate: (config.server_root / candidate).exists(),
+                )
+                raise FieldValidationError(
+                    409,
+                    str(exc),
+                    fields=[
+                        FieldError(
+                            field="directory_name",
+                            reason=ReasonCode.ALREADY_EXISTS,
+                            message="That server folder name is already taken.",
+                            rule=None,
+                            suggestion=suggestion,
+                        )
+                    ],
+                ) from exc
             raise HTTPException(400, str(exc)) from exc
         except OSError as exc:
             raise HTTPException(409, "The new server folder could not be created.") from exc
@@ -3628,10 +3726,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 cast(str, fresh["minecraft_version"]),
             )
         except (OSError, ValueError) as exc:
-            await asyncio.to_thread(shutil.rmtree, target, True)
+            removed = await cleanup_partial_profile_directory(target)
             cleanup_detail = (
                 "The incomplete target was removed"
-                if not target.exists()
+                if removed
                 else f"The incomplete target remains at {target} and must be inspected manually"
             )
             raise HTTPException(
@@ -3677,10 +3775,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.commit()
         except SQLAlchemyError as exc:
             db.rollback()
-            await asyncio.to_thread(shutil.rmtree, target, True)
+            removed = await cleanup_partial_profile_directory(target)
             cleanup_detail = (
                 "The new folder was removed"
-                if not target.exists()
+                if removed
                 else f"The unregistered new folder remains at {target} and must be inspected"
             )
             raise HTTPException(
@@ -3932,12 +4030,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except (ProvisionError, OSError, ValueError) as exc:
             target_path = locals().get("target")
+            cleanup_detail = "no partial folder was created"
             if isinstance(target_path, Path):
-                await asyncio.to_thread(shutil.rmtree, target_path, True)
+                removed = await cleanup_partial_profile_directory(target_path)
+                cleanup_detail = (
+                    "the incomplete target was removed"
+                    if removed
+                    else f"the incomplete target remains at {target_path} and must be "
+                    "inspected manually"
+                )
             raise HTTPException(
                 409,
-                "The saved setup could not be created; the incomplete target was removed "
-                "and the source was not changed.",
+                f"The saved setup could not be created; {cleanup_detail} and the source was "
+                "not changed.",
             ) from exc
         profile = Profile(
             name=payload.name.strip(),
@@ -3976,7 +4081,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.commit()
         except SQLAlchemyError as exc:
             db.rollback()
-            await asyncio.to_thread(shutil.rmtree, target, True)
+            await cleanup_partial_profile_directory(target)
             raise HTTPException(
                 409,
                 "The saved setup could not be registered; the source was not changed.",
@@ -5494,6 +5599,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 },
                 key=str.casefold,
             )
+            # A dependency can be present yet still the wrong build — e.g. an
+            # older Fabric API than a mod's declared minimum. Version ranges
+            # that Blockstead cannot confidently parse (compound ranges,
+            # wildcards) are skipped rather than guessed at; see
+            # extensions.dependency_version_satisfied.
+            known_versions: dict[str, str] = {}
+            for item in [*installed_view.entries, *installed_view.disabled_entries]:
+                if item.identifier and item.version:
+                    known_versions.setdefault(item.identifier.casefold(), item.version)
+            for item in staged_entries:
+                if item.identifier and item.version:
+                    known_versions.setdefault(item.identifier.casefold(), item.version)
+            version_mismatches = sorted(
+                {
+                    f"{dependency_id} needs {constraint} but "
+                    f"{known_versions[dependency_id.casefold()]} is present"
+                    for item in staged_entries
+                    for dependency_id, constraint in item.dependency_constraints.items()
+                    if dependency_id.casefold() in known_versions
+                    and dependency_version_satisfied(
+                        item.kind, known_versions[dependency_id.casefold()], constraint
+                    )
+                    is False
+                }
+            )
             conflicts = sorted(
                 item.file_name
                 for item in staged_entries
@@ -5516,6 +5646,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "Add these required dependencies to this batch or install them from "
                     f"the catalog first: {', '.join(missing)}."
                 )
+            if version_mismatches:
+                blockers.append(
+                    "These dependency versions do not satisfy what was declared: "
+                    f"{'; '.join(version_mismatches)}."
+                )
             manifest = {
                 "created_at": time.time(),
                 "review_id": review_id,
@@ -5535,6 +5670,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             **manifest,
             "blockers": blockers,
             "missing_dependencies": missing,
+            "dependency_version_mismatches": version_mismatches,
             "requires_acknowledgement": bool(unknown),
             "expires_in_seconds": 60 * 60,
         }
@@ -5613,6 +5749,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             blockers.append(
                 "Required dependencies are still missing: "
                 + ", ".join(sorted(missing, key=str.casefold))
+                + "."
+            )
+        known_versions: dict[str, str] = {}
+        for item in [*installed.entries, *installed.disabled_entries, *entries]:
+            if item.identifier and item.version:
+                known_versions.setdefault(item.identifier.casefold(), item.version)
+        version_mismatches = sorted(
+            {
+                f"{dependency_id} needs {constraint} but "
+                f"{known_versions[dependency_id.casefold()]} is present"
+                for item in entries
+                for dependency_id, constraint in item.dependency_constraints.items()
+                if dependency_id.casefold() in known_versions
+                and dependency_version_satisfied(
+                    item.kind, known_versions[dependency_id.casefold()], constraint
+                )
+                is False
+            }
+        )
+        if version_mismatches:
+            blockers.append(
+                "These dependency versions do not satisfy what was declared: "
+                + "; ".join(version_mismatches)
                 + "."
             )
         unknown = [item for item in entries if not item.loaders or not item.identifier]

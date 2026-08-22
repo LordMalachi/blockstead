@@ -18,6 +18,7 @@ from typing import Literal
 
 from .backups import backup_directory, world_roots
 from .distributions import DISTRIBUTIONS
+from .host_fs import restrict_to_owner, rmtree
 from .mod_configs import EDITABLE_SUFFIXES
 
 FileCategory = Literal["config", "logs", "extensions", "world", "backups"]
@@ -246,8 +247,18 @@ def extract_zip_safely(
         raise FilePathError("That destination folder was not found.")
     staging = destination / _STAGING_NAME
     if staging.exists():
-        shutil.rmtree(staging, ignore_errors=True)
-    staging.mkdir(mode=0o700)
+        # A leftover staging folder from a previous failed extraction; best
+        # effort, since a failure here just means the mkdir below raises
+        # FileExistsError with its own clear signal instead.
+        try:
+            rmtree(staging)
+        except OSError:
+            pass
+    try:
+        staging.mkdir()
+        restrict_to_owner(staging)
+    except OSError as exc:
+        raise FilePathError("Blockstead could not prepare private extraction storage.") from exc
     count = 0
     total = 0
     try:
@@ -272,10 +283,18 @@ def extract_zip_safely(
         if count == 0:
             raise FilePathError("The archive is empty.")
     except FilePathError:
-        shutil.rmtree(staging, ignore_errors=True)
+        # A FilePathError is already being raised either way; a failure to
+        # clean up the rejected staging content is not a mistaken success.
+        try:
+            rmtree(staging)
+        except OSError:
+            pass
         raise
     except (zipfile.BadZipFile, OSError) as exc:
-        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            rmtree(staging)
+        except OSError:
+            pass
         raise FilePathError("The archive could not be read or extracted.") from exc
     return staging
 
@@ -304,5 +323,11 @@ def promote_extracted(
             os.rename(entry, target)
             promoted.append(entry.name)
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        # Every entry has already been moved out of staging (or the loop
+        # raised, which propagates through this finally regardless); the
+        # empty leftover folder is tidiness, not correctness.
+        try:
+            rmtree(staging)
+        except OSError:
+            pass
     return promoted, preserved

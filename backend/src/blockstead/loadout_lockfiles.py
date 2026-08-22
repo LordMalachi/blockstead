@@ -64,6 +64,7 @@ class LockedExtension(BaseModel):
     minecraft_constraint: str | None
     environment: str | None
     dependencies: list[str]
+    dependency_constraints: dict[str, str] = Field(default_factory=dict)
     readable: bool
     origin: ExtensionOrigin
 
@@ -231,6 +232,7 @@ def _fingerprint(entry: LockedExtension) -> tuple[object, ...]:
         entry.minecraft_constraint,
         entry.environment,
         tuple(entry.dependencies),
+        tuple(sorted(entry.dependency_constraints.items())),
         entry.readable,
         entry.origin.model_dump_json(),
     )

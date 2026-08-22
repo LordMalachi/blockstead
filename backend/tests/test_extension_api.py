@@ -54,6 +54,28 @@ def fabric_mod_bytes(identifier: str, environment: str = "*") -> bytes:
     return content.getvalue()
 
 
+def fabric_mod_with_dependency_bytes(
+    identifier: str, version: str, dependency_id: str, dependency_constraint: str
+) -> bytes:
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, "w") as archive:
+        archive.writestr(
+            "fabric.mod.json",
+            (
+                '{"schemaVersion":1,"id":"'
+                + identifier
+                + '","version":"'
+                + version
+                + '","environment":"*","depends":{"'
+                + dependency_id
+                + '":"'
+                + dependency_constraint
+                + '"}}'
+            ),
+        )
+    return content.getvalue()
+
+
 @pytest.fixture
 def api(tmp_path: Path) -> Iterator[tuple[TestClient, Path]]:
     root = tmp_path / "servers"
@@ -86,6 +108,23 @@ def paper_profile(api: tuple[TestClient, Path], headers: dict[str, str]) -> str:
     (folder / "fake-server.json").write_text('{"minecraft_version":"1.21.1"}\n', encoding="utf-8")
     created = client.post(
         "/api/v1/profiles", headers=headers, json={"name": "Paper", "path": str(folder)}
+    )
+    assert created.status_code == 201
+    return str(created.json()["id"])
+
+
+@pytest.fixture
+def fabric_profile(api: tuple[TestClient, Path], headers: dict[str, str]) -> str:
+    client, root = api
+    folder = root / "fabric-server"
+    folder.mkdir(parents=True)
+    (folder / "server.properties").write_text("motd=hi\n", encoding="utf-8")
+    (folder / "fabric-server-launch.jar").write_bytes(b"")
+    (folder / "fake-server.json").write_text(
+        '{"minecraft_version":"1.21.1"}\n', encoding="utf-8"
+    )
+    created = client.post(
+        "/api/v1/profiles", headers=headers, json={"name": "Fabric", "path": str(folder)}
     )
     assert created.status_code == 201
     return str(created.json()["id"])
@@ -233,6 +272,106 @@ def test_manual_import_reviews_dependencies_then_promotes_the_batch(
     )
     assert player_pack.status_code == 409
     assert "Paper plugins" in player_pack.json()["error"]["message"]
+
+
+def test_manual_import_blocks_an_unsatisfied_dependency_version(
+    api: tuple[TestClient, Path], headers: dict[str, str], fabric_profile: str
+) -> None:
+    client, root = api
+    # fabric-api 1.0.0 (fabric_mod_bytes's fixed version) is installed.
+    upload = client.post(
+        f"/api/v1/profiles/{fabric_profile}/extensions/upload",
+        headers=headers,
+        files={
+            "file": (
+                "fabric-api.jar",
+                fabric_mod_bytes("fabric-api"),
+                "application/java-archive",
+            )
+        },
+    )
+    assert upload.status_code == 201
+
+    review = client.post(
+        f"/api/v1/profiles/{fabric_profile}/extensions/manual-import/review",
+        headers=headers,
+        files=[
+            (
+                "files",
+                (
+                    "cool-tech.jar",
+                    fabric_mod_with_dependency_bytes(
+                        "cool-tech", "2.0.0", "fabric-api", ">=2.0.0"
+                    ),
+                    "application/java-archive",
+                ),
+            ),
+        ],
+    )
+    assert review.status_code == 201, review.text
+    body = review.json()
+    assert body["missing_dependencies"] == []
+    assert len(body["dependency_version_mismatches"]) == 1
+    assert "fabric-api" in body["dependency_version_mismatches"][0]
+    assert any(
+        "dependency versions do not satisfy" in blocker for blocker in body["blockers"]
+    )
+
+    applied = client.post(
+        f"/api/v1/profiles/{fabric_profile}/extensions/manual-import/apply",
+        headers=headers,
+        json={"review_id": body["review_id"], "acknowledge_unknown": False},
+    )
+    assert applied.status_code == 409
+    assert "dependency versions do not satisfy" in applied.json()["error"]["message"]
+    assert not (root / "fabric-server" / "mods" / "cool-tech.jar").exists()
+
+
+def test_manual_import_allows_a_satisfied_dependency_version(
+    api: tuple[TestClient, Path], headers: dict[str, str], fabric_profile: str
+) -> None:
+    client, root = api
+    upload = client.post(
+        f"/api/v1/profiles/{fabric_profile}/extensions/upload",
+        headers=headers,
+        files={
+            "file": (
+                "fabric-api.jar",
+                fabric_mod_bytes("fabric-api"),
+                "application/java-archive",
+            )
+        },
+    )
+    assert upload.status_code == 201
+
+    review = client.post(
+        f"/api/v1/profiles/{fabric_profile}/extensions/manual-import/review",
+        headers=headers,
+        files=[
+            (
+                "files",
+                (
+                    "cool-tech.jar",
+                    fabric_mod_with_dependency_bytes(
+                        "cool-tech", "2.0.0", "fabric-api", ">=0.5.0"
+                    ),
+                    "application/java-archive",
+                ),
+            ),
+        ],
+    )
+    assert review.status_code == 201, review.text
+    body = review.json()
+    assert body["dependency_version_mismatches"] == []
+    assert body["blockers"] == []
+
+    applied = client.post(
+        f"/api/v1/profiles/{fabric_profile}/extensions/manual-import/apply",
+        headers=headers,
+        json={"review_id": body["review_id"], "acknowledge_unknown": False},
+    )
+    assert applied.status_code == 201, applied.text
+    assert (root / "fabric-server" / "mods" / "cool-tech.jar").is_file()
 
 
 def test_manual_import_requires_acknowledgement_for_unidentified_jars(

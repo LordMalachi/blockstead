@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, apiUpload, type ImportScan, type ImportUploadResult, type ImportUploadStartResult, type PlayersView, type ProcessState, type Profile, type ProfileDeleteResult, type ProfileRemovalReview, type Schedule } from "../../api/client";
 import { Button } from "../../components/Button";
+import { FieldNotice, useFieldErrors } from "../../components/FieldError";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatBytes } from "../../lib/format";
 import { uploadBatches } from "../../lib/upload";
@@ -58,6 +59,13 @@ export function ServersPage() {
   const [scan, setScan] = useState<ImportScan | null>(null);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  // Overrides the folder name Blockstead would otherwise derive from the chosen folder
+  // (or the profile name). There's no free-text "folder name" control for a directory
+  // picker to type into, so a rejected upload's suggested name lands here instead —
+  // "Use suggested name" is still a one-click fix, it just aims at this instead of a
+  // text input's value.
+  const [uploadDirectoryOverride, setUploadDirectoryOverride] = useState<string | null>(null);
+  const uploadFieldErrors = useFieldErrors();
   const [notice, setNotice] = useState("");
   const [removing, setRemoving] = useState<Profile | null>(null);
   const [removeFiles, setRemoveFiles] = useState(false);
@@ -107,10 +115,10 @@ export function ServersPage() {
     catch (error) { setNotice(error instanceof Error ? error.message : "Scan failed."); }
   }
   async function uploadFolder(event: FormEvent) {
-    event.preventDefault(); setNotice("");
+    event.preventDefault(); setNotice(""); uploadFieldErrors.clear();
     if (!uploadFiles.length) return;
     const totalBytes = uploadFiles.reduce((sum, file) => sum + file.size, 0) || 1;
-    const base = normalizeServerDirectoryName(uploadFiles[0].webkitRelativePath.split("/")[0] || importName);
+    const base = normalizeServerDirectoryName(uploadDirectoryOverride ?? (uploadFiles[0].webkitRelativePath.split("/")[0] || importName));
     setUploadProgress(0);
     let uploadId = "";
     try {
@@ -137,12 +145,15 @@ export function ServersPage() {
         setUploadProgress(Math.min(1, doneBytes / totalBytes));
       }
       const created = await api<ImportUploadResult>(`/imports/uploads/${uploadId}/finish`, { method: "POST", body: JSON.stringify({ name: importName, directory_name: directory }) });
+      uploadFieldErrors.clear();
+      setUploadDirectoryOverride(null);
       await client.invalidateQueries({ queryKey: ["profiles"] });
       void navigate(`/servers/${created.id}/overview`);
     } catch (error) {
       if (uploadId) void api(`/imports/uploads/${uploadId}`, { method: "DELETE" }).catch(() => undefined);
       setUploadProgress(null);
       setNotice(error instanceof Error ? error.message : "The import upload failed.");
+      uploadFieldErrors.setFromError(error);
     }
   }
   async function importProfile() {
@@ -158,6 +169,10 @@ export function ServersPage() {
   const list = profiles.data ?? [];
   const snapshot = state.data ?? { state: "UNKNOWN" as const, pid: null, exit_code: null, reason: "Checking server state" };
   const hostFree = ["STOPPED", "CRASHED"].includes(snapshot.state);
+  const uploadDirectoryError = uploadFieldErrors.get("directory_name");
+  const effectiveUploadDirectory = uploadFiles.length
+    ? normalizeServerDirectoryName(uploadDirectoryOverride ?? (uploadFiles[0].webkitRelativePath.split("/")[0] || importName))
+    : "";
 
   return <>
     <section className="page-head">
@@ -174,10 +189,11 @@ export function ServersPage() {
       <p>Choose your complete Minecraft server folder — on your Desktop, in Downloads, or anywhere else on this computer. Blockstead copies it into its managed home, identifies the server type and version, and never changes the original.</p>
       <form className="inline-form" onSubmit={event => { void uploadFolder(event); }}>
         <label>Profile name<input value={importName} onChange={event => setImportName(event.target.value)} required maxLength={80} /></label>
-        <label>Server folder<input type="file" multiple onChange={event => setUploadFiles(Array.from(event.target.files ?? []))} {...folderInputProps} /></label>
+        <label>Server folder<input type="file" multiple onChange={event => { setUploadFiles(Array.from(event.target.files ?? [])); setUploadDirectoryOverride(null); uploadFieldErrors.clear(); }} {...folderInputProps} {...uploadFieldErrors.controlProps("directory_name")} /></label>
         <Button disabled={!uploadFiles.length || uploadProgress != null}>{uploadProgress != null ? `Copying… ${Math.round(uploadProgress * 100)}%` : "Copy folder in"}</Button>
       </form>
-      {uploadFiles.length > 0 && uploadProgress == null && <p className="muted-note">Ready to copy “{uploadFiles[0].webkitRelativePath.split("/")[0] || importName}”: {uploadFiles.length.toLocaleString()} file{uploadFiles.length === 1 ? "" : "s"}, {formatBytes(uploadFiles.reduce((sum, file) => sum + file.size, 0))}.</p>}
+      {uploadDirectoryError && <FieldNotice id={uploadFieldErrors.noticeId("directory_name")} error={uploadDirectoryError} onUseSuggestion={value => { setUploadDirectoryOverride(value); uploadFieldErrors.clear(); }} />}
+      {uploadFiles.length > 0 && uploadProgress == null && <p className="muted-note">Ready to copy “{uploadFiles[0].webkitRelativePath.split("/")[0] || importName}” as server folder <code>{effectiveUploadDirectory}</code>: {uploadFiles.length.toLocaleString()} file{uploadFiles.length === 1 ? "" : "s"}, {formatBytes(uploadFiles.reduce((sum, file) => sum + file.size, 0))}.</p>}
       {uploadProgress != null && <progress className="upload-progress" value={Math.round(uploadProgress * 100)} max={100} />}
       <details className="import-advanced">
         <summary>The folder is already inside /srv/minecraft</summary>

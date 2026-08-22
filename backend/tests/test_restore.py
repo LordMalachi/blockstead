@@ -125,6 +125,34 @@ def test_restore_replaces_worlds_and_preserves_originals(tmp_path: Path) -> None
     assert not (server / ".blockstead-restore.partial").exists()
 
 
+def test_restore_reports_a_clear_error_when_leftover_staging_cannot_be_cleared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leftover staging folder from a previous crashed restore that cannot
+    be removed must surface as a RestoreError naming the path, not a raw
+    OSError — callers only catch RestoreError."""
+
+    server = make_server(tmp_path, {"world": b"original"})
+    data = tmp_path / "data"
+    file_name, manifest_name = make_backup(server, data)
+    leftover = server / ".blockstead-restore.partial"
+    leftover.mkdir()
+    (leftover / "stale.txt").write_text("x", encoding="utf-8")
+
+    def failing_rmtree(path: Path) -> None:
+        raise OSError("simulated: leftover staging is locked")
+
+    monkeypatch.setattr("blockstead.backups.rmtree", failing_rmtree)
+
+    with pytest.raises(RestoreError) as excinfo:
+        perform_restore(data, "profile-1", file_name, manifest_name, server, NOW)
+
+    assert str(leftover) in str(excinfo.value)
+    monkeypatch.undo()
+    # The restore never reached the swap step: the original world is intact.
+    assert (server / "world" / "level.dat").read_bytes() == b"original"
+
+
 def test_restore_rejects_tampered_archive(tmp_path: Path) -> None:
     server = make_server(tmp_path, {"world": b"original"})
     data = tmp_path / "data"

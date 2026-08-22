@@ -144,3 +144,66 @@ def test_eula_acceptance_is_explicit(api: tuple[TestClient, Path], headers: dict
     assert "eula=true" in (folder / "eula.txt").read_text(encoding="utf-8")
     prerequisites = client.get(f"/api/v1/profiles/{profile_id}/prerequisites").json()
     assert prerequisites["eula_accepted"] is True
+
+
+def test_provision_rejects_invalid_directory_name_with_field_error(
+    api: tuple[TestClient, Path], headers: dict[str, str]
+) -> None:
+    from blockstead.validation import DIRECTORY_PATTERN
+
+    client, _ = api
+    response = client.post(
+        "/api/v1/provision",
+        headers=headers,
+        json={
+            "name": "My Server",
+            "directory_name": "My Server!",
+            "distribution": "vanilla",
+            "minecraft_version": "1.21.1",
+        },
+    )
+    assert response.status_code == 422
+    body = response.json()
+    fields = body["error"]["fields"]
+    assert fields
+    assert fields[0]["field"] == "directory_name"
+    assert fields[0]["reason"]
+    assert fields[0]["rule"]
+    assert DIRECTORY_PATTERN.match(fields[0]["suggestion"])
+
+
+def test_provision_directory_already_exists_returns_field_error(
+    api: tuple[TestClient, Path],
+    headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, root = api
+    (root / "family-server").mkdir(parents=True)
+
+    async def already_exists(
+        _client: httpx.AsyncClient,
+        server_root: Path,
+        name: str,
+        dist: str,
+        version: str,
+        loader_version: str | None,
+        java_executable: str | None,
+    ) -> ProvisionResult:
+        raise ProvisionError("A folder with that name already exists in the server root.")
+
+    monkeypatch.setattr("blockstead.app.provision_profile", already_exists)
+    response = client.post(
+        "/api/v1/provision",
+        headers=headers,
+        json={
+            "name": "Family Server",
+            "directory_name": "family-server",
+            "distribution": "vanilla",
+            "minecraft_version": "1.21.1",
+        },
+    )
+    assert response.status_code == 409
+    field_error = response.json()["error"]["fields"][0]
+    assert field_error["field"] == "directory_name"
+    assert field_error["reason"] == "ALREADY_EXISTS"
+    assert field_error["suggestion"] == "family-server-2"
