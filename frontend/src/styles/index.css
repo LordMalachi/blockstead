@@ -657,6 +657,9 @@ input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--da
 .extension-row > div:first-child { min-width: 0; }
 .extension-row span, .extension-row small { display: block; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }
 .row-actions { display: flex; flex-wrap: wrap; gap: .25rem; justify-content: flex-end; }
+.principal-controls { display: grid; gap: .5rem; margin-top: .75rem; }
+.principal-controls label { display: grid; gap: .35rem; font-size: .75rem; font-weight: 700; }
+.principal-controls input { width: 100%; min-height: 2.5rem; background: var(--surface); border: 1px solid var(--line-strong); color: var(--ink); border-radius: var(--radius-sm); padding: .6rem .7rem; }
 .catalog-tools, .modpack-tools { border-top: 1px solid var(--line); padding-top: var(--space-3); }
 .shared-map-card { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(14rem,.8fr); gap: var(--space-3); margin-top: var(--space-3); padding: var(--space-3); border: 1px solid color-mix(in srgb, var(--brand) 38%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--brand) 7%, var(--surface)); }
 .shared-map-card h3 { margin: .15rem 0 .45rem; }

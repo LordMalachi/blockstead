@@ -435,22 +435,18 @@ def discord_configuration(settings: Settings) -> dict[str, object]:
             public_key_error = str(exc)
     valid_application = application_id is not None and application_error is None
     relay_configured = bool(settings.discord_relay_url and settings.discord_relay_url.strip())
-    legacy_token_configured = bool(settings.discord_bot_token)
     return {
         "application_id": application_id,
         "public_key_configured": public_key is not None and public_key_error is None,
-        "bot_token_configured": legacy_token_configured,
-        "bot_ready": valid_application and (relay_configured or legacy_token_configured),
+        # Runtime readiness is installation-scoped and is composed by the API
+        # from the relay connector and Discord Gateway health signals.
+        "bot_ready": False,
         "install_url": discord_install_url(application_id)
         if valid_application and application_id
         else None,
         "application_error": application_error,
         "public_key_error": public_key_error,
-        "mode": (
-            "central_relay"
-            if valid_application and relay_configured
-            else "legacy_host_gateway_disabled"
-            if valid_application and legacy_token_configured
-            else "not_configured"
-        ),
+        "mode": "central_relay"
+        if valid_application and relay_configured
+        else "not_configured",
     }

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
 import type { BackupPolicy, BackupRecord, RecoveryDrillResult, RestorePreview, RestoreResult } from "../../api/client";
+import { RoleContext } from "../shell/role";
 import { BackupsPanel } from "./BackupsPanel";
 
 const completed: BackupRecord = {
@@ -58,13 +59,14 @@ interface Handlers {
   policy?: BackupPolicy;
   preview?: RestorePreview;
   running?: boolean;
+  role?: "owner" | "viewer";
 }
 
 function respond(body: unknown) {
   return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
-function renderPanel({ records = [completed], policy = defaultPolicy, preview = verifiedPreview, running = false }: Handlers = {}) {
+function renderPanel({ records = [completed], policy = defaultPolicy, preview = verifiedPreview, running = false, role = "owner" }: Handlers = {}) {
   vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     if (url.endsWith("/backup-policy") && method === "GET") return Promise.resolve(respond(policy));
@@ -76,7 +78,7 @@ function renderPanel({ records = [completed], policy = defaultPolicy, preview = 
     return Promise.resolve(respond(records));
   }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><BackupsPanel profileId="profile-1" running={running} /></QueryClientProvider>);
+  return render(<RoleContext.Provider value={role}><QueryClientProvider client={client}><BackupsPanel profileId="profile-1" running={running} /></QueryClientProvider></RoleContext.Provider>);
 }
 
 test("shows persisted backup history", async () => {
@@ -87,6 +89,20 @@ test("shows persisted backup history", async () => {
   expect(screen.getByText("1.5 s")).toBeVisible();
   expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();
   expect(screen.getByRole("button", { name: /Restore backup from/ })).toBeEnabled();
+});
+
+test("viewer requests only history and shows redacted evidence", async () => {
+  renderPanel({ role: "viewer" });
+
+  expect(await screen.findByRole("heading", { name: "Redacted backup evidence" })).toBeVisible();
+  expect(await screen.findByText("Backup completed successfully.")).toBeVisible();
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe("/api/v1/profiles/profile-1/backups");
+  expect(screen.queryByRole("button", { name: "Back up now" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /Restore/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: /Save a copy/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: /Test recovery/ })).toBeNull();
+  expect(screen.queryByText(/checksum|archive|SHA-256|file name|retention|destination/i)).toBeNull();
 });
 
 test("explains live save handling and starts a manual backup", async () => {

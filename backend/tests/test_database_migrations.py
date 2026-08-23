@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -84,7 +85,7 @@ def test_empty_database_upgrades_to_head(tmp_path: Path) -> None:
         "discord_command_audits",
         "alembic_version",
     }
-    assert current_revision(database) == "0018"
+    assert current_revision(database) == "0019"
 
 
 def test_current_0015_database_upgrades_milestone12_tables(tmp_path: Path) -> None:
@@ -95,7 +96,7 @@ def test_current_0015_database_upgrades_milestone12_tables(tmp_path: Path) -> No
     config_path, migrations_path = migration_paths()
     upgrade_database(database, config_path, migrations_path)
 
-    assert current_revision(database) == "0018"
+    assert current_revision(database) == "0019"
     assert {
         "password_recovery_tokens",
         "saved_setups",
@@ -106,6 +107,83 @@ def test_current_0015_database_upgrades_milestone12_tables(tmp_path: Path) -> No
         "discord_connections",
         "discord_command_audits",
     }.issubset(table_names(database))
+
+
+def test_discord_delivery_state_migration_adds_safe_columns(tmp_path: Path) -> None:
+    database = tmp_path / "blockstead.db"
+    config = config_for(database)
+    command.upgrade(config, "0018")
+
+    engine = create_engine(database_url(database))
+    try:
+        metadata = sa.MetaData()
+        metadata.reflect(bind=engine)
+        now = datetime(2026, 8, 23, 12, tzinfo=UTC)
+        with engine.begin() as connection:
+            connection.execute(
+                metadata.tables["administrators"].insert().values(
+                    id="admin-1",
+                    username="owner",
+                    password_hash="redacted",  # noqa: S106 - inert migration fixture
+                    role="owner",
+                    disabled=False,
+                    created_at=now,
+                )
+            )
+            connection.execute(
+                metadata.tables["profiles"].insert().values(
+                    id="profile-1",
+                    name="Legacy published profile",
+                    server_directory="legacy-published-profile",
+                    distribution="vanilla",
+                    is_fixture=False,
+                    created_at=now,
+                )
+            )
+            connection.execute(
+                metadata.tables["discord_connections"].insert().values(
+                    id="connection-1",
+                    admin_id="admin-1",
+                    profile_id="profile-1",
+                    application_id="1535816544951476324",
+                    guild_id="900000000000000002",
+                    channel_id="900000000000000003",
+                    owner_user_id="900000000000000004",
+                    authorized_user_ids="[]",
+                    authorized_role_ids="[]",
+                    enabled=True,
+                    publish_address=True,
+                    last_sequence=0,
+                    last_status_payload="{}",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+    finally:
+        engine.dispose()
+
+    config_path, migrations_path = migration_paths()
+    upgrade_database(database, config_path, migrations_path)
+
+    engine = create_engine(database_url(database))
+    try:
+        columns = {column["name"] for column in inspect(engine).get_columns("discord_connections")}
+        with engine.connect() as connection:
+            share_address = connection.execute(
+                text(
+                    "SELECT share_address FROM discord_connections "
+                    "WHERE id = 'connection-1'"
+                )
+            ).scalar_one()
+    finally:
+        engine.dispose()
+    assert {
+        "share_address",
+        "last_delivery_result",
+        "last_delivery_at",
+        "last_delivery_detail",
+    }.issubset(columns)
+    assert bool(share_address) is True
 
 
 def test_unversioned_initial_schema_is_stamped_then_upgraded(tmp_path: Path) -> None:
@@ -126,7 +204,7 @@ def test_unversioned_initial_schema_is_stamped_then_upgraded(tmp_path: Path) -> 
     assert ("profile_id",) in schedule_unique_columns(database)
     assert "backups" in table_names(database)
     assert "metric_samples" in table_names(database)
-    assert current_revision(database) == "0018"
+    assert current_revision(database) == "0019"
 
 
 def test_unversioned_current_schema_is_stamped_at_head(tmp_path: Path) -> None:
@@ -163,7 +241,7 @@ def test_unversioned_current_schema_is_stamped_at_head(tmp_path: Path) -> None:
     assert ("profile_id",) in schedule_unique_columns(database)
     assert "backups" in table_names(database)
     assert "metric_samples" in table_names(database)
-    assert current_revision(database) == "0018"
+    assert current_revision(database) == "0019"
 
 
 def test_unknown_unversioned_schema_is_rejected(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { vi } from "vitest";
+import { RoleContext } from "../shell/role";
 import { WorldCarePage } from "./WorldCarePage";
 
 vi.mock("../servers/scope", () => ({
@@ -39,4 +40,30 @@ test("shows world, protection, cleanup review, and destination resilience contro
   await userEvent.click(screen.getByRole("button", { name: "Review cleanup" }));
   await waitFor(() => expect(screen.getByText("Interrupted backup fragment")).toBeVisible());
   expect(screen.getByRole("button", { name: "Remove reviewed artifacts" })).toBeVisible();
+});
+
+test("viewer sees redacted world care evidence without owner controls", async () => {
+  const worldCare = {
+    worlds: [{ name: "world", size_bytes: 2048 }],
+    world_size_bytes: 2048,
+    disk: { state: "available", path: "/srv/private-world", total_bytes: 10000, free_bytes: 5000, used_bytes: 5000, used_percent: 50 },
+    last_verified_backup: null,
+    backup_destinations: [{ label: "Blockstead local backup storage", configured_path: "/data/backups/profile-1", stored_bytes: 1024, disk: { state: "available", path: "/data/backups/profile-1", total_bytes: 10000, free_bytes: 5000, used_bytes: 5000, used_percent: 50 }, last_check: { state: "available", write_verified: true, read_verified: true, detail: "Checked /data/backups/profile-1/private-probe", checked_at: "2026-08-07T00:00:00Z" } }],
+    recovery: { entries: [{ label: "Settings snapshots", size_bytes: 128, state: "available" }], total_bytes: 128 },
+    cleanup: { available: true, detail: "Reviewed cleanup is owner-only." },
+  };
+  vi.stubGlobal("fetch", vi.fn(() => {
+    return Promise.resolve(new Response(JSON.stringify(worldCare), { status: 200, headers: { "Content-Type": "application/json" } }));
+  }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(<RoleContext.Provider value="viewer"><MemoryRouter><QueryClientProvider client={client}><WorldCarePage /></QueryClientProvider></MemoryRouter></RoleContext.Provider>);
+
+  expect(await screen.findByRole("heading", { name: "Protect the world before you change it" })).toBeVisible();
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe("/api/v1/profiles/profile-1/world-care");
+  expect(screen.queryByRole("button", { name: "Review cleanup" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Test resilience" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Remove reviewed artifacts" })).toBeNull();
+  expect(screen.queryByText(/\/data\/backups|\/srv|Review cleanup|Test resilience|Remove reviewed artifacts/i)).toBeNull();
 });

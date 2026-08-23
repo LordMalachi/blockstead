@@ -14,6 +14,7 @@ import { Button } from "../../components/Button";
 import { NavIcon } from "../../components/NavIcon";
 import { Tooltip } from "../../components/Tooltip";
 import { formatBytes } from "../../lib/format";
+import { useRole } from "../shell/role";
 
 function formatWhen(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
@@ -41,6 +42,74 @@ function retentionSummary(policy?: BackupPolicy): string {
 function statusLabel(record: BackupRecord): string {
   if (record.status === "completed" && !record.archive_available) return "archive missing";
   return record.status.replace("_", " ");
+}
+
+function viewerOutcome(record: BackupRecord): string {
+  return {
+    completed: "Backup completed successfully.",
+    failed: "Backup attempt failed.",
+    expired: "Backup expired and is no longer retained.",
+    in_progress: "Backup is in progress.",
+  }[record.status] ?? "Backup status recorded.";
+}
+
+function ViewerBackupHistory({
+  records,
+  loading,
+  error,
+  retry,
+}: {
+  records: BackupRecord[];
+  loading: boolean;
+  error: boolean;
+  retry: () => void;
+}) {
+  return <section className="card backups backups-workspace backups-workspace--viewer" id="backups" aria-labelledby="viewer-backup-heading">
+    <header className="workspace-hero workspace-hero--backups">
+      <div className="workspace-hero__copy">
+        <p className="eyebrow">View-only evidence</p>
+        <div className="workspace-hero__title">
+          <span className="workspace-hero__icon"><NavIcon name="package" /></span>
+          <h2 id="viewer-backup-heading">Redacted backup evidence</h2>
+        </div>
+        <p>This history is limited to safe status, trigger, size, timing, and fixed outcome evidence.</p>
+        <span className="workspace-state workspace-state--locked"><i aria-hidden="true" />Viewer: redacted history</span>
+      </div>
+    </header>
+
+    <section className="backup-history" aria-labelledby="viewer-history-heading">
+      <div className="workspace-section__heading">
+        <div>
+          <p className="eyebrow">Safe history</p>
+          <h3 id="viewer-history-heading">Backup history</h3>
+          <p>Owner-only storage details are not shown.</p>
+        </div>
+        {records.length > 0 && <span className="section-count">{records.length} recent</span>}
+      </div>
+
+      {loading ? <p className="empty-note">Loading backup history…</p>
+        : error ? <div className="query-error"><p className="error" role="alert">Backup history could not be loaded.</p><Button className="button--secondary button--small" onClick={retry}>Try loading history again</Button></div>
+          : records.length === 0 ? <div className="backup-empty"><span aria-hidden="true"><NavIcon name="package" /></span><h4>No backup attempts are recorded</h4><p>Safe history will appear here when a backup attempt is recorded.</p></div>
+            : <ol className="backup-list">
+              {records.map(record => <li key={record.id} className="backup-record">
+                <span className={`backup-record__rail backup-record__rail--${record.status}`} aria-hidden="true" />
+                <div className="backup-record__main">
+                  <div className="backup-record__heading">
+                    <strong>{formatWhen(record.created_at)}</strong>
+                    <span className={`backup-status backup-status--${record.status}`}>{record.status.replace("_", " ")}</span>
+                  </div>
+                  <p>{viewerOutcome(record)}</p>
+                </div>
+                <dl className="backup-record__facts">
+                  <div><dt>Trigger</dt><dd>{record.trigger === "schedule" ? "Schedule" : "Manual"}</dd></div>
+                  <div><dt>Size</dt><dd>{record.size_bytes == null ? "—" : formatBytes(record.size_bytes)}</dd></div>
+                  <div><dt>Duration</dt><dd>{formatDuration(record.duration_ms)}</dd></div>
+                  <div><dt>Completed</dt><dd>{record.completed_at ? formatWhen(record.completed_at) : "—"}</dd></div>
+                </dl>
+              </li>)}
+            </ol>}
+    </section>
+  </section>;
 }
 
 function isAbortError(error: unknown): boolean {
@@ -138,6 +207,7 @@ export function BackupsPanel({
   running: boolean;
   serverState?: ProcessState["state"];
 }) {
+  const owner = useRole() === "owner";
   const cache = useQueryClient();
   const restoreReview = useRef<HTMLDivElement>(null);
   const restoreTrigger = useRef<HTMLButtonElement | null>(null);
@@ -160,6 +230,7 @@ export function BackupsPanel({
   const policy = useQuery({
     queryKey: ["backup-policy", profileId],
     queryFn: () => api<BackupPolicy>(`/profiles/${profileId}/backup-policy`),
+    enabled: owner,
   });
   const create = useMutation({
     mutationFn: () => api<BackupRecord>(`/profiles/${profileId}/backups`, { method: "POST" }),
@@ -174,7 +245,7 @@ export function BackupsPanel({
   const preview = useQuery({
     queryKey: ["restore-preview", profileId, restoreTarget?.id],
     queryFn: () => api<RestorePreview>(`/profiles/${profileId}/backups/${restoreTarget?.id}/restore-preview`),
-    enabled: restoreTarget != null,
+    enabled: owner && restoreTarget != null,
     retry: false,
     staleTime: 0,
   });
@@ -215,6 +286,14 @@ export function BackupsPanel({
   }
 
   const records = backups.data ?? [];
+  if (!owner) {
+    return <ViewerBackupHistory
+      records={records}
+      loading={backups.isLoading}
+      error={backups.isError}
+      retry={() => void backups.refetch()}
+    />;
+  }
   const availableRecords = records.filter(entry => entry.status === "completed" && entry.archive_available);
   const attentionRecords = records.filter(entry => entry.status === "failed" || entry.status === "expired" || (entry.status === "completed" && !entry.archive_available));
   const visibleRecords = historyFilter === "available" ? availableRecords : historyFilter === "attention" ? attentionRecords : records;

@@ -69,19 +69,19 @@ export interface NotificationDelivery { id: string; alert_id: string; status: "p
 export interface DiscordBotStatus {
   application_id: string | null;
   public_key_configured: boolean;
-  bot_token_configured: boolean;
   bot_ready: boolean;
   relay_configured: boolean;
   relay_url: string | null;
   relay_online: boolean;
-  connected_hosts?: number;
+  discord_online: boolean;
   installation_id: string | null;
   connector_configured: boolean;
+  connector_environment_managed?: boolean;
   legacy_token_present: boolean;
   install_url: string | null;
   application_error: string | null;
   public_key_error: string | null;
-  mode: "central_relay" | "legacy_host_gateway_disabled" | "not_configured";
+  mode: "central_relay" | "not_configured";
   pairings: DiscordPairing[];
   connections: DiscordConnection[];
 }
@@ -92,9 +92,11 @@ export interface DiscordPairing {
   status: "pending" | "claimed" | "confirmed" | "expired" | "replaced";
   expires_at: string;
   claimed: boolean;
+  claimed_application_id: string | null;
   claimed_guild_id: string | null;
   claimed_channel_id: string | null;
   claimed_user_id: string | null;
+  claimed_role_ids: string[];
   claimed_at: string | null;
   confirmed_at: string | null;
 }
@@ -106,13 +108,19 @@ export interface DiscordConnection {
   guild_id: string;
   channel_id: string;
   owner_user_id: string;
+  authorized_user_ids: string[];
+  authorized_role_ids: string[];
   enabled: boolean;
+  share_address: boolean;
   publish_address: boolean;
   status_message_configured: boolean;
   last_heartbeat_at: string | null;
   relay_connection_id?: string | null;
   relay_connected?: boolean;
   last_relay_heartbeat_at?: string | null;
+  last_delivery_result?: "retrying" | "delivered" | "failed" | null;
+  last_delivery_at?: string | null;
+  last_delivery_detail?: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -487,7 +495,7 @@ export interface AutomationEvent { id: string; run_at: string; backup_before_sto
 export interface AutomationRun { id: string; trigger: "scheduled" | "one_time" | "manual"; action: "start" | "maintenance"; status: "success" | "failed" | "skipped"; steps: string[]; detail: string; duration_ms: number; started_at: string; completed_at: string }
 export interface Schedule { id: string; profile_id: string; enabled: boolean; start_time: string | null; stop_time: string | null; backup_before_stop: boolean; power_off_after_stop: boolean; wake_time: string | null; weekdays: number[]; only_when_empty: boolean; power_capable: boolean; maintenance_steps: string[]; next_executions: AutomationExecution[]; one_time_events: AutomationEvent[]; history: AutomationRun[] }
 export interface AutomationCapabilities { host_power: boolean }
-export interface BackupRecord { id: string; profile_id: string; status: "in_progress" | "completed" | "failed" | "expired"; method: "world_archive"; trigger: "manual" | "schedule"; file_name: string | null; size_bytes: number | null; duration_ms: number | null; sha256: string | null; included_paths: string[]; archive_available: boolean; result: string; created_at: string; completed_at: string | null }
+export interface BackupRecord { id: string; profile_id: string; status: "in_progress" | "completed" | "failed" | "expired"; method: "world_archive"; trigger: "manual" | "schedule"; file_name?: string | null; size_bytes: number | null; duration_ms: number | null; sha256?: string | null; included_paths?: string[]; archive_available?: boolean; result: string; created_at: string; completed_at: string | null }
 export interface RestorePreview { backup_id: string; verified: boolean; sha256: string; size_bytes: number; included_paths: string[]; worlds_replaced: string[]; required_bytes: number; available_bytes: number; backup_created_at: string | null; minecraft_version: string | null; can_restore: boolean; blockers: string[] }
 export interface RestoreResult { restored_paths: string[]; preserved_paths: string[]; result: string }
 export interface RecoveryDrillResult { backup_id: string; verified: boolean; staged_paths: string[]; staged_bytes: number; duration_ms: number; result: string }

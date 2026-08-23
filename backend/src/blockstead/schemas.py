@@ -85,7 +85,30 @@ class DiscordPairingCreateRequest(BaseModel):
 
 class DiscordConnectionUpdateRequest(BaseModel):
     enabled: bool | None = None
+    share_address: bool | None = None
     publish_address: bool | None = None
+    authorized_user_ids: list[str] | None = Field(default=None, max_length=64)
+    authorized_role_ids: list[str] | None = Field(default=None, max_length=64)
+
+    @field_validator("authorized_user_ids", "authorized_role_ids", mode="before")
+    @classmethod
+    def normalize_principal_ids(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("principal IDs must be a list")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("principal IDs must be numeric Discord IDs")
+            candidate = item.strip()
+            if not re.fullmatch(r"[0-9]{17,20}", candidate):
+                raise ValueError("principal IDs must be numeric Discord IDs")
+            if candidate not in seen:
+                normalized.append(candidate)
+                seen.add(candidate)
+        return normalized
 
 
 class ImportRequest(BaseModel):

@@ -376,6 +376,7 @@ class DiscordConnection(Base):
     authorized_user_ids: Mapped[str] = mapped_column(Text, default="[]")
     authorized_role_ids: Mapped[str] = mapped_column(Text, default="[]")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    share_address: Mapped[bool] = mapped_column(Boolean, default=False)
     publish_address: Mapped[bool] = mapped_column(Boolean, default=False)
     status_message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_sequence: Mapped[int] = mapped_column(Integer, default=0)
@@ -385,6 +386,11 @@ class DiscordConnection(Base):
     last_relay_heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    last_delivery_result: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    last_delivery_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_delivery_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_status_payload: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

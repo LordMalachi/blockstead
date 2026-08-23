@@ -4,6 +4,35 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from .store import normalize_snowflake_ids
+
+PROTOCOL_VERSION = 1
+
+
+def _snowflake(value: object, label: str) -> str:
+    """Validate one Discord identity without retaining malformed values."""
+
+    try:
+        return normalize_snowflake_ids([value], required=True)[0]
+    except (IndexError, ValueError) as exc:
+        raise ValueError(f"Discord interaction had an invalid {label}") from exc
+
+
+@dataclass(frozen=True)
+class RelayReply:
+    """The only interaction result accepted by the Discord gateway."""
+
+    content: str
+    ephemeral: bool = True
+
+    # Compatibility helpers keep existing callers/read-only tests ergonomic
+    # while making the explicit reply contract available to the gateway.
+    def __contains__(self, value: str) -> bool:
+        return value in self.content
+
+    def __str__(self) -> str:
+        return self.content
+
 
 @dataclass(frozen=True)
 class RelayInteraction:
@@ -15,6 +44,7 @@ class RelayInteraction:
     user_id: str
     subcommand: str
     options: Mapping[str, object]
+    role_ids: tuple[str, ...] = ()
 
 
 def _options(value: object) -> dict[str, object]:
@@ -35,6 +65,18 @@ def parse_interaction(payload: Mapping[str, object]) -> RelayInteraction:
     data = payload.get("data")
     member = payload.get("member")
     user = member.get("user") if isinstance(member, dict) else payload.get("user")
+    raw_roles = member.get("roles") if isinstance(member, dict) else ()
+    # Discord supplies roles as strings.  Keep valid snowflakes while dropping
+    # malformed entries; one bad role must not discard every safe role.
+    raw_role_values = raw_roles if isinstance(raw_roles, list) else []
+    valid_role_values = [
+        role
+        for role in raw_role_values
+        if isinstance(role, str)
+        and role.strip().isdigit()
+        and 17 <= len(role.strip()) <= 20
+    ][:64]
+    role_ids = normalize_snowflake_ids(valid_role_values)
     values: dict[str, object] = {
         "id": payload.get("id"),
         "token": payload.get("token"),
@@ -54,12 +96,13 @@ def parse_interaction(payload: Mapping[str, object]) -> RelayInteraction:
         if raw_options[0].get("type") == 1:
             subcommand = str(raw_options[0].get("name", ""))
     return RelayInteraction(
-        interaction_id=str_values["id"],
+        interaction_id=_snowflake(str_values["id"], "interaction ID"),
         interaction_token=str_values["token"],
-        application_id=str_values["application_id"],
-        guild_id=str_values["guild_id"],
-        channel_id=str_values["channel_id"],
-        user_id=str_values["user_id"],
+        application_id=_snowflake(str_values["application_id"], "application ID"),
+        guild_id=_snowflake(str_values["guild_id"], "guild ID"),
+        channel_id=_snowflake(str_values["channel_id"], "channel ID"),
+        user_id=_snowflake(str_values["user_id"], "user ID"),
+        role_ids=role_ids,
         subcommand=subcommand,
         options=_options(raw_options),
     )

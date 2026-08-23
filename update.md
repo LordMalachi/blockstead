@@ -793,7 +793,7 @@ its own scoped facts outbound; neither side needs DNS or an inbound host port.
 
 This is a true bot project, not just a webhook destination. The full scope,
 pairing protocol, threat model, status contract, commands, phases, and success
-criteria live in [the Discord server status bot project brief](discord-status-bot-project.md).
+criteria live in [the Discord server status bot project brief](docs/discord-status-bot-project.md).
 
 ### Scope summary
 
@@ -805,10 +805,16 @@ criteria live in [the Discord server status bot project brief](discord-status-bo
   a short-lived, single-use code plus explicit owner confirmation.
 - Authorize commands by exact guild, channel, Discord user, and optionally role;
   guild membership or possession of the bot invite is not enough.
-- Publish only a bounded status snapshot with online state, player count,
-  freshness, current address when explicitly enabled, and honest address/stale
-  states. Retain the latest snapshot only and reject duplicate or older
-  sequence numbers.
+- Publish only a strict protocol-v1 status snapshot with normalized state,
+  bounded player counts, host observation time, and address state. Persist one
+  replace-in-place latest snapshot per active connection, use relay receipt time
+  for staleness, and reject malformed, duplicate, or older sequence numbers.
+- Keep `/address` sharing and persistent address publication as separate,
+  default-off owner consents. Persistent publication requires sharing; turning
+  sharing off also disables publication and scrubs the stored address.
+- Treat disable as reversible and revoke as terminal. Retain relay tombstones
+  and safe audits, replay revocations to reconnecting hosts, and allow a fresh
+  pairing only after the old binding is terminally revoked.
 - Start with read-only `/blockstead status`, `players`, `address`, `refresh`,
   `pair`, `unpair`, `help`, and `setup` commands. `/blockstead setup` explains
   the first-time flow in the current channel.
@@ -821,8 +827,8 @@ criteria live in [the Discord server status bot project brief](discord-status-bo
   and REST, while hosts use outbound secure WebSockets.
 - [x] Define new connection, pairing, and command-audit records instead of
   overloading the generic webhook record.
-- [x] Keep address sharing disabled by default and owner-controlled for the
-  persistent status message.
+- [x] Keep both authorized `/address` sharing and persistent channel
+  publication disabled by default, with publication dependent on sharing.
 - [x] Add tests for token redaction, pairing confirmation, migrations, command
   parsing, installation isolation, snapshot ordering, and relay behavior.
 - [x] Add Docker packaging, health checks, TLS file handling, Oracle runbook,
