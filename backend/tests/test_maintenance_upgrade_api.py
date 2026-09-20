@@ -386,12 +386,16 @@ def paper_upgrade_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     builds = {
         "1.21.4": (build(10, old_bytes), build(11, b"paper build 11")),
-        "1.21.5": (build(20, b"paper build 20", "1.21.5"),),
+        "1.21.5": (
+            build(20, b"paper build 20", "1.21.5"),
+            build(19, b"paper build 19", "1.21.5"),
+        ),
     }
     contents = {
         hashlib.sha256(old_bytes).hexdigest(): old_bytes,
         hashlib.sha256(b"paper build 11").hexdigest(): b"paper build 11",
         hashlib.sha256(b"paper build 20").hexdigest(): b"paper build 20",
+        hashlib.sha256(b"paper build 19").hexdigest(): b"paper build 19",
     }
 
     async def fake_versions(_client: httpx.AsyncClient, distribution: str) -> list[str]:
@@ -527,6 +531,93 @@ def test_paper_same_version_build_update_pins_digest_and_recovers(
     assert (folder / "server.jar").read_bytes() == b"paper build 10"
 
 
+def test_paper_cross_version_preflight_honors_explicit_build_pin(
+    paper_upgrade_environment,
+) -> None:
+    client, headers, profile_id, folder, builds = paper_upgrade_environment
+    reviewed = client.post(
+        f"/api/v1/profiles/{profile_id}/maintenance/preflight",
+        headers=headers,
+        json={
+            "change_id": "server_upgrade",
+            "minecraft_version": "1.21.5",
+            "paper_build": 19,
+        },
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    plan = reviewed.json()
+    assert plan["upgrade_target"] == "1.21.5"
+    assert plan["upgrade_paper_build"] == 19
+    assert plan["upgrade_paper_sha256"] == hashlib.sha256(
+        b"paper build 19"
+    ).hexdigest()
+
+    new_content = b"paper build 21"
+    builds["1.21.5"] = (
+        PaperBuild(
+            id=21,
+            channel="STABLE",
+            url="https://example.test/paper-1.21.5-21.jar",
+            file_name="paper-1.21.5-21.jar",
+            sha256=hashlib.sha256(new_content).hexdigest(),
+        ),
+        *builds["1.21.5"],
+    )
+
+    applied = client.post(
+        f"/api/v1/profiles/{profile_id}/maintenance/upgrades/apply",
+        headers=headers,
+        json={
+            "minecraft_version": "1.21.5",
+            "paper_build": 19,
+            "plan_id": plan["plan_id"],
+        },
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["paper_build"] == 19
+    assert (folder / "server.jar").read_bytes() == b"paper build 19"
+
+
+def test_paper_schedule_rechecks_when_a_new_cross_version_build_appears(
+    paper_upgrade_environment,
+) -> None:
+    client, headers, profile_id, _folder, builds = paper_upgrade_environment
+    reviewed = client.post(
+        f"/api/v1/profiles/{profile_id}/maintenance/preflight",
+        headers=headers,
+        json={"change_id": "server_upgrade", "minecraft_version": "1.21.5"},
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    reviewed_plan = reviewed.json()
+    assert reviewed_plan["upgrade_paper_build"] == 20
+
+    new_content = b"paper build 21"
+    builds["1.21.5"] = (
+        PaperBuild(
+            id=21,
+            channel="STABLE",
+            url="https://example.test/paper-1.21.5-21.jar",
+            file_name="paper-1.21.5-21.jar",
+            sha256=hashlib.sha256(new_content).hexdigest(),
+        ),
+        *builds["1.21.5"],
+    )
+
+    booked = client.post(
+        f"/api/v1/profiles/{profile_id}/maintenance/schedule",
+        headers=headers,
+        json={
+            "change_id": "server_upgrade",
+            "minecraft_version": "1.21.5",
+            "plan_id": reviewed_plan["plan_id"],
+            "run_at": "2099-01-01T10:00",
+        },
+    )
+    assert booked.status_code == 409, booked.text
+    assert booked.json()["error"]["code"] == "stale_plan"
+    assert booked.json()["plan"]["upgrade_paper_build"] == 21
+
+
 def test_paper_apply_rejects_a_changed_active_jar_before_overwriting_it(
     paper_upgrade_environment,
 ) -> None:
@@ -554,6 +645,46 @@ def test_paper_apply_rejects_a_changed_active_jar_before_overwriting_it(
     assert applied.status_code == 409, applied.text
     assert "changed since the review" in applied.text
     assert (folder / "server.jar").read_bytes() == changed
+
+
+def test_paper_preflight_blocks_when_active_jar_cannot_be_read(
+    paper_upgrade_environment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, headers, profile_id, _folder, _builds = paper_upgrade_environment
+
+    def unreadable(_path: Path) -> str:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("blockstead.app._file_sha256", unreadable)
+    reviewed = client.post(
+        f"/api/v1/profiles/{profile_id}/maintenance/preflight",
+        headers=headers,
+        json={"change_id": "server_upgrade", "minecraft_version": "1.21.5"},
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    plan = reviewed.json()
+    assert plan["readiness"] == "blocked"
+    finding = next(item for item in plan["findings"] if item["id"] == "upgrade-target")
+    assert finding["status"] == "blocked"
+    assert "could not read the active Paper jar" in finding["detail"]
+    assert "active Paper jar is readable" in finding["recommendation"]
+
+
+def test_paper_same_version_preflight_rejects_unavailable_build(
+    paper_upgrade_environment,
+) -> None:
+    client, headers, profile_id, _folder, _builds = paper_upgrade_environment
+    response = client.post(
+        f"/api/v1/profiles/{profile_id}/maintenance/preflight",
+        headers=headers,
+        json={
+            "change_id": "server_upgrade",
+            "minecraft_version": "1.21.4",
+            "paper_build": 12,
+        },
+    )
+    assert response.status_code == 409, response.text
+    assert "not a published stable build for that target" in response.text
 
 
 def test_paper_apply_rejects_a_wrong_stable_build_id(paper_upgrade_environment) -> None:

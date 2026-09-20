@@ -552,8 +552,8 @@ test("selects a same-version Paper build and preserves the exact build through p
     },
   };
   renderPanel({ plan: paperPlan, review: paperUpgradeReview });
-  await screen.findByText("Installed Paper build: Paper build 101");
   fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+  await screen.findByText(/Installed Paper build: Paper build 101/);
   expect(await screen.findByText(/Paper build update/)).toBeVisible();
   expect(screen.getByText(/Eligible for preflight/)).toBeVisible();
   const sameVersionBuild = await screen.findByRole("radio", { name: /Minecraft 1\.21\.4, Paper build 102/ });
@@ -577,6 +577,44 @@ test("selects a same-version Paper build and preserves the exact build through p
     expect.objectContaining({
       method: "POST",
       body: JSON.stringify({ minecraft_version: "1.21.4", plan_id: "paperplan12345678", paper_build: 102 }),
+    }),
+  ));
+});
+
+test("applies a cross-version Paper target with the build pinned by preflight", async () => {
+  const paperPlan: MaintenancePlan = {
+    ...readyPlan,
+    plan_id: "papercrossplan123",
+    change: catalog.changes[1],
+    upgrade_target: "1.21.5",
+    upgrade_paper_build: 205,
+    readiness: "ready",
+    protection: {
+      verified: true,
+      detail: "Fresh verified backup.",
+      backup_id: "backup-paper-cross",
+      created_at: "2026-07-26T12:00:00Z",
+      age_hours: 1,
+    },
+  };
+  renderPanel({ plan: paperPlan, review: paperUpgradeReview });
+  await reviewServerUpgrade();
+
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/preflight",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ change_id: "server_upgrade", minecraft_version: "1.21.5" }),
+    }),
+  ));
+  expect(await screen.findByText("Blockstead pinned Paper build 205 for this Minecraft release.")).toBeVisible();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Upgrade to 1.21.5" }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/upgrades/apply",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ minecraft_version: "1.21.5", plan_id: "papercrossplan123", paper_build: 205 }),
     }),
   ));
 });
@@ -665,7 +703,7 @@ test("marks a cross-version Fabric target eligible until preflight pins its load
   renderPanel({ plan: fabricPlan, review: fabricUpgradeReview });
   fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
 
-  expect(screen.getByText(/Eligible for preflight · selected target/)).toBeVisible();
+  expect(await screen.findByText(/Eligible for preflight · selected target/)).toBeVisible();
   const preflight = await screen.findByRole("button", { name: "Run the preflight" });
   await waitFor(() => expect(preflight).toBeEnabled());
   fireEvent.click(preflight);
@@ -677,7 +715,7 @@ test("marks a cross-version Fabric target eligible until preflight pins its load
     }),
   ));
 
-  expect(await screen.findByText(/Target: 1\.21\.5 · Fabric loader 0\.17\.0/)).toBeVisible();
+  expect(await screen.findByText("Blockstead pinned Fabric loader 0.17.0 for this Minecraft release.")).toBeVisible();
   expect(screen.getByText("Blockstead can install · selected target")).toBeVisible();
 });
 

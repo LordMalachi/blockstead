@@ -8618,8 +8618,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     _file_sha256, active_paper
                 )
             except (OSError, UpgradeOperationError):
-                # The upgrade review already explains an unusable active file;
-                # leave the identity unknown so the plan cannot be reused.
+                # Leave the identity unknown so the plan cannot be reused. The
+                # selected Paper branch below turns that into a blocked review.
                 pass
         if upgrade is not None and profile.distribution == "fabric":
             try:
@@ -8636,40 +8636,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # the exact stable build and digest that Apply must use. Keep the
             # extra argument on the Paper branch so legacy Vanilla/Fabric test
             # doubles with the old resolver signature remain valid.
-            try:
-                paper_plan = await resolve_plan(
-                    http_client,
-                    "paper",
-                    selected.minecraft_version,
-                    paper_build=selected.paper_build,
-                )
-                if (
-                    paper_plan.distribution != "paper"
-                    or paper_plan.minecraft_version != selected.minecraft_version
-                    or paper_plan.paper_build is None
-                    or (
-                        selected.paper_build is not None
-                        and paper_plan.paper_build != selected.paper_build
-                    )
-                    or paper_plan.checksum_algorithm != "sha256"
-                    or not paper_plan.checksum
-                ):
-                    raise ProvisionError(
-                        "Paper's resolver did not return the reviewed stable build and "
-                        "its required SHA-256 digest."
-                    )
-            except (ProvisionError, TypeError) as exc:
+            if upgrade_current_paper_sha256 is None:
                 upgrade_installable = False
                 upgrade_detail = (
-                    f"Paper build metadata could not be pinned safely: {exc}"
+                    "Blockstead could not read the active Paper jar, so it cannot "
+                    "safely verify the file this upgrade would replace."
                 )
             else:
-                upgrade_paper_build = paper_plan.paper_build
-                upgrade_paper_sha256 = paper_plan.checksum.lower()
-                upgrade_detail = (
-                    f"{selected.detail} Pinned stable Paper build "
-                    f"{upgrade_paper_build} with SHA-256 {upgrade_paper_sha256}."
+                requested_paper_build = (
+                    payload.paper_build
+                    if payload.paper_build is not None
+                    else selected.paper_build
                 )
+                try:
+                    paper_plan = await resolve_plan(
+                        http_client,
+                        "paper",
+                        selected.minecraft_version,
+                        paper_build=requested_paper_build,
+                    )
+                    if (
+                        paper_plan.distribution != "paper"
+                        or paper_plan.minecraft_version != selected.minecraft_version
+                        or paper_plan.paper_build is None
+                        or (
+                            requested_paper_build is not None
+                            and paper_plan.paper_build != requested_paper_build
+                        )
+                        or paper_plan.checksum_algorithm != "sha256"
+                        or not paper_plan.checksum
+                    ):
+                        raise ProvisionError(
+                            "Paper's resolver did not return the reviewed stable build and "
+                            "its required SHA-256 digest."
+                        )
+                except (ProvisionError, TypeError) as exc:
+                    upgrade_installable = False
+                    upgrade_detail = (
+                        f"Paper build metadata could not be pinned safely: {exc}"
+                    )
+                else:
+                    upgrade_paper_build = paper_plan.paper_build
+                    upgrade_paper_sha256 = paper_plan.checksum.lower()
+                    upgrade_detail = (
+                        f"{selected.detail} Pinned stable Paper build "
+                        f"{upgrade_paper_build} with SHA-256 {upgrade_paper_sha256}."
+                    )
         if selected is not None and selected.installable and profile.distribution == "fabric":
             if upgrade_current_loader_sha256 is None:
                 upgrade_installable = False

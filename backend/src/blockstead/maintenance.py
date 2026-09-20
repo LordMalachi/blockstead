@@ -697,6 +697,11 @@ def _upgrade_target_finding(context: MaintenanceContext) -> MaintenanceFinding:
         if context.distribution == "paper"
         else None
     )
+    paper_active_retry = (
+        "Check that the active Paper jar is readable, then run the preflight again."
+        if context.distribution == "paper"
+        else None
+    )
     fabric_retry = (
         "Retry the review when Fabric's stable loader source and active launcher are available."
         if context.distribution == "fabric"
@@ -729,23 +734,27 @@ def _upgrade_target_finding(context: MaintenanceContext) -> MaintenanceFinding:
             # This server type simply has no in-place path, versus it has one but
             # the newest release needs a runtime this computer does not have.
             (
-                paper_retry
-                if paper_retry and "build metadata" in context.upgrade_detail.lower()
+                paper_active_retry
+                if paper_active_retry and "active paper jar" in context.upgrade_detail.lower()
                 else (
-                    fabric_retry
-                    if fabric_retry
-                    and "java" not in context.upgrade_detail.lower()
-                    and (
-                        context.upgrade_target is None
-                        or "loader" in context.upgrade_detail.lower()
-                        or "launcher" in context.upgrade_detail.lower()
-                    )
+                    paper_retry
+                    if paper_retry and "build metadata" in context.upgrade_detail.lower()
                     else (
-                        "Install the Java runtime that release needs, then review this "
-                        "change again."
-                        if context.upgrade_distribution_supported
-                        else "Upgrade this server with its own installer, then re-import "
-                        "the folder."
+                        fabric_retry
+                        if fabric_retry
+                        and "java" not in context.upgrade_detail.lower()
+                        and (
+                            context.upgrade_target is None
+                            or "loader" in context.upgrade_detail.lower()
+                            or "launcher" in context.upgrade_detail.lower()
+                        )
+                        else (
+                            "Install the Java runtime that release needs, then review this "
+                            "change again."
+                            if context.upgrade_distribution_supported
+                            else "Upgrade this server with its own installer, then re-import "
+                            "the folder."
+                        )
                     )
                 )
             ),

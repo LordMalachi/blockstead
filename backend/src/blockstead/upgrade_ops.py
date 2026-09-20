@@ -194,11 +194,11 @@ def promote_launch_upgrade(
     except OSError as exc:
         raise UpgradeOperationError(describe_os_error(exc, recovery_directory)) from exc
 
-    promoted = False
+    previous_moved = False
     try:
         os.replace(active, previous)
+        previous_moved = True
         os.replace(replacement, active)
-        promoted = True
         launch_arguments(distribution, server_directory)
         _write_manifest(
             recovery_directory / "recovery.json",
@@ -219,28 +219,24 @@ def promote_launch_upgrade(
         )
     except (OSError, LaunchPlanError, UpgradeOperationError) as exc:
         rollback_failed = False
-        if promoted:
-            try:
-                active.unlink(missing_ok=True)
-            except OSError:
-                rollback_failed = True
-        if previous.exists():
+        if previous_moved:
             try:
                 os.replace(previous, active)
             except OSError:
                 rollback_failed = True
+        if rollback_failed:
+            raise UpgradeOperationError(
+                "The replacement could not be activated and Blockstead could not fully "
+                "restore the prior launch file. The preserved copy remains at "
+                f"{recovery_directory}. Leave the server stopped and inspect that "
+                "folder before starting it."
+            ) from exc
         # An UpgradeOperationError is raised either way below; removing the
         # never-finalized recovery folder here is tidiness, not correctness.
         try:
             rmtree(recovery_directory)
         except OSError:
             pass
-        if rollback_failed:
-            raise UpgradeOperationError(
-                "The replacement could not be activated and Blockstead could not fully "
-                "restore the prior launch file. Leave the server stopped and inspect "
-                "its folder before starting it."
-            ) from exc
         raise UpgradeOperationError(
             "The replacement could not be activated. The prior launch file was restored."
         ) from exc
@@ -300,6 +296,14 @@ def rollback_launch_upgrade(
     if not all(isinstance(value, str) for value in (launch_name, current_digest, previous_digest)):
         raise UpgradeOperationError("That upgrade recovery record is incomplete.")
     assert isinstance(launch_name, str)
+    launch_path = Path(launch_name)
+    if (
+        not launch_name
+        or launch_path.name != launch_name
+        or launch_path.parent != Path(".")
+        or launch_path.suffix.casefold() != ".jar"
+    ):
+        raise UpgradeOperationError("That upgrade recovery record has an unsafe launch file.")
     active = server_directory / launch_name
     previous = directory / launch_name
     if (
@@ -320,24 +324,45 @@ def rollback_launch_upgrade(
         )
 
     displaced = directory / f"replaced-{launch_name}"
+    if displaced.exists() or displaced.is_symlink():
+        raise UpgradeOperationError(
+            "That recovery folder contains an unfinished restore and cannot be reused."
+        )
+    active_moved = False
+    previous_moved = False
     try:
         os.replace(active, displaced)
+        active_moved = True
         os.replace(previous, active)
+        previous_moved = True
         launch_arguments(distribution, server_directory)
         manifest["used"] = True
         manifest["used_at"] = datetime.now(timezone.utc).isoformat()  # noqa: UP017
         _write_manifest(directory / "recovery.json", manifest)
     except (OSError, LaunchPlanError, UpgradeOperationError) as exc:
-        try:
-            if active.exists():
-                active.unlink()
-            if displaced.exists():
+        rollback_failed = False
+        previous_preserved = not previous_moved
+        if previous_moved:
+            try:
+                # The previous jar is currently active. Move it back into the
+                # recovery folder before restoring the newer jar so neither
+                # copy can be discarded during cleanup.
+                os.replace(active, previous)
+            except OSError:
+                rollback_failed = True
+            else:
+                previous_preserved = True
+        if active_moved and previous_preserved:
+            try:
                 os.replace(displaced, active)
-        except OSError as rollback_exc:
+            except OSError:
+                rollback_failed = True
+        if rollback_failed:
             raise UpgradeOperationError(
-                "Recovery failed and Blockstead could not restore the newer launch file. "
-                "Leave the server stopped and inspect its recovery folder."
-            ) from rollback_exc
+                "Recovery failed and Blockstead could not fully restore the newer launch "
+                f"file. The launch files remain in the server folder and recovery folder "
+                f"{directory}. Leave the server stopped and inspect both locations."
+            ) from exc
         raise UpgradeOperationError(
             "The previous launch file could not be restored; the newer file remains active."
         ) from exc

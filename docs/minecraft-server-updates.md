@@ -29,6 +29,14 @@ workspace and choose **Upgrade the server or loader version**.
    validates the resulting launch plan. Start the server when ready and read
    its console for startup or plugin compatibility problems.
 
+When a Paper preflight names a build explicitly for a different Minecraft
+version, Blockstead keeps that exact build even if Paper publishes a newer
+build before the upgrade is applied. A newer unpinned target makes the reviewed
+plan stale and requires another preflight. Same-version build choices are
+checked against the current stable catalog and unavailable targets are refused.
+If Blockstead cannot read the active Paper jar, preflight blocks the upgrade
+until the file is readable and its replacement can be checked safely.
+
 The optional maintenance window can arrange a safe stop after a backup. It
 does not install the upgrade automatically.
 
