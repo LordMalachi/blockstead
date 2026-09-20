@@ -7,6 +7,7 @@ import pytest
 
 from blockstead.provisioning import (
     FABRIC_INSTALLER,
+    FABRIC_LOADER,
     FORGE_MAVEN,
     FORGE_PROMOTIONS,
     MOJANG_MANIFEST,
@@ -16,8 +17,12 @@ from blockstead.provisioning import (
     QUILT_INSTALLER,
     QUILT_INSTALLER_MAVEN,
     QUILT_LOADER,
+    FabricLoader,
     ProvisionError,
     download_verified_file,
+    fabric_plan,
+    list_fabric_loaders,
+    list_fabric_stable_loaders,
     list_versions,
     provision_profile,
     resolve_plan,
@@ -32,13 +37,10 @@ VANILLA_JAR_URL = "https://piston-data.example/server.jar"
 PAPER_JAR_URL = "https://fill-data.example/paper-1.21.1-10.jar"
 NEOFORGE_LOADER = "21.1.77"
 NEOFORGE_INSTALLER_URL = (
-    f"{NEOFORGE_MAVEN}/{NEOFORGE_LOADER}/"
-    f"neoforge-{NEOFORGE_LOADER}-installer.jar"
+    f"{NEOFORGE_MAVEN}/{NEOFORGE_LOADER}/neoforge-{NEOFORGE_LOADER}-installer.jar"
 )
 FORGE_COORDINATE = "1.20.1-47.4.10"
-FORGE_INSTALLER_URL = (
-    f"{FORGE_MAVEN}/{FORGE_COORDINATE}/forge-{FORGE_COORDINATE}-installer.jar"
-)
+FORGE_INSTALLER_URL = f"{FORGE_MAVEN}/{FORGE_COORDINATE}/forge-{FORGE_COORDINATE}-installer.jar"
 QUILT_INSTALLER_VERSION = "0.12.0"
 QUILT_INSTALLER_URL = QUILT_INSTALLER_MAVEN.format(installer=QUILT_INSTALLER_VERSION)
 
@@ -73,6 +75,17 @@ RESPONSES: dict[str, object] = {
                 }
             },
         },
+        {
+            "id": 11,
+            "channel": "EXPERIMENTAL",
+            "downloads": {
+                "server:default": {
+                    "name": "paper-1.21.1-11.jar",
+                    "url": "https://fill-data.example/experimental.jar",
+                    "checksums": {"sha256": JAR_SHA256},
+                }
+            },
+        },
     ],
     "https://meta.fabricmc.net/v2/versions/loader/1.21.1": [
         {"loader": {"version": "0.16.9", "stable": False}},
@@ -86,9 +99,7 @@ RESPONSES: dict[str, object] = {
         "<version>21.1.77</version></versions></versioning></metadata>"
     ),
     f"{NEOFORGE_INSTALLER_URL}.sha1": JAR_SHA1,
-    QUILT_LOADER.format(version="1.21.1"): [
-        {"loader": {"version": "0.29.0", "stable": True}}
-    ],
+    QUILT_LOADER.format(version="1.21.1"): [{"loader": {"version": "0.29.0", "stable": True}}],
     QUILT_INSTALLER: [{"version": QUILT_INSTALLER_VERSION, "stable": True}],
     f"{QUILT_INSTALLER_URL}.sha1": JAR_SHA1,
 }
@@ -123,13 +134,70 @@ async def test_paper_plan_picks_newest_stable_build(client: httpx.AsyncClient) -
     assert plan.url == PAPER_JAR_URL
     assert plan.checksum == JAR_SHA256
     assert plan.file_name == "paper-1.21.1-10.jar"
+    assert plan.paper_build == 10
+
+
+async def test_paper_plan_can_pin_an_exact_stable_build(client: httpx.AsyncClient) -> None:
+    plan = await resolve_plan(client, "paper", "1.21.1", None, 9)
+    assert plan.paper_build == 9
+    assert plan.file_name == "paper-1.21.1-9.jar"
+
+
+async def test_paper_plan_rejects_experimental_pin(client: httpx.AsyncClient) -> None:
+    with pytest.raises(ProvisionError, match="stable build 11"):
+        await resolve_plan(client, "paper", "1.21.1", None, 11)
+
+
+async def test_paper_plan_requires_a_stable_build(client: httpx.AsyncClient) -> None:
+    url = PAPER_BUILDS.format(version="1.21.1")
+    original = RESPONSES[url]
+    RESPONSES[url] = [original[-1]]  # type: ignore[index]
+    try:
+        with pytest.raises(ProvisionError, match="stable build"):
+            await resolve_plan(client, "paper", "1.21.1")
+    finally:
+        RESPONSES[url] = original
 
 
 async def test_fabric_plan_has_no_publisher_checksum(client: httpx.AsyncClient) -> None:
     plan = await resolve_plan(client, "fabric", "1.21.1")
     assert "0.16.5" in plan.url and "1.0.1" in plan.url
+    assert plan.loader_version == "0.16.5"
     assert plan.checksum is None
     assert any("checksum" in note for note in plan.notes)
+
+
+async def test_fabric_plan_can_pin_an_exact_stable_loader(client: httpx.AsyncClient) -> None:
+    plan = await resolve_plan(client, "fabric", "1.21.1", "0.16.5")
+    assert plan.loader_version == "0.16.5"
+    assert "/0.16.5/" in plan.url
+
+
+@pytest.mark.parametrize("loader_version", ["0.16.9", "0.16.4", "0.16.5/escape"])
+async def test_fabric_plan_rejects_non_stable_or_unknown_loader(
+    client: httpx.AsyncClient, loader_version: str
+) -> None:
+    with pytest.raises(ProvisionError, match="stable loader"):
+        await resolve_plan(client, "fabric", "1.21.1", loader_version)
+
+
+async def test_fabric_loader_catalog_is_typed(client: httpx.AsyncClient) -> None:
+    loaders = await list_fabric_loaders(client, "1.21.1")
+    assert loaders == (
+        FabricLoader(version="0.16.9", stable=False),
+        FabricLoader(version="0.16.5", stable=True),
+    )
+    assert await list_fabric_stable_loaders(client, "1.21.1") == ("0.16.5",)
+
+
+async def test_fabric_plan_reports_loader_source_failure() -> None:
+    def failing_handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == FABRIC_LOADER.format(version="1.21.1")
+        return httpx.Response(503)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(failing_handler)) as client:
+        with pytest.raises(ProvisionError, match="download source"):
+            await fabric_plan(client, "1.21.1")
 
 
 async def test_neoforge_plan_uses_official_installer(client: httpx.AsyncClient) -> None:

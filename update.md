@@ -476,6 +476,9 @@ extension, and schedule capabilities into one reversible maintenance workflow.
       review for extension updates; retain a per-change rollback path.
 - [x] Make supported server/loader upgrades opt-in and stopped-server-only; preserve the
       prior launch target and never automatically roll a world back.
+- [x] Let the owner choose an exact installable newer Minecraft release instead
+      of forcing the newest one; bind the preflight, booked window, and apply
+      request to that release and reject a stale or mismatched target.
 - [x] Record every preflight finding, owner decision, step result, and recovery
       action in Activity and in the downloadable support report. Preflight
       findings and the plan identity are recorded now; step results follow with

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
@@ -9,6 +9,7 @@ import {
   type MaintenanceChangeId,
   type MaintenancePlan,
   type ServerUpgradeResult,
+  type UpgradeCandidate,
   type UpgradeReview,
 } from "../../api/client";
 import { Button } from "../../components/Button";
@@ -58,6 +59,56 @@ function defaultRunAt() {
   return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}T${pad(when.getHours())}:${pad(when.getMinutes())}`;
 }
 
+/** Paper builds and Fabric loader versions can create multiple targets per release. */
+function upgradeCandidateKey(candidate: UpgradeCandidate) {
+  return `${candidate.minecraft_version}::${candidate.paper_build ?? "auto"}::${candidate.loader_version ?? "auto"}`;
+}
+
+function paperBuildLabel(candidate: UpgradeCandidate) {
+  return candidate.paper_build == null ? "" : `Paper build ${candidate.paper_build}`;
+}
+
+function fabricLoaderLabel(candidate: UpgradeCandidate) {
+  return candidate.loader_version == null ? "" : `Fabric loader ${candidate.loader_version}`;
+}
+
+function candidateArtifactIsPinned(
+  distribution: string,
+  candidate: UpgradeCandidate,
+  candidateKey: string,
+  selectedKey: string,
+  reviewedKey: string | null,
+  plan: MaintenancePlan | null,
+) {
+  if (distribution !== "paper" && distribution !== "fabric") return true;
+  const targetIsCrossVersion = distribution === "paper"
+    ? candidate.paper_build == null
+    : candidate.loader_version == null;
+  if (!targetIsCrossVersion) return true;
+  if (selectedKey !== candidateKey || reviewedKey !== candidateKey || plan == null) return false;
+  if (plan.upgrade_target !== candidate.minecraft_version) return false;
+  return distribution === "paper"
+    ? plan.upgrade_paper_build != null
+    : plan.upgrade_loader_version != null;
+}
+
+type PreflightInput = {
+  id: MaintenanceChangeId;
+  minecraftVersion?: string;
+  paperBuild?: number;
+  loaderVersion?: string;
+  targetKey?: string;
+};
+
+type ScheduleInput = {
+  planId: string;
+  changeId: MaintenanceChangeId;
+  minecraftVersion?: string;
+  paperBuild?: number;
+  loaderVersion?: string;
+  targetKey?: string;
+};
+
 function CatalogFailure({ error, retry }: { error: Error; retry: () => void }) {
   const request = error instanceof ApiRequestError ? error : null;
   const title = request?.status === 404
@@ -90,11 +141,19 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
   const [changeId, setChangeId] = useState<MaintenanceChangeId | "">("");
   const [runAt, setRunAt] = useState(defaultRunAt);
   const [onlyWhenEmpty, setOnlyWhenEmpty] = useState(true);
+  const [selectedTargetKey, setSelectedTargetKey] = useState("");
+  // The selected target key includes Paper's build number. Keep it separately
+  // from the API's plan so an old mutation result cannot become actionable
+  // after a target change.
+  const [reviewedTarget, setReviewedTarget] = useState<string | null>(null);
+  const [reviewActive, setReviewActive] = useState(false);
   const [booking, setBooking] = useState<MaintenanceBooking | null>(null);
   const [staleNotice, setStaleNotice] = useState("");
   const [freshPlan, setFreshPlan] = useState<MaintenancePlan | null>(null);
   const [appliedUpgrade, setAppliedUpgrade] = useState<ServerUpgradeResult | null>(null);
   const [recoveryNotice, setRecoveryNotice] = useState("");
+  const selectedTargetKeyRef = useRef("");
+  const reviewTokenRef = useRef(0);
 
   const catalog = useQuery({
     queryKey: ["maintenance-changes"],
@@ -108,66 +167,185 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
     queryFn: () => api<UpgradeReview>(`/profiles/${profileId}/maintenance/upgrades`),
     enabled: changeId === "server_upgrade",
   });
+  const selectedCandidate = upgrades.data?.candidates.find(candidate => upgradeCandidateKey(candidate) === selectedTargetKey);
 
   function resetResult() {
     setBooking(null);
     setStaleNotice("");
     setFreshPlan(null);
-    setAppliedUpgrade(null);
     setRecoveryNotice("");
+    setReviewedTarget(null);
+    setReviewActive(false);
   }
 
   const preflight = useMutation({
-    mutationFn: (id: MaintenanceChangeId) =>
-      api<MaintenancePlan>(`/profiles/${profileId}/maintenance/preflight`, {
+    mutationFn: (input: PreflightInput) => {
+      const body: {
+        change_id: MaintenanceChangeId;
+        minecraft_version?: string;
+        paper_build?: number;
+        loader_version?: string;
+      } = {
+        change_id: input.id,
+      };
+      if (input.id === "server_upgrade" && input.minecraftVersion) {
+        body.minecraft_version = input.minecraftVersion;
+      }
+      if (input.id === "server_upgrade" && input.paperBuild != null) {
+        body.paper_build = input.paperBuild;
+      }
+      if (input.id === "server_upgrade" && input.loaderVersion != null) {
+        body.loader_version = input.loaderVersion;
+      }
+      return api<MaintenancePlan>(`/profiles/${profileId}/maintenance/preflight`, {
         method: "POST",
-        body: JSON.stringify({ change_id: id }),
-      }),
-    onMutate: resetResult,
+        body: JSON.stringify(body),
+      });
+    },
+    onMutate: input => {
+      const token = ++reviewTokenRef.current;
+      resetResult();
+      setReviewedTarget(input.id === "server_upgrade" ? input.targetKey ?? null : null);
+      setReviewActive(true);
+      return { token };
+    },
     // The review is recorded in Activity, so the feed is no longer current.
-    onSuccess: () => void client.invalidateQueries({ queryKey: ["activity"] }),
+    onSuccess: (_result, _input, context) => {
+      if (context?.token === reviewTokenRef.current) {
+        void client.invalidateQueries({ queryKey: ["activity"] });
+      }
+    },
   });
   const reviewed = freshPlan ?? preflight.data;
-  const plan = reviewed?.change.id === changeId ? reviewed : null;
+  const planTargetMatchesSelection = reviewed?.change.id !== "server_upgrade"
+    || (
+      selectedTargetKey
+        ? reviewedTarget === selectedTargetKey
+          && selectedCandidate != null
+          // A missing target is allowed to remain visible as a diagnostic
+          // blocked review for older backends. Apply requires an exact echoed
+          // target below.
+          && (reviewed.upgrade_target == null || reviewed.upgrade_target === selectedCandidate.minecraft_version)
+          // A newer Paper version may start from a candidate without a known
+          // build; the backend resolves and echoes a stable build in the plan.
+          && (
+            selectedCandidate.paper_build == null
+              || reviewed.upgrade_paper_build == null
+              || reviewed.upgrade_paper_build === selectedCandidate.paper_build
+          )
+          // A newer Fabric version may start from a candidate without a known
+          // loader; the backend resolves and echoes a stable loader in the plan.
+          && (
+            selectedCandidate.loader_version == null
+              || reviewed.upgrade_loader_version == null
+              || reviewed.upgrade_loader_version === selectedCandidate.loader_version
+          )
+        : reviewedTarget === null
+    );
+  const plan = reviewed?.profile_id === profileId
+    && (reviewed.change.id !== "server_upgrade" || reviewActive)
+    && reviewed.change.id === changeId
+    && planTargetMatchesSelection
+    ? reviewed
+    : null;
 
   const schedule = useMutation({
-    mutationFn: (input: { planId: string; changeId: MaintenanceChangeId }) =>
-      api<MaintenanceBooking>(`/profiles/${profileId}/maintenance/schedule`, {
+    mutationFn: (input: ScheduleInput) => {
+      const body: {
+        change_id: MaintenanceChangeId;
+        plan_id: string;
+        run_at: string;
+        only_when_empty: boolean;
+        minecraft_version?: string;
+        paper_build?: number;
+        loader_version?: string;
+      } = {
+        change_id: input.changeId,
+        plan_id: input.planId,
+        run_at: runAt,
+        only_when_empty: onlyWhenEmpty,
+      };
+      if (input.changeId === "server_upgrade" && input.minecraftVersion) {
+        body.minecraft_version = input.minecraftVersion;
+      }
+      if (input.changeId === "server_upgrade" && input.paperBuild != null) {
+        body.paper_build = input.paperBuild;
+      }
+      if (input.changeId === "server_upgrade" && input.loaderVersion != null) {
+        body.loader_version = input.loaderVersion;
+      }
+      return api<MaintenanceBooking>(`/profiles/${profileId}/maintenance/schedule`, {
         method: "POST",
-        body: JSON.stringify({
-          change_id: input.changeId,
-          plan_id: input.planId,
-          run_at: runAt,
-          only_when_empty: onlyWhenEmpty,
-        }),
-      }),
-    onSuccess: result => {
+        body: JSON.stringify(body),
+      });
+    },
+    onMutate: () => ({ token: reviewTokenRef.current }),
+    onSuccess: (result, _input, context) => {
+      if (context?.token !== reviewTokenRef.current) return;
       setStaleNotice("");
       setFreshPlan(null);
       setBooking(result);
       void client.invalidateQueries();
     },
-    onError: error => {
+    onError: (error, input, context) => {
+      if (context?.token !== reviewTokenRef.current) return;
+      if (input.changeId === "server_upgrade" && input.targetKey !== selectedTargetKeyRef.current) {
+        setFreshPlan(null);
+        setReviewedTarget(null);
+        setReviewActive(false);
+        return;
+      }
       setBooking(null);
       // A stale plan is a re-review, not a dead end: the refusal carries the
       // current plan, so show that instead of asking the owner to start over.
       const body = error instanceof ApiRequestError ? error.body as { plan?: MaintenancePlan } : null;
       if (body?.plan) {
+        if (
+          input.changeId === "server_upgrade"
+          && (
+            (body.plan.upgrade_target != null && body.plan.upgrade_target !== input.minecraftVersion)
+            || (input.paperBuild != null && body.plan.upgrade_paper_build !== input.paperBuild)
+            || (input.loaderVersion != null && body.plan.upgrade_loader_version !== input.loaderVersion)
+          )
+        ) {
+          setFreshPlan(null);
+          setReviewedTarget(null);
+          setReviewActive(false);
+          return;
+        }
         setFreshPlan(body.plan);
+        setReviewedTarget(input.changeId === "server_upgrade" ? input.targetKey ?? null : null);
+        setReviewActive(true);
         setStaleNotice(error.message);
       }
     },
   });
   const applyUpgrade = useMutation({
-    mutationFn: (input: { version: string; planId: string }) =>
-      api<ServerUpgradeResult>(`/profiles/${profileId}/maintenance/upgrades/apply`, {
+    mutationFn: (input: { version: string; planId: string; paperBuild?: number; loaderVersion?: string }) => {
+      const body: {
+        minecraft_version: string;
+        plan_id: string;
+        paper_build?: number;
+        loader_version?: string;
+      } = {
+        minecraft_version: input.version,
+        plan_id: input.planId,
+      };
+      if (input.paperBuild != null) body.paper_build = input.paperBuild;
+      if (input.loaderVersion != null) body.loader_version = input.loaderVersion;
+      return api<ServerUpgradeResult>(`/profiles/${profileId}/maintenance/upgrades/apply`, {
         method: "POST",
-        body: JSON.stringify({
-          minecraft_version: input.version,
-          plan_id: input.planId,
-        }),
-      }),
-    onSuccess: result => {
+        body: JSON.stringify(body),
+      });
+    },
+    onMutate: () => ({ token: reviewTokenRef.current }),
+    onSuccess: (result, _input, context) => {
+      if (context?.token !== reviewTokenRef.current) return;
+      // The reviewed plan has been consumed. Keep the recovery action visible,
+      // but remove the old plan so it cannot be treated as actionable again.
+      clearReview();
+      selectedTargetKeyRef.current = "";
+      setSelectedTargetKey("");
       setAppliedUpgrade(result);
       setRecoveryNotice("");
       void client.invalidateQueries();
@@ -184,6 +362,87 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
       void client.invalidateQueries();
     },
   });
+
+  function clearReview() {
+    reviewTokenRef.current += 1;
+    resetResult();
+    preflight.reset();
+    schedule.reset();
+    applyUpgrade.reset();
+    rollbackUpgrade.reset();
+  }
+
+  function chooseUpgradeTarget(version: string) {
+    if (version === selectedTargetKeyRef.current) return;
+    selectedTargetKeyRef.current = version;
+    setSelectedTargetKey(version);
+    clearReview();
+  }
+
+  useEffect(() => {
+    // A profile switch must not carry a reviewed plan or a target across
+    // servers while the profile-scoped queries are changing.
+    reviewTokenRef.current += 1;
+    selectedTargetKeyRef.current = "";
+    setSelectedTargetKey("");
+    resetResult();
+    setAppliedUpgrade(null);
+    preflight.reset();
+    schedule.reset();
+    applyUpgrade.reset();
+    rollbackUpgrade.reset();
+    // The mutation reset functions are stable for the lifetime of this panel;
+    // profileId is the only value that should trigger this cleanup.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileId]);
+
+  // Published candidates arrive asynchronously. Preserve an explicit choice
+  // when it remains installable; otherwise use the first installable release.
+  useEffect(() => {
+    if (changeId !== "server_upgrade") return;
+    const candidates = upgrades.data?.candidates ?? [];
+    const currentIsInstallable = candidates.some(candidate => upgradeCandidateKey(candidate) === selectedTargetKey && candidate.installable);
+    const firstInstallable = candidates.find(candidate => candidate.installable);
+    const next = currentIsInstallable
+      ? selectedTargetKey
+      : firstInstallable ? upgradeCandidateKey(firstInstallable) : "";
+    if (next !== selectedTargetKey) {
+      selectedTargetKeyRef.current = next;
+      setSelectedTargetKey(next);
+    }
+  }, [changeId, selectedTargetKey, upgrades.data]);
+
+  const upgradeTargetSelectionRequired = change?.id === "server_upgrade"
+    && !selectedTargetKey
+    && !upgrades.error
+    && (!upgrades.data
+      || (
+        upgrades.data.source === "available"
+        && upgrades.data.up_to_date !== true
+        && upgrades.data.candidates.some(candidate => candidate.installable)
+      ));
+  const reviewedUpgradeTargetMatches = plan?.change.id === "server_upgrade"
+    && selectedCandidate != null
+    && plan.upgrade_target === selectedCandidate.minecraft_version
+    && (
+      upgrades.data?.distribution !== "paper"
+        ? plan.upgrade_paper_build == null
+        : selectedCandidate.paper_build != null
+          ? plan.upgrade_paper_build === selectedCandidate.paper_build
+          : typeof plan.upgrade_paper_build === "number"
+            && Number.isInteger(plan.upgrade_paper_build)
+            && plan.upgrade_paper_build > 0
+    )
+    && (
+      upgrades.data?.distribution !== "fabric"
+        ? plan.upgrade_loader_version == null
+        : selectedCandidate.loader_version != null
+          ? plan.upgrade_loader_version === selectedCandidate.loader_version
+          : typeof plan.upgrade_loader_version === "string"
+            && plan.upgrade_loader_version.trim().length > 0
+    );
+  const targetMutationPending = schedule.isPending || applyUpgrade.isPending || rollbackUpgrade.isPending;
+  const upgradeCandidatesLoading = change?.id === "server_upgrade" && upgrades.isFetching;
 
   return <section className="card maintenance-panel" aria-labelledby="maintenance-heading">
     <div className="section-heading">
@@ -208,7 +467,13 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
             name="maintenance-change"
             value={entry.id}
             checked={changeId === entry.id}
-            onChange={() => { setChangeId(entry.id); resetResult(); }}
+            disabled={targetMutationPending}
+            onChange={() => {
+              setChangeId(entry.id);
+              selectedTargetKeyRef.current = "";
+              setSelectedTargetKey("");
+              clearReview();
+            }}
           />
           <strong>{entry.title}</strong>
           <span>{entry.summary}</span>
@@ -223,19 +488,83 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
       {upgrades.error && <p className="error" role="alert">{upgrades.error.message}</p>}
       {upgrades.data && <>
         <p>{upgrades.data.source_detail}</p>
+        {upgrades.data.distribution === "paper" && <p className="muted-note">
+          Installed Paper build: {upgrades.data.current_paper_build != null
+            ? `Paper build ${upgrades.data.current_paper_build}`
+            : "Unknown"}
+          {upgrades.data.paper_build_detail ? ` · ${upgrades.data.paper_build_detail}` : ""}
+        </p>}
+        {upgrades.data.distribution === "paper" && <p className="muted-note">Paper targets use stable builds; newer Minecraft releases may resolve a stable build during review.</p>}
+        {upgrades.data.distribution === "fabric" && <p className="muted-note">
+          Recorded Fabric loader: {upgrades.data.current_loader_version ?? "Unknown"}
+          {upgrades.data.loader_version_detail
+            ? ` · ${upgrades.data.loader_version_detail}`
+            : " · This is a recorded profile value; the active jar was not verified."}
+        </p>}
+        {upgrades.data.distribution === "fabric" && <p className="muted-note">Fabric targets use stable loader releases; newer Minecraft releases may resolve a stable loader during review.</p>}
         {upgrades.data.warnings.map(warning => <p className="warning" key={warning}>{warning}</p>)}
-        {upgrades.data.up_to_date === true && <p className="success" role="status">This server is on {upgrades.data.current_version}, the newest published {upgrades.data.distribution_label} release.</p>}
+        {upgrades.data.up_to_date === true
+          && (upgrades.data.distribution !== "paper" || upgrades.data.current_paper_build != null)
+          && (upgrades.data.distribution !== "fabric" || upgrades.data.current_loader_version != null)
+          && <p className="success" role="status">{upgrades.data.distribution === "paper"
+            ? `This server is on Minecraft ${upgrades.data.current_version}, stable Paper build ${upgrades.data.current_paper_build}, the newest published Paper release.`
+            : upgrades.data.distribution === "fabric"
+              ? `This profile records Minecraft ${upgrades.data.current_version} with Fabric loader ${upgrades.data.current_loader_version}. The active Fabric jar was not verified.`
+              : `This server is on ${upgrades.data.current_version}, the newest published ${upgrades.data.distribution_label} release.`}</p>}
+        {upgrades.data.up_to_date === true && upgrades.data.distribution === "paper" && upgrades.data.current_paper_build == null
+          && <p className="warning" role="status">This server's Paper build is unknown, so Blockstead cannot confirm it is on the newest stable Paper build.</p>}
+        {upgrades.data.up_to_date === true && upgrades.data.distribution === "fabric" && upgrades.data.current_loader_version == null
+          && <p className="warning" role="status">This server's Fabric loader version is unknown, so Blockstead cannot confirm it is on the newest stable Fabric loader.</p>}
         {upgrades.data.candidates.length > 0 && <ul className="maintenance-releases" aria-label="Newer published releases">
-          {upgrades.data.candidates.slice(0, 8).map(candidate => <li key={candidate.minecraft_version} className={candidate.installable ? "is-installable" : ""}>
+          {upgrades.data.candidates.map(candidate => {
+            const candidateKey = upgradeCandidateKey(candidate);
+            const buildLabel = paperBuildLabel(candidate);
+            const loaderLabel = fabricLoaderLabel(candidate);
+            const artifactIsPinned = candidateArtifactIsPinned(
+              upgrades.data.distribution,
+              candidate,
+              candidateKey,
+              selectedTargetKey,
+              reviewedTarget,
+              plan,
+            );
+            const candidateCanInstall = candidate.installable && artifactIsPinned;
+            const stepLabel = upgrades.data.distribution === "paper" && candidate.minecraft_version === upgrades.data.current_version
+              ? "Paper build update"
+              : upgrades.data.distribution === "fabric" && candidate.minecraft_version === upgrades.data.current_version
+                ? "Fabric loader update"
+              : stepLabels[candidate.step];
+            return <li key={candidateKey} className={`${candidateCanInstall ? "is-installable" : ""}${selectedTargetKey === candidateKey ? " is-selected" : ""}`}>
             <div>
-              <small>{stepLabels[candidate.step]}{candidate.required_java_major ? ` · needs Java ${candidate.required_java_major}` : ""}</small>
-              <strong>{candidate.minecraft_version}</strong>
+              <small>{stepLabel}{candidate.required_java_major ? ` · needs Java ${candidate.required_java_major}` : ""}{buildLabel ? ` · ${buildLabel}` : loaderLabel ? ` · ${loaderLabel}` : upgrades.data.distribution === "paper" ? " · stable Paper build selected during review" : upgrades.data.distribution === "fabric" ? " · stable Fabric loader selected during review" : ""}</small>
+              <label>
+                <input
+                  type="radio"
+                  name="minecraft-upgrade-target"
+                  value={candidateKey}
+                  checked={selectedTargetKey === candidateKey}
+                  disabled={!candidate.installable || targetMutationPending || upgradeCandidatesLoading}
+                  onChange={() => chooseUpgradeTarget(candidateKey)}
+                  aria-label={`Upgrade to Minecraft ${candidate.minecraft_version}${buildLabel ? `, ${buildLabel}` : loaderLabel ? `, ${loaderLabel}` : ""}`}
+                />
+                <strong>{candidate.minecraft_version}</strong>
+              </label>
               <p>{candidate.detail}</p>
             </div>
-            <span>{candidate.installable ? "Blockstead can install" : "Not installable here"}</span>
-          </li>)}
+            <span>{candidate.installable
+              ? artifactIsPinned
+                ? selectedTargetKey === candidateKey
+                  ? "Blockstead can install · selected target"
+                  : "Blockstead can install"
+                : selectedTargetKey === candidateKey
+                  ? "Eligible for preflight · selected target"
+                  : "Eligible for preflight"
+              : "Not installable here"}</span>
+          </li>;
+          })}
         </ul>}
         <p className="muted-note">{upgrades.data.install_detail}</p>
+        {upgradeTargetSelectionRequired && <p className="warning" role="status">Choose an installable published release before running the preflight.</p>}
       </>}
     </div>}
 
@@ -243,7 +572,18 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
       <h3>Blockstead will check</h3>
       <ul>{change.checks.map(item => <li key={item}>{item}</li>)}</ul>
       <div className="maintenance-actions">
-        <Button disabled={preflight.isPending} onClick={() => preflight.mutate(change.id)}>
+        <Button
+          disabled={preflight.isPending || upgradeTargetSelectionRequired || targetMutationPending || upgradeCandidatesLoading}
+          onClick={() => preflight.mutate({
+            id: change.id,
+            ...(change.id === "server_upgrade" && selectedCandidate ? {
+              minecraftVersion: selectedCandidate.minecraft_version,
+              targetKey: selectedTargetKey,
+              ...(selectedCandidate.paper_build != null ? { paperBuild: selectedCandidate.paper_build } : {}),
+              ...(selectedCandidate.loader_version != null ? { loaderVersion: selectedCandidate.loader_version } : {}),
+            } : {}),
+          })}
+        >
           {preflight.isPending ? "Checking…" : "Run the preflight"}
         </Button>
       </div>
@@ -300,37 +640,34 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
           <p>{plan.restart_detail}</p>
         </div>
 
-        {plan.change.id === "server_upgrade" && upgrades.data?.candidates[0]?.installable && <div className="maintenance-apply">
+        {plan.change.id === "server_upgrade" && selectedCandidate?.installable && <div className="maintenance-apply">
           <h3>Apply the reviewed upgrade</h3>
           <p>Blockstead will replace only the stopped server’s active launch file, then validate its launch plan. The previous launch file is retained. The world is never rolled back automatically.</p>
+          {selectedCandidate.paper_build != null && <p className="muted-note">Target: {selectedCandidate.minecraft_version} · Paper build {selectedCandidate.paper_build}</p>}
+          {upgrades.data?.distribution === "paper" && selectedCandidate.paper_build == null && plan.upgrade_paper_build != null && <p className="muted-note">Blockstead pinned Paper build {plan.upgrade_paper_build} for this Minecraft release.</p>}
+          {selectedCandidate.loader_version != null && <p className="muted-note">Target: {selectedCandidate.minecraft_version} · Fabric loader {selectedCandidate.loader_version}</p>}
+          {upgrades.data?.distribution === "fabric" && selectedCandidate.loader_version == null && plan.upgrade_loader_version != null && <p className="muted-note">Blockstead pinned Fabric loader {plan.upgrade_loader_version} for this Minecraft release.</p>}
           {plan.protection.verified && (plan.protection.age_hours ?? 25) <= 24
             ? <p className="success">The required fresh protection point verifies.</p>
             : <p className="warning">Create a fresh verified backup and run this preflight again before applying the upgrade.</p>}
+          {!reviewedUpgradeTargetMatches && <p className="warning">Run the preflight again for the selected release before applying this upgrade.</p>}
           <div className="maintenance-actions">
             {(!plan.protection.verified || (plan.protection.age_hours ?? 25) > 24) && <Link className="button button--secondary" to={`/servers/${profileId}/backups`}>Create a backup</Link>}
             <Button
-              disabled={applyUpgrade.isPending || !plan.protection.verified || (plan.protection.age_hours ?? 25) > 24}
+              disabled={targetMutationPending || upgradeCandidatesLoading || !reviewedUpgradeTargetMatches || !plan.protection.verified || (plan.protection.age_hours ?? 25) > 24}
               onClick={() => applyUpgrade.mutate({
-                version: upgrades.data.candidates[0].minecraft_version,
+                version: plan.upgrade_target ?? selectedCandidate.minecraft_version,
                 planId: plan.plan_id,
+                ...(plan.upgrade_paper_build != null ? { paperBuild: plan.upgrade_paper_build } : {}),
+                ...(plan.upgrade_loader_version != null ? { loaderVersion: plan.upgrade_loader_version } : {}),
               })}
             >
-              {applyUpgrade.isPending ? "Applying and validating…" : `Upgrade to ${upgrades.data.candidates[0].minecraft_version}`}
+              {applyUpgrade.isPending
+                ? "Applying and validating…"
+                : `Upgrade to ${selectedCandidate.minecraft_version}${selectedCandidate.paper_build != null ? ` · Paper build ${selectedCandidate.paper_build}` : selectedCandidate.loader_version != null ? ` · Fabric loader ${selectedCandidate.loader_version}` : ""}`}
             </Button>
           </div>
           {applyUpgrade.error && <p className="error" role="alert">{applyUpgrade.error.message}</p>}
-          {appliedUpgrade && <div className="maintenance-recovery" role="status">
-            <p>{appliedUpgrade.detail}</p>
-            <Button
-              className="button--secondary"
-              disabled={rollbackUpgrade.isPending}
-              onClick={() => rollbackUpgrade.mutate(appliedUpgrade.recovery_id)}
-            >
-              {rollbackUpgrade.isPending ? "Restoring launch file…" : "Restore previous launch file"}
-            </Button>
-          </div>}
-          {rollbackUpgrade.error && <p className="error" role="alert">{rollbackUpgrade.error.message}</p>}
-          {recoveryNotice && <p className="success" role="status">{recoveryNotice}</p>}
         </div>}
 
         <div className="maintenance-booking">
@@ -355,8 +692,17 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
               <span>Only when nobody is playing</span>
             </label>
             <Button
-              disabled={schedule.isPending || !runAt}
-              onClick={() => schedule.mutate({ planId: plan.plan_id, changeId: plan.change.id })}
+              disabled={targetMutationPending || upgradeCandidatesLoading || !runAt || (plan.change.id === "server_upgrade" && !reviewedUpgradeTargetMatches)}
+              onClick={() => schedule.mutate({
+                planId: plan.plan_id,
+                changeId: plan.change.id,
+                ...(plan.change.id === "server_upgrade" && selectedCandidate ? {
+                  minecraftVersion: plan.upgrade_target ?? selectedCandidate.minecraft_version,
+                  targetKey: selectedTargetKey,
+                  ...(plan.upgrade_paper_build != null ? { paperBuild: plan.upgrade_paper_build } : {}),
+                  ...(plan.upgrade_loader_version != null ? { loaderVersion: plan.upgrade_loader_version } : {}),
+                } : {}),
+              })}
             >
               {schedule.isPending ? "Booking…" : "Schedule this plan"}
             </Button>
@@ -369,5 +715,18 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
 
       <p className="muted-note">Reviewed {new Date(plan.reviewed_at).toLocaleString()} · plan {plan.plan_id}. This review reflects the evidence at that moment; run it again if the server has been used since.</p>
     </>}
+
+    {appliedUpgrade && <div className="maintenance-recovery" role="status">
+      <p>{appliedUpgrade.detail}</p>
+      <Button
+        className="button--secondary"
+        disabled={rollbackUpgrade.isPending}
+        onClick={() => rollbackUpgrade.mutate(appliedUpgrade.recovery_id)}
+      >
+        {rollbackUpgrade.isPending ? "Restoring launch file…" : "Restore previous launch file"}
+      </Button>
+    </div>}
+    {rollbackUpgrade.error && <p className="error" role="alert">{rollbackUpgrade.error.message}</p>}
+    {recoveryNotice && <p className="success" role="status">{recoveryNotice}</p>}
   </section>;
 }

@@ -99,11 +99,14 @@ Blockstead manages the process around them.
   the plan looks right you can book a maintenance window straight from it —
   Blockstead re-checks the evidence at booking time and refuses a plan that has
   gone stale rather than scheduling it quietly
-- applies a reviewed Vanilla, Paper, or Fabric upgrade only while the server is
-  stopped and a fresh verified backup exists; the official replacement is
-  staged and launch-checked, the previous launch file is retained for explicit
-  recovery, and Blockstead never pretends that restoring a jar also rolls back
-  or repairs the world
+- lets an owner choose a published newer Minecraft version for a Vanilla,
+  Paper, or Fabric server, a newer stable Paper build, or a newer stable Fabric
+  loader when the recorded loader permits comparison. It reviews the exact
+  target before applying it while the server is stopped and a fresh verified
+  backup exists; the official replacement is staged and launch-checked, the
+  previous launch file is retained for explicit recovery, and restoring a jar
+  does not roll back or repair the world. See [Minecraft server updates](docs/minecraft-server-updates.md)
+  for the full workflow and supported distributions
 - creates private, verified manual and scheduled world backups, keeps a clear
   per-server history, lets you save a portable copy when you need one, and can
   mirror successful archives to approved folders on another drive

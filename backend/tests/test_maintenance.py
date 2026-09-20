@@ -291,6 +291,33 @@ def test_the_upgrade_target_is_part_of_the_reviewed_evidence() -> None:
     assert first.plan_id != later.plan_id
 
 
+def test_fabric_loader_and_active_launcher_are_part_of_the_reviewed_evidence() -> None:
+    base = dict(
+        upgrade_source_available=True,
+        upgrade_installable=True,
+        upgrade_up_to_date=False,
+        upgrade_target="1.21.5",
+        upgrade_loader_version="0.17.0",
+        upgrade_loader_artifact="https://example.test/fabric/one.jar\x1ffabric-one.jar",
+        upgrade_current_loader_sha256="a" * 64,
+        upgrade_current_loader_version="0.16.5",
+    )
+    first = plan_for("server_upgrade", **base)
+    assert plan_for("server_upgrade", **base).plan_id == first.plan_id
+    assert plan_for(
+        "server_upgrade", **{**base, "upgrade_loader_version": "0.17.1"}
+    ).plan_id != first.plan_id
+    assert plan_for(
+        "server_upgrade", **{**base, "upgrade_loader_artifact": "https://example.test/two.jar"}
+    ).plan_id != first.plan_id
+    assert plan_for(
+        "server_upgrade", **{**base, "upgrade_current_loader_sha256": "b" * 64}
+    ).plan_id != first.plan_id
+    assert plan_for(
+        "server_upgrade", **{**base, "upgrade_current_loader_version": "0.16.6"}
+    ).plan_id != first.plan_id
+
+
 def test_only_the_upgrade_review_carries_an_upgrade_target_finding() -> None:
     assert {item.id for item in plan_for("world_files").findings} == {
         "server-state",

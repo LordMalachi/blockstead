@@ -68,6 +68,11 @@ def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=MOD_BYTES)
     if url == LAUNCHER_URL:
         return httpx.Response(200, content=LAUNCHER_BYTES)
+    if url == "https://meta.fabricmc.net/v2/versions/loader/1.21.1":
+        return httpx.Response(
+            200,
+            json=[{"loader": {"version": "0.16.5", "stable": True}}],
+        )
     if url == "https://meta.fabricmc.net/v2/versions/installer":
         return httpx.Response(200, json=[{"version": "1.0.1", "stable": True}])
     return httpx.Response(404)

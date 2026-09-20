@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 CATALOG_VERSION = "2026.07.1"
 
@@ -48,6 +48,34 @@ COLLISION_MINUTES = 60
 
 class MaintenanceRequest(BaseModel):
     change_id: ChangeId
+    # A target is optional for backwards compatibility: old clients continue
+    # to review the newest published release. When present it is meaningful
+    # only for a server upgrade and is checked against the fresh release list
+    # before a plan is built.
+    minecraft_version: str | None = Field(
+        default=None, max_length=32, pattern=r"^[0-9][0-9A-Za-z._-]*$"
+    )
+    # Paper build IDs are meaningful only alongside a server upgrade target.
+    # The API checks the profile distribution before accepting one, because a
+    # request model does not know which profile it will be applied to yet.
+    paper_build: int | None = Field(default=None, gt=0)
+    # Fabric loader targets are meaningful only alongside a server upgrade.
+    loader_version: str | None = Field(
+        default=None, max_length=64, pattern=r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$"
+    )
+
+    @model_validator(mode="after")
+    def target_only_for_server_upgrade(self) -> "MaintenanceRequest":
+        if (
+            (
+                self.minecraft_version is not None
+                or self.paper_build is not None
+                or self.loader_version is not None
+            )
+            and self.change_id != "server_upgrade"
+        ):
+            raise ValueError("upgrade targets are only valid for server_upgrade")
+        return self
 
 
 class MaintenanceScheduleRequest(BaseModel):
@@ -58,9 +86,29 @@ class MaintenanceScheduleRequest(BaseModel):
     """
 
     change_id: ChangeId
+    minecraft_version: str | None = Field(
+        default=None, max_length=32, pattern=r"^[0-9][0-9A-Za-z._-]*$"
+    )
+    paper_build: int | None = Field(default=None, gt=0)
+    loader_version: str | None = Field(
+        default=None, max_length=64, pattern=r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$"
+    )
     plan_id: str = Field(pattern=r"^[0-9a-f]{16}$")
     run_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T([01][0-9]|2[0-3]):[0-5][0-9]$")
     only_when_empty: bool = False
+
+    @model_validator(mode="after")
+    def target_only_for_server_upgrade(self) -> "MaintenanceScheduleRequest":
+        if (
+            (
+                self.minecraft_version is not None
+                or self.paper_build is not None
+                or self.loader_version is not None
+            )
+            and self.change_id != "server_upgrade"
+        ):
+            raise ValueError("upgrade targets are only valid for server_upgrade")
+        return self
 
     @field_validator("run_at")
     @classmethod
@@ -116,6 +164,22 @@ class MaintenancePlan(BaseModel):
     plan_id: str
     profile_id: str
     change: ChangeDefinition
+    # The exact published release this review selected. Legacy requests that
+    # omit a target still expose the newest selected release here.
+    upgrade_target: str | None = None
+    # Paper upgrades are pinned to one stable build and its published digest.
+    upgrade_paper_build: int | None = None
+    upgrade_paper_sha256: str | None = None
+    # The exact stable Fabric loader selected during this preflight.
+    upgrade_loader_version: str | None = None
+    # URL and file name selected by the Fabric resolver. This is retained so
+    # apply can detect an installer artifact changing between reviews.
+    upgrade_loader_artifact: str | None = None
+    # Review-time local evidence used only by the guarded apply path. These
+    # fields are deliberately excluded from API serialization: they are
+    # internal stale-plan guards, not published release metadata.
+    upgrade_current_paper_sha256: str | None = Field(default=None, exclude=True)
+    upgrade_current_loader_sha256: str | None = Field(default=None, exclude=True)
     readiness: Readiness
     headline: str
     detail: str
@@ -180,6 +244,20 @@ class MaintenanceContext:
     #: None whenever the ordering could not be established; never defaulted to True.
     upgrade_up_to_date: bool | None = None
     upgrade_target: str | None = None
+    upgrade_paper_build: int | None = None
+    upgrade_paper_sha256: str | None = None
+    upgrade_loader_version: str | None = None
+    upgrade_current_paper_build: int | None = None
+    upgrade_current_paper_sha256: str | None = None
+    # SHA-256 of the active Fabric launcher at review time. Fabric does not
+    # publish a digest, so this is a local stale-plan guard only.
+    upgrade_current_loader_sha256: str | None = None
+    # The recorded profile value is included in the fingerprint as metadata;
+    # it is never inferred from the active jar.
+    upgrade_current_loader_version: str | None = None
+    # URL and file name selected by the Fabric resolver, retained in the plan
+    # fingerprint even though Fabric has no publisher checksum.
+    upgrade_loader_artifact: str | None = None
     upgrade_installable: bool = False
     #: Whether this distribution has an in-place upgrade path at all. Separate
     #: from `upgrade_installable`, because "wrong server type" and "missing Java
@@ -614,6 +692,16 @@ def _upgrade_target_finding(context: MaintenanceContext) -> MaintenanceFinding:
     """What the upgrade source actually said, for the server_upgrade review only."""
 
     label = "Upgrade target"
+    paper_retry = (
+        "Retry the review when Paper's official build source is available."
+        if context.distribution == "paper"
+        else None
+    )
+    fabric_retry = (
+        "Retry the review when Fabric's stable loader source and active launcher are available."
+        if context.distribution == "fabric"
+        else None
+    )
     if not context.upgrade_source_available:
         return _finding(
             "upgrade-target",
@@ -625,7 +713,8 @@ def _upgrade_target_finding(context: MaintenanceContext) -> MaintenanceFinding:
                 f"{context.distribution_label}, so it cannot tell you whether a newer "
                 "version is safe to install here."
             ),
-            "Upgrade this server with its own installer, then re-import the folder.",
+            paper_retry
+            or "Upgrade this server with its own installer, then re-import the folder.",
         )
     if not context.upgrade_installable:
         return _finding(
@@ -639,9 +728,27 @@ def _upgrade_target_finding(context: MaintenanceContext) -> MaintenanceFinding:
             ),
             # This server type simply has no in-place path, versus it has one but
             # the newest release needs a runtime this computer does not have.
-            "Install the Java runtime that release needs, then review this change again."
-            if context.upgrade_distribution_supported
-            else "Upgrade this server with its own installer, then re-import the folder.",
+            (
+                paper_retry
+                if paper_retry and "build metadata" in context.upgrade_detail.lower()
+                else (
+                    fabric_retry
+                    if fabric_retry
+                    and "java" not in context.upgrade_detail.lower()
+                    and (
+                        context.upgrade_target is None
+                        or "loader" in context.upgrade_detail.lower()
+                        or "launcher" in context.upgrade_detail.lower()
+                    )
+                    else (
+                        "Install the Java runtime that release needs, then review this "
+                        "change again."
+                        if context.upgrade_distribution_supported
+                        else "Upgrade this server with its own installer, then re-import "
+                        "the folder."
+                    )
+                )
+            ),
         )
     if context.upgrade_up_to_date is None:
         return _finding(
@@ -873,6 +980,14 @@ def _fingerprint(
         # A plan reviewed against one upgrade target must not be reused once a
         # different release becomes the newest one.
         context.upgrade_target or "",
+        str(context.upgrade_paper_build or ""),
+        context.upgrade_paper_sha256 or "",
+        context.upgrade_loader_version or "",
+        context.upgrade_loader_artifact or "",
+        str(context.upgrade_current_paper_build or ""),
+        context.upgrade_current_paper_sha256 or "",
+        context.upgrade_current_loader_sha256 or "",
+        context.upgrade_current_loader_version or "",
         context.occupied_by or "",
         *context.extension_signature,
         *(f"{finding.id}={finding.status}" for finding in findings),
@@ -922,6 +1037,25 @@ def assess(context: MaintenanceContext, request: MaintenanceRequest) -> Maintena
         plan_id=_fingerprint(context, change, findings, steps),
         profile_id=context.profile_id,
         change=change,
+        upgrade_target=(context.upgrade_target if change.id == "server_upgrade" else None),
+        upgrade_paper_build=(
+            context.upgrade_paper_build if change.id == "server_upgrade" else None
+        ),
+        upgrade_paper_sha256=(
+            context.upgrade_paper_sha256 if change.id == "server_upgrade" else None
+        ),
+        upgrade_loader_version=(
+            context.upgrade_loader_version if change.id == "server_upgrade" else None
+        ),
+        upgrade_loader_artifact=(
+            context.upgrade_loader_artifact if change.id == "server_upgrade" else None
+        ),
+        upgrade_current_paper_sha256=(
+            context.upgrade_current_paper_sha256 if change.id == "server_upgrade" else None
+        ),
+        upgrade_current_loader_sha256=(
+            context.upgrade_current_loader_sha256 if change.id == "server_upgrade" else None
+        ),
         readiness=readiness,
         headline=headline,
         detail=detail,

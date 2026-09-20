@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+from blockstead.paper_builds import PaperBuild
 from blockstead.server_upgrades import (
     UpgradeContext,
     classify_step,
@@ -132,3 +133,141 @@ def test_the_practice_server_is_never_offered_an_upgrade() -> None:
     assert result.installable_here is False
     assert result.up_to_date is None
     assert "practice server" in result.source_detail
+
+
+def _paper_build(build_id: int, channel: str = "STABLE") -> PaperBuild:
+    return PaperBuild(
+        id=build_id,
+        channel=channel,
+        url=f"https://example.test/paper-{build_id}.jar",
+        file_name=f"paper-{build_id}.jar",
+        sha256=f"{build_id:064x}"[-64:],
+    )
+
+
+def test_paper_lists_a_newer_stable_build_on_the_same_minecraft_version() -> None:
+    result = review(
+        context(
+            distribution="paper",
+            paper_builds=(_paper_build(10), _paper_build(11)),
+            current_paper_build=10,
+            current_paper_channel="STABLE",
+        )
+    )
+    assert result.up_to_date is False
+    same_version = [
+        candidate
+        for candidate in result.candidates
+        if candidate.minecraft_version == "1.21.4"
+    ]
+    assert len(same_version) == 1
+    assert same_version[0].paper_build == 11
+    assert "same-version Paper build update" in same_version[0].detail
+
+
+def test_paper_unknown_active_jar_is_not_called_current() -> None:
+    result = review(
+        context(
+            distribution="paper",
+            published=("1.21.4",),
+            paper_builds=(_paper_build(10),),
+            current_paper_build=None,
+        )
+    )
+    assert result.up_to_date is None
+    assert result.candidates == []
+    assert "did not match" in result.paper_build_detail
+
+
+def test_paper_experimental_active_jar_does_not_offer_a_stable_downgrade() -> None:
+    result = review(
+        context(
+            distribution="paper",
+            published=("1.21.4",),
+            paper_builds=(_paper_build(10), _paper_build(20, "EXPERIMENTAL")),
+            current_paper_build=20,
+            current_paper_channel="EXPERIMENTAL",
+        )
+    )
+    assert result.up_to_date is None
+    assert result.candidates == []
+    assert "EXPERIMENTAL" in result.paper_build_detail
+
+
+def test_paper_without_a_stable_catalog_cannot_be_called_current() -> None:
+    result = review(
+        context(
+            distribution="paper",
+            published=("1.21.4",),
+            paper_builds=(_paper_build(10, "EXPERIMENTAL"),),
+            current_paper_build=10,
+            current_paper_channel="STABLE",
+        )
+    )
+    assert result.up_to_date is None
+    assert "EXPERIMENTAL" in result.paper_build_detail
+
+
+def test_fabric_offers_a_same_minecraft_stable_loader_update() -> None:
+    result = review(
+        context(
+            distribution="fabric",
+            published=("1.21.4",),
+            current_loader_version="0.16.5",
+            fabric_stable_loaders=("0.16.5", "0.16.6"),
+        )
+    )
+    assert result.up_to_date is False
+    candidate = result.candidates[0]
+    assert candidate.minecraft_version == "1.21.4"
+    assert candidate.loader_version == "0.16.6"
+    assert "active jar's loader identity is not verified" in candidate.detail
+
+
+def test_fabric_cross_minecraft_candidates_wait_for_preflight_loader_pinning() -> None:
+    result = review(
+        context(
+            distribution="fabric",
+            current_loader_version="0.16.5",
+            fabric_stable_loaders=("0.16.5",),
+        )
+    )
+    cross_version = next(
+        candidate for candidate in result.candidates if candidate.minecraft_version == "1.21.6"
+    )
+    assert cross_version.loader_version is None
+    assert "confirmed during preflight" in cross_version.detail
+
+
+def test_fabric_without_recorded_loader_is_not_called_current() -> None:
+    result = review(
+        context(
+            distribution="fabric",
+            published=("1.21.4",),
+            current_loader_version=None,
+            fabric_stable_loaders=("0.16.5",),
+        )
+    )
+    assert result.up_to_date is None
+    assert result.candidates == []
+    assert result.current_loader_version is None
+    assert "does not record" in result.loader_version_detail
+
+
+def test_fabric_loader_source_outage_stays_unknown() -> None:
+    result = review(
+        context(
+            distribution="fabric",
+            published=("1.21.4",),
+            current_loader_version="0.16.5",
+            fabric_stable_loaders=None,
+            fabric_loader_detail="Fabric's loader source was unavailable.",
+        )
+    )
+    assert result.up_to_date is None
+    assert result.candidates == []
+    assert any(
+        "could not read Fabric's stable loader list" in warning
+        for warning in result.warnings
+    )
+    assert "source was unavailable" in result.loader_version_detail

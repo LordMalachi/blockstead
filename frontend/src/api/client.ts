@@ -237,6 +237,8 @@ export interface MaintenanceProtection {
 }
 export interface UpgradeCandidate {
   minecraft_version: string;
+  paper_build?: number | null;
+  loader_version?: string | null;
   step: "patch" | "minor" | "major" | "unknown";
   required_java_major: number | null;
   java_available: boolean | null;
@@ -252,6 +254,11 @@ export interface UpgradeReview {
   /** null whenever Blockstead could not establish the ordering itself. */
   up_to_date: boolean | null;
   latest_version: string | null;
+  current_paper_build?: number | null;
+  paper_build_detail?: string | null;
+  /** Recorded profile value; the active Fabric jar is not verified from this field. */
+  current_loader_version?: string | null;
+  loader_version_detail?: string | null;
   candidates: UpgradeCandidate[];
   installable_here: boolean;
   install_detail: string;
@@ -281,6 +288,12 @@ export interface MaintenancePlan {
   restart: "required" | "recommended" | "not_needed" | "unknown";
   restart_detail: string;
   blockers: string[];
+  /** The exact published Minecraft release this upgrade review considered. */
+  upgrade_target?: string | null;
+  /** The exact Paper build pinned by this upgrade review, when applicable. */
+  upgrade_paper_build?: number | null;
+  /** The exact Fabric loader version pinned by this upgrade review, when applicable. */
+  upgrade_loader_version?: string | null;
   reviewed_at: string;
 }
 export interface LoaderMigrationExtension {

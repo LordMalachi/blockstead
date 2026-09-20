@@ -143,6 +143,121 @@ const upgradeReview: UpgradeReview = {
   warnings: ["2 published entries could not be ordered and were left out of this comparison."],
 };
 
+const selectableUpgradeReview: UpgradeReview = {
+  ...upgradeReview,
+  candidates: [
+    ...upgradeReview.candidates,
+    {
+      minecraft_version: "1.21.3",
+      step: "patch",
+      required_java_major: 21,
+      java_available: true,
+      installable: true,
+      detail: "A published older target that Blockstead can download and verify.",
+    },
+  ],
+};
+
+const paperUpgradeReview: UpgradeReview = {
+  distribution: "paper",
+  distribution_label: "Paper",
+  current_version: "1.21.4",
+  current_paper_build: 101,
+  paper_build_detail: "The active launch file reports Paper build 101.",
+  source: "available",
+  source_detail: "Published stable Paper releases were read.",
+  up_to_date: false,
+  latest_version: "1.21.5",
+  candidates: [
+    {
+      minecraft_version: "1.21.5",
+      paper_build: null,
+      step: "minor",
+      required_java_major: 21,
+      java_available: true,
+      installable: true,
+      detail: "A newer Minecraft release with a stable Paper build selected during review.",
+    },
+    {
+      minecraft_version: "1.21.4",
+      paper_build: 102,
+      step: "patch",
+      required_java_major: 21,
+      java_available: true,
+      installable: true,
+      detail: "A newer Paper build for the installed Minecraft release.",
+    },
+  ],
+  installable_here: true,
+  install_detail: "Paper keeps the previous launch file so the change can be undone.",
+  warnings: [],
+};
+
+const unknownPaperBuildReview: UpgradeReview = {
+  ...paperUpgradeReview,
+  current_paper_build: null,
+  paper_build_detail: "The active launch file does not record a Paper build.",
+  up_to_date: true,
+  latest_version: "1.21.4",
+  candidates: [],
+};
+
+const currentPaperReview: UpgradeReview = {
+  ...unknownPaperBuildReview,
+  current_paper_build: 103,
+  paper_build_detail: "The active launch file reports Paper build 103.",
+};
+
+const fabricUpgradeReview: UpgradeReview = {
+  distribution: "fabric",
+  distribution_label: "Fabric",
+  current_version: "1.21.4",
+  current_loader_version: "0.16.5",
+  loader_version_detail: "Recorded profile loader version; the active jar was not verified.",
+  source: "available",
+  source_detail: "Published stable Fabric releases were read.",
+  up_to_date: false,
+  latest_version: "1.21.5",
+  candidates: [
+    {
+      minecraft_version: "1.21.5",
+      loader_version: null,
+      step: "minor",
+      required_java_major: 21,
+      java_available: true,
+      installable: true,
+      detail: "A newer Minecraft release with a stable Fabric loader selected during review.",
+    },
+    {
+      minecraft_version: "1.21.4",
+      loader_version: "0.16.6",
+      step: "patch",
+      required_java_major: 21,
+      java_available: true,
+      installable: true,
+      detail: "A newer stable Fabric loader for the installed Minecraft release.",
+    },
+  ],
+  installable_here: true,
+  install_detail: "Fabric keeps the previous launch file so the change can be undone.",
+  warnings: [],
+};
+
+const unknownFabricLoaderReview: UpgradeReview = {
+  ...fabricUpgradeReview,
+  current_loader_version: null,
+  loader_version_detail: "The active profile does not record a Fabric loader version.",
+  up_to_date: true,
+  latest_version: "1.21.4",
+  candidates: [],
+};
+
+const currentFabricReview: UpgradeReview = {
+  ...unknownFabricLoaderReview,
+  current_loader_version: "0.16.7",
+  loader_version_detail: "Recorded profile loader version; the active jar was not verified.",
+};
+
 const currentReview: UpgradeReview = {
   ...upgradeReview,
   up_to_date: true,
@@ -202,6 +317,13 @@ function renderPanel({
 async function reviewWorldFiles() {
   fireEvent.click(await screen.findByRole("radio", { name: /Edit or replace world files/ }));
   fireEvent.click(screen.getByRole("button", { name: "Run the preflight" }));
+}
+
+async function reviewServerUpgrade() {
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+  const preflight = await screen.findByRole("button", { name: "Run the preflight" });
+  await waitFor(() => expect(preflight).toBeEnabled());
+  fireEvent.click(preflight);
 }
 
 test("lists the reviewable changes and states which need a stopped server", async () => {
@@ -280,8 +402,7 @@ test("an unverified protection point is never described as a way back", async ()
 
 test("a blocked change shows the blocker instead of a plan to follow", async () => {
   renderPanel({ plan: blockedPlan });
-  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Run the preflight" }));
+  await reviewServerUpgrade();
 
   expect(await screen.findByText("Resolve this first")).toBeVisible();
   expect(screen.queryByRole("list", { name: "Reviewed plan" })).toBeNull();
@@ -332,6 +453,7 @@ test("applies a reviewed upgrade only with fresh verified protection and offers 
     ...readyPlan,
     plan_id: "1234567890abcdef",
     change: catalog.changes[1],
+    upgrade_target: "1.21.6",
     readiness: "ready",
     protection: {
       verified: true,
@@ -342,8 +464,7 @@ test("applies a reviewed upgrade only with fresh verified protection and offers 
     },
   };
   renderPanel({ plan: upgradePlan });
-  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Run the preflight" }));
+  await reviewServerUpgrade();
 
   fireEvent.click(await screen.findByRole("button", { name: "Upgrade to 1.21.6" }));
   await waitFor(() => expect(fetch).toHaveBeenCalledWith(
@@ -355,6 +476,269 @@ test("applies a reviewed upgrade only with fresh verified protection and offers 
   ));
   expect(await screen.findByText(/previous launch file is preserved/)).toBeVisible();
   expect(screen.getByRole("button", { name: "Restore previous launch file" })).toBeVisible();
+});
+
+test("preflight uses the selected published target, including an older candidate", async () => {
+  const upgradePlan: MaintenancePlan = {
+    ...readyPlan,
+    plan_id: "1234567890abcdef",
+    change: catalog.changes[1],
+    upgrade_target: "1.21.3",
+    readiness: "ready",
+  };
+  renderPanel({ plan: upgradePlan, review: selectableUpgradeReview });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+  const older = await screen.findByRole("radio", { name: /Minecraft 1\.21\.3/ });
+  fireEvent.click(older);
+  const preflight = await screen.findByRole("button", { name: "Run the preflight" });
+  await waitFor(() => expect(preflight).toBeEnabled());
+  fireEvent.click(preflight);
+
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/preflight",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ change_id: "server_upgrade", minecraft_version: "1.21.3" }),
+    }),
+  ));
+});
+
+test("apply sends the selected older target with its matching reviewed plan", async () => {
+  const upgradePlan: MaintenancePlan = {
+    ...readyPlan,
+    plan_id: "1234567890abcdef",
+    change: catalog.changes[1],
+    upgrade_target: "1.21.3",
+    readiness: "ready",
+    protection: {
+      verified: true,
+      detail: "Fresh verified backup.",
+      backup_id: "backup-1",
+      created_at: "2026-07-26T12:00:00Z",
+      age_hours: 1,
+    },
+  };
+  renderPanel({ plan: upgradePlan, review: selectableUpgradeReview });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+  fireEvent.click(await screen.findByRole("radio", { name: /Minecraft 1\.21\.3/ }));
+  const preflight = await screen.findByRole("button", { name: "Run the preflight" });
+  await waitFor(() => expect(preflight).toBeEnabled());
+  fireEvent.click(preflight);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Upgrade to 1.21.3" }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/upgrades/apply",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ minecraft_version: "1.21.3", plan_id: "1234567890abcdef" }),
+    }),
+  ));
+});
+
+test("selects a same-version Paper build and preserves the exact build through preflight and apply", async () => {
+  const paperPlan: MaintenancePlan = {
+    ...readyPlan,
+    plan_id: "paperplan12345678",
+    change: catalog.changes[1],
+    upgrade_target: "1.21.4",
+    upgrade_paper_build: 102,
+    readiness: "ready",
+    protection: {
+      verified: true,
+      detail: "Fresh verified backup.",
+      backup_id: "backup-paper",
+      created_at: "2026-07-26T12:00:00Z",
+      age_hours: 1,
+    },
+  };
+  renderPanel({ plan: paperPlan, review: paperUpgradeReview });
+  await screen.findByText("Installed Paper build: Paper build 101");
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+  expect(await screen.findByText(/Paper build update/)).toBeVisible();
+  expect(screen.getByText(/Eligible for preflight/)).toBeVisible();
+  const sameVersionBuild = await screen.findByRole("radio", { name: /Minecraft 1\.21\.4, Paper build 102/ });
+  fireEvent.click(sameVersionBuild);
+  expect(screen.getByText("Blockstead can install · selected target")).toBeVisible();
+
+  const preflight = await screen.findByRole("button", { name: "Run the preflight" });
+  await waitFor(() => expect(preflight).toBeEnabled());
+  fireEvent.click(preflight);
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/preflight",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ change_id: "server_upgrade", minecraft_version: "1.21.4", paper_build: 102 }),
+    }),
+  ));
+
+  fireEvent.click(await screen.findByRole("button", { name: /Upgrade to 1\.21\.4.*Paper build 102/ }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/upgrades/apply",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ minecraft_version: "1.21.4", plan_id: "paperplan12345678", paper_build: 102 }),
+    }),
+  ));
+});
+
+test("shows unknown Paper build evidence without claiming the newest build", async () => {
+  renderPanel({ review: unknownPaperBuildReview });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+
+  expect(await screen.findByText(/Installed Paper build: Unknown/)).toBeVisible();
+  expect(screen.getByText(/does not record a Paper build/)).toBeVisible();
+  expect(screen.getByText(/cannot confirm it is on the newest stable Paper build/)).toBeVisible();
+  expect(screen.queryByText(/newest published Paper release/)).toBeNull();
+});
+
+test("a known Paper build is included in the up-to-date success evidence", async () => {
+  renderPanel({ review: currentPaperReview });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+
+  expect(await screen.findByText(/Minecraft 1\.21\.4, stable Paper build 103, the newest published Paper release/)).toBeVisible();
+});
+
+test("selects a same-version Fabric loader and preserves the exact loader through preflight and apply", async () => {
+  const fabricPlan: MaintenancePlan = {
+    ...readyPlan,
+    plan_id: "fabricplan123456",
+    change: catalog.changes[1],
+    upgrade_target: "1.21.4",
+    upgrade_loader_version: "0.16.6",
+    readiness: "ready",
+    protection: {
+      verified: true,
+      detail: "Fresh verified backup.",
+      backup_id: "backup-fabric",
+      created_at: "2026-07-26T12:00:00Z",
+      age_hours: 1,
+    },
+  };
+  renderPanel({ plan: fabricPlan, review: fabricUpgradeReview });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+
+  expect(await screen.findByText(/Recorded Fabric loader: 0\.16\.5/)).toBeVisible();
+  expect(screen.getByText(/Fabric loader update/)).toBeVisible();
+  expect(screen.getByText(/Eligible for preflight/)).toBeVisible();
+  const sameVersionLoader = await screen.findByRole("radio", { name: /Minecraft 1\.21\.4, Fabric loader 0\.16\.6/ });
+  fireEvent.click(sameVersionLoader);
+  expect(screen.getByText("Blockstead can install · selected target")).toBeVisible();
+
+  const preflight = await screen.findByRole("button", { name: "Run the preflight" });
+  await waitFor(() => expect(preflight).toBeEnabled());
+  fireEvent.click(preflight);
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/preflight",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ change_id: "server_upgrade", minecraft_version: "1.21.4", loader_version: "0.16.6" }),
+    }),
+  ));
+
+  expect(await screen.findByText(/Target: 1\.21\.4 · Fabric loader 0\.16\.6/)).toBeVisible();
+  fireEvent.click(await screen.findByRole("button", { name: /Upgrade to 1\.21\.4.*Fabric loader 0\.16\.6/ }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/upgrades/apply",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ minecraft_version: "1.21.4", plan_id: "fabricplan123456", loader_version: "0.16.6" }),
+    }),
+  ));
+});
+
+test("marks a cross-version Fabric target eligible until preflight pins its loader", async () => {
+  const fabricPlan: MaintenancePlan = {
+    ...readyPlan,
+    plan_id: "fabriccrossplan",
+    change: catalog.changes[1],
+    upgrade_target: "1.21.5",
+    upgrade_loader_version: "0.17.0",
+    readiness: "ready",
+    protection: {
+      verified: true,
+      detail: "Fresh verified backup.",
+      backup_id: "backup-fabric-cross",
+      created_at: "2026-07-26T12:00:00Z",
+      age_hours: 1,
+    },
+  };
+  renderPanel({ plan: fabricPlan, review: fabricUpgradeReview });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+
+  expect(screen.getByText(/Eligible for preflight · selected target/)).toBeVisible();
+  const preflight = await screen.findByRole("button", { name: "Run the preflight" });
+  await waitFor(() => expect(preflight).toBeEnabled());
+  fireEvent.click(preflight);
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/preflight",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ change_id: "server_upgrade", minecraft_version: "1.21.5" }),
+    }),
+  ));
+
+  expect(await screen.findByText(/Target: 1\.21\.5 · Fabric loader 0\.17\.0/)).toBeVisible();
+  expect(screen.getByText("Blockstead can install · selected target")).toBeVisible();
+});
+
+test("shows unknown Fabric loader evidence without claiming the newest loader", async () => {
+  renderPanel({ review: unknownFabricLoaderReview });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+
+  expect(await screen.findByText(/Recorded Fabric loader: Unknown/)).toBeVisible();
+  expect(screen.getByText(/does not record a Fabric loader version/)).toBeVisible();
+  expect(screen.getByText(/cannot confirm it is on the newest stable Fabric loader/)).toBeVisible();
+  expect(screen.queryByText(/newest published Fabric release/)).toBeNull();
+});
+
+test("a known Fabric loader is included in the up-to-date success evidence", async () => {
+  renderPanel({ review: currentFabricReview });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+
+  expect(await screen.findByText(/This profile records Minecraft 1\.21\.4 with Fabric loader 0\.16\.7\. The active Fabric jar was not verified\./)).toBeVisible();
+  expect(screen.queryByText(/This server is on Minecraft 1\.21\.4, Fabric loader 0\.16\.7/)).toBeNull();
+});
+
+test("changing the upgrade target clears the reviewed plan", async () => {
+  const upgradePlan: MaintenancePlan = {
+    ...readyPlan,
+    plan_id: "1234567890abcdef",
+    change: catalog.changes[1],
+    upgrade_target: "1.21.6",
+    readiness: "ready",
+  };
+  renderPanel({ plan: upgradePlan, review: selectableUpgradeReview });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+  const preflight = await screen.findByRole("button", { name: "Run the preflight" });
+  await waitFor(() => expect(preflight).toBeEnabled());
+  fireEvent.click(preflight);
+  expect(await screen.findByText("Apply the reviewed upgrade")).toBeVisible();
+
+  fireEvent.click(screen.getByRole("radio", { name: /Minecraft 1\.21\.3/ }));
+
+  await waitFor(() => expect(screen.queryByText("Apply the reviewed upgrade")).toBeNull());
+  expect(screen.queryByText("plan 1234567890abcdef")).toBeNull();
+});
+
+test("a release list with no installable candidates still allows a blocked diagnostic preflight", async () => {
+  const unavailableReview: UpgradeReview = {
+    ...upgradeReview,
+    candidates: upgradeReview.candidates.map(candidate => ({ ...candidate, installable: false })),
+  };
+  renderPanel({ review: unavailableReview, plan: blockedPlan });
+  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
+  const preflightButton = await screen.findByRole("button", { name: "Run the preflight" });
+  await waitFor(() => expect(preflightButton).toBeEnabled());
+  fireEvent.click(preflightButton);
+
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/preflight",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ change_id: "server_upgrade" }),
+    }),
+  ));
+  expect(await screen.findByText("Resolve this first")).toBeVisible();
 });
 
 test("a reviewed plan can be booked as a maintenance window", async () => {
@@ -373,6 +757,115 @@ test("a reviewed plan can be booked as a maintenance window", async () => {
   const sent = JSON.parse(typeof body === "string" ? body : "{}") as Record<string, unknown>;
   expect(sent).toMatchObject({ change_id: "world_files", plan_id: "abc123def456", only_when_empty: true });
   expect(await screen.findByText(booking.detail)).toBeVisible();
+});
+
+test("a reviewed server upgrade includes the selected target when scheduled", async () => {
+  const upgradePlan: MaintenancePlan = {
+    ...readyPlan,
+    plan_id: "1234567890abcdef",
+    change: catalog.changes[1],
+    upgrade_target: "1.21.6",
+    readiness: "ready",
+    protection: {
+      verified: true,
+      detail: "Fresh verified backup.",
+      backup_id: "backup-1",
+      created_at: "2026-07-26T12:00:00Z",
+      age_hours: 1,
+    },
+  };
+  renderPanel({ plan: upgradePlan });
+  await reviewServerUpgrade();
+  fireEvent.click(await screen.findByRole("button", { name: "Schedule this plan" }));
+
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/schedule",
+    expect.objectContaining({ method: "POST" }),
+  ));
+  const call = vi.mocked(fetch).mock.calls.find(
+    ([url]) => typeof url === "string" && url.includes("/schedule"),
+  );
+  const body = call?.[1]?.body;
+  const sent = JSON.parse(typeof body === "string" ? body : "{}") as Record<string, unknown>;
+  expect(sent).toMatchObject({
+    change_id: "server_upgrade",
+    minecraft_version: "1.21.6",
+    plan_id: "1234567890abcdef",
+  });
+});
+
+test("a scheduled Paper upgrade carries the build pinned by the reviewed plan", async () => {
+  const paperPlan: MaintenancePlan = {
+    ...readyPlan,
+    plan_id: "paperplan12345678",
+    change: catalog.changes[1],
+    upgrade_target: "1.21.5",
+    upgrade_paper_build: 205,
+    readiness: "ready",
+    protection: {
+      verified: true,
+      detail: "Fresh verified backup.",
+      backup_id: "backup-paper",
+      created_at: "2026-07-26T12:00:00Z",
+      age_hours: 1,
+    },
+  };
+  renderPanel({ plan: paperPlan, review: paperUpgradeReview });
+  await reviewServerUpgrade();
+  fireEvent.click(await screen.findByRole("button", { name: "Schedule this plan" }));
+
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/schedule",
+    expect.objectContaining({ method: "POST" }),
+  ));
+  const call = vi.mocked(fetch).mock.calls.find(
+    ([url]) => typeof url === "string" && url.includes("/schedule"),
+  );
+  const body = call?.[1]?.body;
+  const sent = JSON.parse(typeof body === "string" ? body : "{}") as Record<string, unknown>;
+  expect(sent).toMatchObject({
+    change_id: "server_upgrade",
+    minecraft_version: "1.21.5",
+    paper_build: 205,
+    plan_id: "paperplan12345678",
+  });
+});
+
+test("a scheduled Fabric upgrade carries the loader pinned by the reviewed plan", async () => {
+  const fabricPlan: MaintenancePlan = {
+    ...readyPlan,
+    plan_id: "fabricplan123456",
+    change: catalog.changes[1],
+    upgrade_target: "1.21.5",
+    upgrade_loader_version: "0.17.0",
+    readiness: "ready",
+    protection: {
+      verified: true,
+      detail: "Fresh verified backup.",
+      backup_id: "backup-fabric",
+      created_at: "2026-07-26T12:00:00Z",
+      age_hours: 1,
+    },
+  };
+  renderPanel({ plan: fabricPlan, review: fabricUpgradeReview });
+  await reviewServerUpgrade();
+  fireEvent.click(await screen.findByRole("button", { name: "Schedule this plan" }));
+
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/v1/profiles/profile-1/maintenance/schedule",
+    expect.objectContaining({ method: "POST" }),
+  ));
+  const call = vi.mocked(fetch).mock.calls.find(
+    ([url]) => typeof url === "string" && url.includes("/schedule"),
+  );
+  const body = call?.[1]?.body;
+  const sent = JSON.parse(typeof body === "string" ? body : "{}") as Record<string, unknown>;
+  expect(sent).toMatchObject({
+    change_id: "server_upgrade",
+    minecraft_version: "1.21.5",
+    loader_version: "0.17.0",
+    plan_id: "fabricplan123456",
+  });
 });
 
 test("a stale plan is answered with the fresh review rather than a dead end", async () => {
@@ -408,8 +901,7 @@ test("nothing to change is not presented as a safety problem", async () => {
     blockers: [],
   };
   renderPanel({ plan: nothingToDo, review: currentReview });
-  fireEvent.click(await screen.findByRole("radio", { name: /Upgrade the server or loader version/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Run the preflight" }));
+  await reviewServerUpgrade();
 
   expect(await screen.findByText("Nothing to change")).toBeVisible();
   expect(screen.queryByText("Resolve this first")).toBeNull();

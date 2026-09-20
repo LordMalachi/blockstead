@@ -10,14 +10,20 @@ import asyncio
 import hashlib
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 from pydantic import BaseModel
 
-from . import __version__
+from . import __version__, paper_builds
 from .distributions import LaunchPlanError, launch_arguments
 from .host_fs import rmtree
+from .paper_builds import (
+    PaperBuildError,
+    latest_stable_build,
+    list_paper_builds,
+)
 
 USER_AGENT = f"blockstead/{__version__} (https://github.com/LordMalachi/blockstead)"
 MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
@@ -25,20 +31,16 @@ DIRECTORY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 MOJANG_MANIFEST = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 PAPER_PROJECT = "https://fill.papermc.io/v3/projects/paper"
-PAPER_BUILDS = "https://fill.papermc.io/v3/projects/paper/versions/{version}/builds"
+PAPER_BUILDS = paper_builds.PAPER_BUILDS
 FABRIC_GAME = "https://meta.fabricmc.net/v2/versions/game"
 FABRIC_LOADER = "https://meta.fabricmc.net/v2/versions/loader/{version}"
 FABRIC_INSTALLER = "https://meta.fabricmc.net/v2/versions/installer"
 FABRIC_SERVER_JAR = (
     "https://meta.fabricmc.net/v2/versions/loader/{version}/{loader}/{installer}/server/jar"
 )
-FORGE_PROMOTIONS = (
-    "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
-)
+FORGE_PROMOTIONS = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
 FORGE_MAVEN = "https://maven.minecraftforge.net/net/minecraftforge/forge"
-NEOFORGE_METADATA = (
-    "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"
-)
+NEOFORGE_METADATA = "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"
 NEOFORGE_MAVEN = "https://maven.neoforged.net/releases/net/neoforged/neoforge"
 QUILT_GAME = "https://meta.quiltmc.org/v3/versions/game"
 QUILT_LOADER = "https://meta.quiltmc.org/v3/versions/loader/{version}"
@@ -54,6 +56,14 @@ class ProvisionError(ValueError):
     """The requested profile cannot be provisioned; message is user-safe."""
 
 
+@dataclass(frozen=True, slots=True)
+class FabricLoader:
+    """One loader record published by Fabric Meta for a Minecraft version."""
+
+    version: str
+    stable: bool
+
+
 class ProvisionPlan(BaseModel):
     distribution: str
     minecraft_version: str
@@ -63,6 +73,7 @@ class ProvisionPlan(BaseModel):
     checksum_algorithm: str | None
     checksum: str | None
     notes: list[str]
+    paper_build: int | None = None
 
 
 class ProvisionResult(BaseModel):
@@ -73,7 +84,7 @@ class ProvisionResult(BaseModel):
 
 async def _get_json(client: httpx.AsyncClient, url: str) -> object:
     try:
-        response = await client.get(url)
+        response = await client.get(url, headers={"User-Agent": USER_AGENT})
         response.raise_for_status()
         return response.json()
     except (httpx.HTTPError, ValueError) as exc:
@@ -84,7 +95,7 @@ async def _get_json(client: httpx.AsyncClient, url: str) -> object:
 
 async def _get_text(client: httpx.AsyncClient, url: str) -> str:
     try:
-        response = await client.get(url)
+        response = await client.get(url, headers={"User-Agent": USER_AGENT})
         response.raise_for_status()
         return response.text
     except httpx.HTTPError as exc:
@@ -141,9 +152,7 @@ async def list_versions(client: httpx.AsyncClient, distribution: str) -> list[st
         if not isinstance(values, dict):
             raise ProvisionError("Forge's version list had an unexpected shape.")
         forge_versions = {
-            key.rsplit("-", 1)[0]
-            for key in values
-            if key.endswith(("-recommended", "-latest"))
+            key.rsplit("-", 1)[0] for key in values if key.endswith(("-recommended", "-latest"))
         }
         return sorted(forge_versions, key=_version_key, reverse=True)
     if distribution == "neoforge":
@@ -199,27 +208,37 @@ async def _vanilla_plan(client: httpx.AsyncClient, version: str) -> ProvisionPla
     )
 
 
-async def _paper_plan(client: httpx.AsyncClient, version: str) -> ProvisionPlan:
-    builds = await _get_json(client, PAPER_BUILDS.format(version=version))
-    if not isinstance(builds, list) or not builds:
-        raise ProvisionError(f"Paper does not list builds for Minecraft {version}.")
-    usable = [entry for entry in builds if isinstance(entry, dict)]
-    stable = [entry for entry in usable if entry.get("channel") == "STABLE"]
-    chosen = max(stable or usable, key=lambda entry: entry.get("id", 0))
-    download = chosen.get("downloads", {}).get("server:default")
-    if not isinstance(download, dict) or not isinstance(download.get("url"), str):
-        raise ProvisionError(f"Paper build data for {version} had an unexpected shape.")
-    checksums = download.get("checksums", {})
-    sha256 = checksums.get("sha256") if isinstance(checksums, dict) else None
-    name = download.get("name")
+async def _paper_plan(
+    client: httpx.AsyncClient, version: str, paper_build: int | None = None
+) -> ProvisionPlan:
+    try:
+        builds = await list_paper_builds(client, version)
+    except PaperBuildError as exc:
+        raise ProvisionError(str(exc)) from exc
+
+    if paper_build is None:
+        chosen = latest_stable_build(builds)
+        if chosen is None:
+            raise ProvisionError(f"Paper does not offer a stable build for Minecraft {version}.")
+    else:
+        chosen = next(
+            (build for build in builds if build.id == paper_build and build.channel == "STABLE"),
+            None,
+        )
+        if chosen is None:
+            raise ProvisionError(
+                f"Paper does not offer stable build {paper_build} for Minecraft {version}."
+            )
+
     return ProvisionPlan(
         distribution="paper",
         minecraft_version=version,
-        file_name=name if isinstance(name, str) else f"paper-{version}.jar",
-        url=download["url"],
-        checksum_algorithm="sha256" if isinstance(sha256, str) else None,
-        checksum=sha256 if isinstance(sha256, str) else None,
-        notes=[f"Paper build {chosen.get('id')} from the official PaperMC download service."],
+        file_name=chosen.file_name,
+        url=chosen.url,
+        checksum_algorithm="sha256",
+        checksum=chosen.sha256,
+        notes=[f"Paper build {chosen.id} from the official PaperMC download service."],
+        paper_build=chosen.id,
     )
 
 
@@ -233,6 +252,45 @@ def _first_stable_version(entries: object) -> str | None:
         if record.get("stable") and isinstance(record.get("version"), str):
             return str(record["version"])
     return None
+
+
+async def list_fabric_loaders(
+    client: httpx.AsyncClient, minecraft_version: str
+) -> tuple[FabricLoader, ...]:
+    """Fetch and strictly validate Fabric loader records for one game version."""
+    if not isinstance(minecraft_version, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", minecraft_version
+    ):
+        raise ProvisionError("Fabric was given an invalid Minecraft version.")
+    payload = await _get_json(client, FABRIC_LOADER.format(version=minecraft_version))
+    if not isinstance(payload, list):
+        raise ProvisionError("Fabric's loader version list had an unexpected shape.")
+
+    records: list[FabricLoader] = []
+    for entry in payload:
+        record = entry.get("loader") if isinstance(entry, dict) else None
+        if not isinstance(record, dict):
+            raise ProvisionError("Fabric's loader version list had an unexpected shape.")
+        loader = record.get("version")
+        stable = record.get("stable")
+        if (
+            not isinstance(loader, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}", loader)
+            or not isinstance(stable, bool)
+        ):
+            raise ProvisionError("Fabric's loader version list had an unexpected shape.")
+        records.append(FabricLoader(version=loader, stable=stable))
+    if len({record.version for record in records}) != len(records):
+        raise ProvisionError("Fabric's loader version list had duplicate versions.")
+    return tuple(records)
+
+
+async def list_fabric_stable_loaders(
+    client: httpx.AsyncClient, minecraft_version: str
+) -> tuple[str, ...]:
+    """Return the stable Fabric loader versions listed for one game version."""
+    catalog = await list_fabric_loaders(client, minecraft_version)
+    return tuple(entry.version for entry in catalog if entry.stable)
 
 
 def _version_key(value: str) -> tuple[tuple[int, object], ...]:
@@ -265,11 +323,19 @@ async def fabric_plan(
     client: httpx.AsyncClient, version: str, loader_version: str | None = None
 ) -> ProvisionPlan:
     """Plan the Fabric server launcher, optionally pinning the loader version."""
-    loader = loader_version or _first_stable_version(
-        await _get_json(client, FABRIC_LOADER.format(version=version))
-    )
+    stable_loaders = await list_fabric_stable_loaders(client, version)
+    if loader_version is None:
+        if not stable_loaders:
+            raise ProvisionError(f"Fabric does not offer a stable server for Minecraft {version}.")
+        loader = max(stable_loaders, key=_version_key)
+    else:
+        if loader_version not in stable_loaders:
+            raise ProvisionError(
+                f"Fabric does not offer stable loader {loader_version} for Minecraft {version}."
+            )
+        loader = loader_version
     installer = _first_stable_version(await _get_json(client, FABRIC_INSTALLER))
-    if loader is None or installer is None:
+    if installer is None:
         raise ProvisionError(f"Fabric does not offer a stable server for Minecraft {version}.")
     return ProvisionPlan(
         distribution="fabric",
@@ -426,11 +492,12 @@ async def resolve_plan(
     distribution: str,
     version: str,
     loader_version: str | None = None,
+    paper_build: int | None = None,
 ) -> ProvisionPlan:
     if distribution == "vanilla":
         return await _vanilla_plan(client, version)
     if distribution == "paper":
-        return await _paper_plan(client, version)
+        return await _paper_plan(client, version, paper_build)
     if distribution == "fabric":
         return await fabric_plan(client, version, loader_version)
     if distribution == "forge":
@@ -595,6 +662,7 @@ async def provision_profile(
     version: str,
     loader_version: str | None = None,
     java_executable: str | None = None,
+    paper_build: int | None = None,
 ) -> ProvisionResult:
     """Create a new profile folder and place a verified server file in it."""
     if not DIRECTORY_PATTERN.match(directory_name):
@@ -605,7 +673,7 @@ async def provision_profile(
     target = root / directory_name
     if target.exists():
         raise ProvisionError("A folder with that name already exists in the server root.")
-    plan = await resolve_plan(client, distribution, version, loader_version)
+    plan = await resolve_plan(client, distribution, version, loader_version, paper_build)
     target.mkdir(mode=0o755, parents=True)
     try:
         sha256 = await install_loader(client, plan, target, java_executable)

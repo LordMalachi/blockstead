@@ -17,6 +17,8 @@ import hashlib
 import json
 import os
 import secrets
+import zipfile
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,6 +99,45 @@ def create_upgrade_staging(server_directory: Path) -> Path:
     return staging
 
 
+def _validate_fabric_launcher(path: Path) -> None:
+    """Reject an HTML/error response masquerading as a Fabric launcher JAR.
+
+    Fabric's launcher endpoint does not provide a publisher checksum. Keep the
+    check bounded: validate the ZIP container and read one regular entry so a
+    truncated or non-archive response cannot reach the atomic replacement.
+    """
+
+    try:
+        if not zipfile.is_zipfile(path):
+            raise UpgradeOperationError(
+                "The downloaded Fabric launcher is not a valid JAR archive."
+            )
+        with zipfile.ZipFile(path) as archive:
+            member = next((entry for entry in archive.infolist() if not entry.is_dir()), None)
+            if member is None:
+                raise UpgradeOperationError(
+                    "The downloaded Fabric launcher archive has no readable entries."
+                )
+            with archive.open(member) as handle:
+                handle.read(1)
+    except UpgradeOperationError:
+        raise
+    except (
+        OSError,
+        EOFError,
+        KeyError,
+        NotImplementedError,
+        RuntimeError,
+        ValueError,
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        zlib.error,
+    ) as exc:
+        raise UpgradeOperationError(
+            "The downloaded Fabric launcher is not a readable JAR archive."
+        ) from exc
+
+
 def _write_manifest(path: Path, payload: dict[str, object]) -> None:
     try:
         atomic_write_text(
@@ -132,6 +173,8 @@ def promote_launch_upgrade(
         or not staged_file.is_file()
     ):
         raise UpgradeOperationError("The staged launch file is not safe to promote.")
+    if distribution == "fabric":
+        _validate_fabric_launcher(staged_file)
 
     recovery_id = secrets.token_hex(RECOVERY_ID_LENGTH // 2)
     recovery_directory = recovery_root / "server-upgrades" / profile_id / recovery_id

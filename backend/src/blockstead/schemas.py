@@ -234,6 +234,10 @@ class ServerUpgradeRequest(BaseModel):
     minecraft_version: str = Field(
         min_length=1, max_length=32, pattern=r"^[0-9][0-9A-Za-z._-]*$"
     )
+    paper_build: int | None = Field(default=None, gt=0)
+    loader_version: str | None = Field(
+        default=None, max_length=64, pattern=r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$"
+    )
     plan_id: str = Field(pattern=r"^[0-9a-f]{16}$")
 
 

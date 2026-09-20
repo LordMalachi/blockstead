@@ -304,6 +304,7 @@ from .overview import (
     strict_world_size,
     world_size,
 )
+from .paper_builds import PaperBuildError, list_paper_builds, match_paper_build
 from .performance import (
     PERFORMANCE_SAMPLING_PERIOD_SECONDS,
     PERFORMANCE_SOURCE,
@@ -328,6 +329,7 @@ from .provisioning import (
     USER_AGENT,
     ProvisionError,
     download_verified_file,
+    list_fabric_stable_loaders,
     list_versions,
     provision_profile,
     resolve_plan,
@@ -432,7 +434,7 @@ from .server_settings import (
     preview_settings_update,
     read_raw_settings,
 )
-from .server_upgrades import UpgradeContext, UpgradeReview
+from .server_upgrades import UpgradeCandidate, UpgradeContext, UpgradeReview
 from .server_upgrades import (
     review as review_upgrades,
 )
@@ -479,6 +481,16 @@ from .world_care import (
 )
 
 log = logging.getLogger("blockstead.api")
+
+
+def _file_sha256(path: Path) -> str:
+    """Hash one managed launch artifact without loading it all into memory."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def error(
@@ -7794,7 +7806,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             f"{event.safe_detail}"
         )
 
-    async def upgrade_review_for(profile: Profile) -> UpgradeReview:
+    async def upgrade_review_for(profile: Profile, db: Session) -> UpgradeReview:
         """Read the published release list for one profile's distribution.
 
         A source that fails is passed through as a failure; it never becomes an
@@ -7808,6 +7820,63 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 published = tuple(await list_versions(http_client, profile.distribution))
             except ProvisionError as exc:
                 problem = str(exc)
+        paper_builds = None
+        current_paper_build: int | None = None
+        current_paper_channel: str | None = None
+        paper_build_detail = ""
+        paper_current_sha256: str | None = None
+        fabric_stable_loaders: tuple[str, ...] | None = None
+        fabric_loader_detail = ""
+        current_loader_version = (
+            profile.loader_version if profile.distribution == "fabric" else None
+        )
+        if not profile.is_fixture and profile.distribution == "paper":
+            if profile.minecraft_version is None:
+                paper_build_detail = (
+                    "This Paper profile has no recorded Minecraft version, so Blockstead "
+                    "cannot identify its active build."
+                )
+            else:
+                try:
+                    paper_builds = await list_paper_builds(http_client, profile.minecraft_version)
+                except PaperBuildError as exc:
+                    paper_build_detail = str(exc)
+                try:
+                    directory = profile_directory(profile.id, db)
+                    active = active_launch_file("paper", directory)
+                    paper_current_sha256 = await asyncio.to_thread(_file_sha256, active)
+                    if paper_builds is not None:
+                        matched = await asyncio.to_thread(
+                            match_paper_build, active, paper_builds
+                        )
+                        if matched is not None:
+                            current_paper_build = matched.id
+                            current_paper_channel = matched.channel
+                            paper_build_detail = (
+                                f"The active jar matches Paper build {matched.id} "
+                                f"({matched.channel}) by its published SHA-256."
+                            )
+                        else:
+                            paper_build_detail = (
+                                paper_build_detail
+                                or "The active Paper jar did not match a build in the "
+                                "official catalog by SHA-256."
+                            )
+                except (HTTPException, OSError, UpgradeOperationError) as exc:
+                    paper_build_detail = paper_build_detail or str(exc)
+        if not profile.is_fixture and profile.distribution == "fabric":
+            if profile.minecraft_version is None:
+                fabric_loader_detail = (
+                    "This Fabric profile has no recorded Minecraft version, so Blockstead "
+                    "cannot read its stable loader catalog."
+                )
+            else:
+                try:
+                    fabric_stable_loaders = await list_fabric_stable_loaders(
+                        http_client, profile.minecraft_version
+                    )
+                except ProvisionError as exc:
+                    fabric_loader_detail = str(exc)
         java_majors = frozenset(
             runtime.major for runtime in ([] if profile.is_fixture else discover_java_runtimes())
         )
@@ -7819,8 +7888,109 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 published=published,
                 source_problem=problem,
                 java_majors=java_majors,
+                paper_builds=paper_builds,
+                current_paper_build=current_paper_build,
+                current_paper_channel=current_paper_channel,
+                paper_build_detail=paper_build_detail,
+                paper_current_sha256=paper_current_sha256,
+                current_loader_version=current_loader_version,
+                fabric_stable_loaders=fabric_stable_loaders,
+                fabric_loader_detail=fabric_loader_detail,
             )
         )
+
+    def selected_upgrade_candidate(
+        review: UpgradeReview,
+        requested_version: str | None,
+        requested_paper_build: int | None = None,
+        requested_loader_version: str | None = None,
+    ) -> UpgradeCandidate | None:
+        """Choose one freshly reviewed release, or fail closed for an explicit target.
+
+        The release review has already filtered out versions that are not newer
+        than the installed server and ordered the remaining published releases.
+        An omitted target keeps the legacy newest-release behavior. An explicit
+        target must be present in that same fresh candidate list; a source that
+        failed or does not support upgrades cannot validate one.
+        """
+
+        if requested_paper_build is not None and review.distribution != "paper":
+            raise HTTPException(
+                422,
+                "paper_build can only be used for a Paper server upgrade.",
+            )
+        if requested_loader_version is not None and review.distribution != "fabric":
+            raise HTTPException(
+                422,
+                "loader_version can only be used for a Fabric server upgrade.",
+            )
+        if (
+            requested_version is None
+            and requested_paper_build is None
+            and requested_loader_version is None
+        ):
+            return review.candidates[0] if review.candidates else None
+        if review.source != "available":
+            raise HTTPException(
+                409,
+                f"Blockstead could not verify Minecraft {requested_version} because the "
+                f"{review.distribution_label} release source is {review.source}: "
+                f"{review.source_detail}",
+            )
+        candidate = next(
+            (
+                item
+                for item in review.candidates
+                if (requested_version is None or item.minecraft_version == requested_version)
+                and (
+                    requested_paper_build is None
+                    or item.paper_build == requested_paper_build
+                    or (
+                        item.paper_build is None
+                        and requested_version is not None
+                        and requested_version != review.current_version
+                    )
+                )
+                and (
+                    requested_loader_version is None
+                    or item.loader_version == requested_loader_version
+                    or (
+                        item.loader_version is None
+                        and requested_version is not None
+                        and requested_version != review.current_version
+                    )
+                )
+            ),
+            None,
+        )
+        if candidate is None:
+            target = (
+                f"Minecraft {requested_version}"
+                if requested_version is not None
+                else (
+                    "the requested Fabric loader"
+                    if requested_loader_version is not None
+                    else "the requested Paper build"
+                )
+            )
+            raise HTTPException(
+                409,
+                f"{target} is not a currently published newer "
+                f"{review.distribution_label} upgrade target for this server."
+                + (
+                    f" Paper build {requested_paper_build} is not a published stable "
+                    "build for that target."
+                    if requested_paper_build is not None
+                    else ""
+                )
+                + (
+                    f" Fabric loader {requested_loader_version} is not a published "
+                    "stable loader for that target."
+                    if requested_loader_version is not None
+                    else ""
+                )
+            )
+        return candidate
 
     @app.get("/api/v1/profiles/{profile_id}/maintenance/upgrades")
     async def maintenance_upgrades(profile_id: str, request: Request, db: Db) -> dict[str, object]:
@@ -7830,7 +8000,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile = db.get(Profile, profile_id)
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
-        return (await upgrade_review_for(profile)).model_dump()
+        return (await upgrade_review_for(profile, db)).model_dump()
 
     @app.post("/api/v1/profiles/{profile_id}/maintenance/upgrades/apply")
     async def apply_server_upgrade(
@@ -7847,7 +8017,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "That profile was not found.")
         require_server_stopped()
         fresh = await build_maintenance_plan(
-            profile, MaintenanceRequest(change_id="server_upgrade"), db
+            profile,
+            MaintenanceRequest(
+                change_id="server_upgrade",
+                minecraft_version=payload.minecraft_version,
+                paper_build=payload.paper_build,
+                loader_version=payload.loader_version,
+            ),
+            db,
         )
         if fresh.plan_id != payload.plan_id:
             raise HTTPException(
@@ -7866,13 +8043,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 409,
                 "Create a fresh verified backup, then run the upgrade preflight again.",
             )
-        upgrade_review = await upgrade_review_for(profile)
-        newest = upgrade_review.candidates[0] if upgrade_review.candidates else None
-        if (
-            newest is None
-            or not newest.installable
-            or newest.minecraft_version != payload.minecraft_version
+        if profile.distribution == "paper" and (
+            payload.paper_build is None or payload.paper_build != fresh.upgrade_paper_build
         ):
+            raise HTTPException(
+                409,
+                "This Paper upgrade is not pinned to the exact stable build reviewed. "
+                "Run the preflight again and submit its paper_build.",
+            )
+        if profile.distribution == "fabric" and (
+            payload.loader_version is None
+            or payload.loader_version != fresh.upgrade_loader_version
+        ):
+            raise HTTPException(
+                409,
+                "This Fabric upgrade is not pinned to the exact stable loader reviewed. "
+                "Run the preflight again and submit its loader_version.",
+            )
+        upgrade_review = await upgrade_review_for(profile, db)
+        target = selected_upgrade_candidate(
+            upgrade_review,
+            payload.minecraft_version,
+            payload.paper_build,
+            payload.loader_version,
+        )
+        if target is None or not target.installable:
             raise HTTPException(
                 409,
                 "That release is no longer the reviewed installable upgrade. "
@@ -7904,10 +8099,93 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     raise HTTPException(
                         409, "A backup is still in progress. Wait for it to finish."
                     )
+                # The initial check protects the normal path; this check is
+                # authoritative because a start request shares this lock and
+                # may have arrived while the release was being reviewed.
+                require_server_stopped()
                 active = active_launch_file(profile.distribution, directory)
-                plan = await resolve_plan(
-                    http_client, profile.distribution, payload.minecraft_version
-                )
+                if profile.distribution == "paper":
+                    try:
+                        active_sha256 = await asyncio.to_thread(_file_sha256, active)
+                    except OSError as exc:
+                        raise HTTPException(
+                            409,
+                            "Blockstead could not read the active Paper jar. Run the "
+                            "upgrade preflight again after checking the server folder.",
+                        ) from exc
+                    if (
+                        fresh.upgrade_current_paper_sha256 is None
+                        or active_sha256 != fresh.upgrade_current_paper_sha256
+                    ):
+                        raise HTTPException(
+                            409,
+                            "The active Paper jar changed since the review. Run the "
+                            "upgrade preflight again before applying it.",
+                        )
+                    plan = await resolve_plan(
+                        http_client,
+                        "paper",
+                        payload.minecraft_version,
+                        paper_build=payload.paper_build,
+                    )
+                elif profile.distribution == "fabric":
+                    try:
+                        active_sha256 = await asyncio.to_thread(_file_sha256, active)
+                    except OSError as exc:
+                        raise HTTPException(
+                            409,
+                            "Blockstead could not read the active Fabric launcher. Run "
+                            "the upgrade preflight again after checking the server folder.",
+                        ) from exc
+                    if (
+                        fresh.upgrade_current_loader_sha256 is None
+                        or active_sha256 != fresh.upgrade_current_loader_sha256
+                    ):
+                        raise HTTPException(
+                            409,
+                            "The active Fabric launcher changed since the review. Run the "
+                            "upgrade preflight again before applying it.",
+                        )
+                    plan = await resolve_plan(
+                        http_client,
+                        "fabric",
+                        payload.minecraft_version,
+                        loader_version=payload.loader_version,
+                    )
+                else:
+                    plan = await resolve_plan(
+                        http_client, profile.distribution, payload.minecraft_version
+                    )
+                if plan.minecraft_version != payload.minecraft_version:
+                    raise HTTPException(
+                        409,
+                        "The official resolver returned a different Minecraft release than "
+                        "the reviewed target. Run the preflight again.",
+                    )
+                if profile.distribution == "paper" and (
+                    plan.paper_build != fresh.upgrade_paper_build
+                    or plan.paper_build != payload.paper_build
+                    or plan.checksum_algorithm != "sha256"
+                    or not plan.checksum
+                    or plan.checksum.casefold()
+                    != (fresh.upgrade_paper_sha256 or "").casefold()
+                ):
+                    raise HTTPException(
+                        409,
+                        "Paper's published build or SHA-256 changed since the review. "
+                        "Run the upgrade preflight again.",
+                    )
+                if profile.distribution == "fabric" and (
+                    plan.loader_version != fresh.upgrade_loader_version
+                    or plan.loader_version != payload.loader_version
+                    or fresh.upgrade_loader_artifact
+                    != f"{plan.url}\x1f{plan.file_name}"
+                ):
+                    raise HTTPException(
+                        409,
+                        "Fabric's stable loader or launcher artifact changed since the "
+                        "review. Run the upgrade preflight again.",
+                    )
                 if profile.distribution in {"vanilla", "paper"} and (
                     not plan.checksum_algorithm or not plan.checksum
                 ):
@@ -7925,6 +8203,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     plan.checksum_algorithm,
                     plan.checksum,
                 )
+                if profile.distribution == "paper":
+                    try:
+                        latest_active_sha256 = await asyncio.to_thread(_file_sha256, active)
+                    except OSError as exc:
+                        raise HTTPException(
+                            409,
+                            "Blockstead could not recheck the active Paper jar; the "
+                            "staged download was discarded.",
+                        ) from exc
+                    if (
+                        fresh.upgrade_current_paper_sha256 is None
+                        or latest_active_sha256 != fresh.upgrade_current_paper_sha256
+                    ):
+                        raise HTTPException(
+                            409,
+                            "The active Paper jar changed while the upgrade was being "
+                            "prepared. The staged download was discarded; review again.",
+                        )
+                if profile.distribution == "fabric":
+                    try:
+                        latest_active_sha256 = await asyncio.to_thread(_file_sha256, active)
+                    except OSError as exc:
+                        raise HTTPException(
+                            409,
+                            "Blockstead could not recheck the active Fabric launcher; the "
+                            "staged download was discarded.",
+                        ) from exc
+                    if (
+                        fresh.upgrade_current_loader_sha256 is None
+                        or latest_active_sha256 != fresh.upgrade_current_loader_sha256
+                    ):
+                        raise HTTPException(
+                            409,
+                            "The active Fabric launcher changed while the upgrade was being "
+                            "prepared. The staged download was discarded; review again.",
+                        )
                 recovery = promote_launch_upgrade(
                     server_directory=directory,
                     distribution=profile.distribution,
@@ -7948,6 +8262,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         result="success",
                         safe_detail=(
                             f"Upgraded {profile.name} to {plan.minecraft_version}; "
+                            + (
+                                f"Paper build {plan.paper_build} "
+                                f"(SHA-256 {plan.checksum}); "
+                                if profile.distribution == "paper"
+                                else (
+                                    f"Fabric loader {plan.loader_version}; "
+                                    if profile.distribution == "fabric"
+                                    else ""
+                                )
+                            )
+                            +
                             f"preserved launch recovery {recovery.recovery_id}; "
                             "world data was not rolled back"
                         ),
@@ -8014,6 +8339,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "minecraft_version": profile.minecraft_version,
             "loader_version": profile.loader_version,
+            "paper_build": plan.paper_build if profile.distribution == "paper" else None,
             "recovery_id": recovery_id,
             "restart_required": True,
             "detail": (
@@ -8025,7 +8351,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/api/v1/profiles/{profile_id}/maintenance/upgrades/recovery/{recovery_id}")
-    def rollback_server_upgrade(
+    async def rollback_server_upgrade(
         profile_id: str,
         recovery_id: str,
         request: Request,
@@ -8037,41 +8363,69 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile = db.get(Profile, profile_id)
         if profile is None:
             raise HTTPException(404, "That profile was not found.")
-        require_server_stopped()
-        try:
-            recovered = rollback_launch_upgrade(
-                server_directory=profile_directory(profile.id, db),
-                recovery_root=config.data_dir,
-                profile_id=profile.id,
-                recovery_id=recovery_id,
-                distribution=profile.distribution,
+        async with update_lock:
+            if update_install_in_progress():
+                raise HTTPException(
+                    409,
+                    "Blockstead itself is being updated. Restore the Minecraft server "
+                    "after that finishes.",
+                )
+            # Keep the check inside the same lock as server start and upgrade
+            # promotion so a running process can never be swapped underneath.
+            require_server_stopped()
+            try:
+                recovered = rollback_launch_upgrade(
+                    server_directory=profile_directory(profile.id, db),
+                    recovery_root=config.data_dir,
+                    profile_id=profile.id,
+                    recovery_id=recovery_id,
+                    distribution=profile.distribution,
+                )
+            except UpgradeOperationError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            previous_version = recovered.get("previous_version")
+            previous_loader = recovered.get("previous_loader_version")
+            profile.minecraft_version = (
+                previous_version if isinstance(previous_version, str) else None
             )
-        except UpgradeOperationError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        previous_version = recovered.get("previous_version")
-        previous_loader = recovered.get("previous_loader_version")
-        profile.minecraft_version = previous_version if isinstance(previous_version, str) else None
-        profile.loader_version = previous_loader if isinstance(previous_loader, str) else None
-        db.add(
-            AuditEvent(
-                admin_id=admin.id,
-                profile_id=profile.id,
-                category="server_upgrade",
-                result="recovered",
-                safe_detail=(
-                    f"Restored the prior launch file for {profile.name} from "
-                    f"recovery {recovery_id}; world data was not changed"
-                ),
+            profile.loader_version = previous_loader if isinstance(previous_loader, str) else None
+            db.add(
+                AuditEvent(
+                    admin_id=admin.id,
+                    profile_id=profile.id,
+                    category="server_upgrade",
+                    result="recovered",
+                    safe_detail=(
+                        f"Restored the prior launch file for {profile.name} from "
+                        f"recovery {recovery_id}; world data was not changed"
+                    ),
+                )
             )
-        )
-        db.commit()
+            db.commit()
+        recovered_paper_build: int | None = None
+        if profile.distribution == "paper" and profile.minecraft_version is not None:
+            try:
+                recovered_paper_build = (
+                    await upgrade_review_for(profile, db)
+                ).current_paper_build
+            except (PaperBuildError, ProvisionError):
+                # Recovery itself already completed. A source outage only means
+                # the response cannot label the restored jar with its build ID.
+                recovered_paper_build = None
         return {
             "minecraft_version": profile.minecraft_version,
             "loader_version": profile.loader_version,
+            "paper_build": recovered_paper_build,
             "restart_required": True,
             "detail": (
-                "The previous launch file was restored. The world was not rolled back; "
-                "review the distribution's downgrade guidance before starting."
+                "The previous launch file was restored"
+                + (
+                    f" (Paper build {recovered_paper_build})"
+                    if recovered_paper_build is not None
+                    else ""
+                )
+                + ". The world was not rolled back; review the distribution's "
+                "downgrade guidance before starting."
             ),
         }
 
@@ -8083,6 +8437,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         Scheduling re-runs this rather than trusting a plan the browser sends
         back, so a plan whose evidence has moved on cannot be acted on.
         """
+
+        if payload.paper_build is not None and profile.distribution != "paper":
+            raise HTTPException(
+                422,
+                "paper_build can only be used for a Paper server upgrade.",
+            )
+        if payload.loader_version is not None and profile.distribution != "fabric":
+            raise HTTPException(
+                422,
+                "loader_version can only be used for a Fabric server upgrade.",
+            )
 
         profile_id = profile.id
         directory = profile_directory(profile_id, db)
@@ -8199,11 +8564,162 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Only the upgrade review needs a published release list, so only it pays
         # for the lookup — the other reviews stay offline and fast.
         upgrade = (
-            await upgrade_review_for(profile) if payload.change_id == "server_upgrade" else None
+            await upgrade_review_for(profile, db) if payload.change_id == "server_upgrade" else None
         )
-        # The newest published release, installable or not: naming it lets the
-        # review explain why it cannot be installed instead of going quiet.
-        newest = upgrade.candidates[0] if upgrade and upgrade.candidates else None
+        # Legacy requests select the newest published release. A request with a
+        # target selects that exact candidate from the same fresh review; an
+        # unavailable target fails closed in selected_upgrade_candidate.
+        selected = (
+            selected_upgrade_candidate(
+                upgrade,
+                payload.minecraft_version,
+                payload.paper_build,
+                payload.loader_version,
+            )
+            if upgrade is not None
+            else None
+        )
+        upgrade_source_available = upgrade is not None and upgrade.source == "available"
+        upgrade_source_detail = upgrade.source_detail if upgrade else ""
+        upgrade_up_to_date = upgrade.up_to_date if upgrade else None
+        upgrade_target = selected.minecraft_version if selected else None
+        upgrade_installable = bool(selected and selected.installable)
+        upgrade_distribution_supported = bool(upgrade and upgrade.installable_here)
+        upgrade_detail = (
+            selected.detail
+            if selected
+            else (
+                upgrade.paper_build_detail
+                if upgrade is not None
+                and profile.distribution == "paper"
+                and upgrade.up_to_date is None
+                else (
+                    upgrade.loader_version_detail
+                    if upgrade is not None
+                    and profile.distribution == "fabric"
+                    and upgrade.up_to_date is None
+                    else (upgrade.install_detail if upgrade else "")
+                )
+            )
+        )
+        upgrade_paper_build: int | None = None
+        upgrade_paper_sha256: str | None = None
+        upgrade_current_paper_sha256: str | None = None
+        upgrade_loader_version: str | None = None
+        upgrade_loader_artifact: str | None = None
+        upgrade_current_loader_sha256: str | None = None
+        upgrade_current_loader_version: str | None = (
+            profile.loader_version if profile.distribution == "fabric" else None
+        )
+        if upgrade is not None and profile.distribution == "paper":
+            try:
+                active_paper = active_launch_file("paper", directory)
+                upgrade_current_paper_sha256 = await asyncio.to_thread(
+                    _file_sha256, active_paper
+                )
+            except (OSError, UpgradeOperationError):
+                # The upgrade review already explains an unusable active file;
+                # leave the identity unknown so the plan cannot be reused.
+                pass
+        if upgrade is not None and profile.distribution == "fabric":
+            try:
+                active_fabric = active_launch_file("fabric", directory)
+                upgrade_current_loader_sha256 = await asyncio.to_thread(
+                    _file_sha256, active_fabric
+                )
+            except (OSError, UpgradeOperationError):
+                # The active digest is a local stale-plan guard. Without it,
+                # Apply must not replace an unverified launch file.
+                pass
+        if selected is not None and selected.installable and profile.distribution == "paper":
+            # Resolve Paper metadata during preflight so the reviewed plan pins
+            # the exact stable build and digest that Apply must use. Keep the
+            # extra argument on the Paper branch so legacy Vanilla/Fabric test
+            # doubles with the old resolver signature remain valid.
+            try:
+                paper_plan = await resolve_plan(
+                    http_client,
+                    "paper",
+                    selected.minecraft_version,
+                    paper_build=selected.paper_build,
+                )
+                if (
+                    paper_plan.distribution != "paper"
+                    or paper_plan.minecraft_version != selected.minecraft_version
+                    or paper_plan.paper_build is None
+                    or (
+                        selected.paper_build is not None
+                        and paper_plan.paper_build != selected.paper_build
+                    )
+                    or paper_plan.checksum_algorithm != "sha256"
+                    or not paper_plan.checksum
+                ):
+                    raise ProvisionError(
+                        "Paper's resolver did not return the reviewed stable build and "
+                        "its required SHA-256 digest."
+                    )
+            except (ProvisionError, TypeError) as exc:
+                upgrade_installable = False
+                upgrade_detail = (
+                    f"Paper build metadata could not be pinned safely: {exc}"
+                )
+            else:
+                upgrade_paper_build = paper_plan.paper_build
+                upgrade_paper_sha256 = paper_plan.checksum.lower()
+                upgrade_detail = (
+                    f"{selected.detail} Pinned stable Paper build "
+                    f"{upgrade_paper_build} with SHA-256 {upgrade_paper_sha256}."
+                )
+        if selected is not None and selected.installable and profile.distribution == "fabric":
+            if upgrade_current_loader_sha256 is None:
+                upgrade_installable = False
+                upgrade_detail = (
+                    "Blockstead could not read the active Fabric launcher, so it cannot "
+                    "pin a safe stale-plan check."
+                )
+            else:
+                try:
+                    # Same-Minecraft candidates carry an exact loader; cross-Minecraft
+                    # candidates resolve the newest stable loader during this review.
+                    requested_loader = payload.loader_version or selected.loader_version
+                    fabric_plan = await resolve_plan(
+                        http_client,
+                        "fabric",
+                        selected.minecraft_version,
+                        loader_version=requested_loader,
+                    )
+                    if (
+                        fabric_plan.distribution != "fabric"
+                        or fabric_plan.minecraft_version != selected.minecraft_version
+                        or not fabric_plan.loader_version
+                        or (
+                            selected.loader_version is not None
+                            and fabric_plan.loader_version != selected.loader_version
+                        )
+                        or (
+                            requested_loader is not None
+                            and fabric_plan.loader_version != requested_loader
+                        )
+                        or not fabric_plan.url
+                        or not fabric_plan.file_name
+                    ):
+                        raise ProvisionError(
+                            "Fabric's resolver did not return the reviewed stable loader "
+                            "and launcher artifact."
+                        )
+                except (ProvisionError, TypeError) as exc:
+                    upgrade_installable = False
+                    upgrade_detail = f"Fabric loader metadata could not be pinned safely: {exc}"
+                else:
+                    upgrade_loader_version = fabric_plan.loader_version
+                    upgrade_loader_artifact = (
+                        f"{fabric_plan.url}\x1f{fabric_plan.file_name}"
+                    )
+                    upgrade_detail = (
+                        f"{selected.detail} Pinned stable Fabric loader "
+                        f"{upgrade_loader_version}; the launcher artifact is checked "
+                        "again before promotion."
+                    )
         plan = assess_maintenance(
             MaintenanceContext(
                 profile_id=profile.id,
@@ -8232,15 +8748,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 next_operation_at=next_at,
                 occupied_by=occupant,
                 now=now_local,
-                upgrade_source_available=upgrade is not None and upgrade.source == "available",
-                upgrade_source_detail=upgrade.source_detail if upgrade else "",
-                upgrade_up_to_date=upgrade.up_to_date if upgrade else None,
-                upgrade_target=newest.minecraft_version if newest else None,
-                upgrade_installable=bool(newest and newest.installable),
-                upgrade_distribution_supported=bool(upgrade and upgrade.installable_here),
-                upgrade_detail=(
-                    newest.detail if newest else (upgrade.install_detail if upgrade else "")
-                ),
+                upgrade_source_available=upgrade_source_available,
+                upgrade_source_detail=upgrade_source_detail,
+                upgrade_up_to_date=upgrade_up_to_date,
+                upgrade_target=upgrade_target,
+                upgrade_paper_build=upgrade_paper_build,
+                upgrade_paper_sha256=upgrade_paper_sha256,
+                upgrade_loader_version=upgrade_loader_version,
+                upgrade_current_paper_build=(upgrade.current_paper_build if upgrade else None),
+                upgrade_current_paper_sha256=upgrade_current_paper_sha256,
+                upgrade_current_loader_sha256=upgrade_current_loader_sha256,
+                upgrade_current_loader_version=upgrade_current_loader_version,
+                upgrade_loader_artifact=upgrade_loader_artifact,
+                upgrade_installable=upgrade_installable,
+                upgrade_distribution_supported=upgrade_distribution_supported,
+                upgrade_detail=upgrade_detail,
             ),
             payload,
         )
@@ -8301,7 +8823,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, "Choose a maintenance time in the future.")
 
         fresh = await build_maintenance_plan(
-            profile, MaintenanceRequest(change_id=payload.change_id), db
+            profile,
+            MaintenanceRequest(
+                change_id=payload.change_id,
+                minecraft_version=payload.minecraft_version,
+                paper_build=payload.paper_build,
+                loader_version=payload.loader_version,
+            ),
+            db,
         )
         if fresh.plan_id != payload.plan_id:
             db.add(
@@ -8368,6 +8897,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 safe_detail=(
                     f"Scheduled “{fresh.change.title}” on {profile.name} for "
                     f"{payload.run_at} from reviewed plan {fresh.plan_id}"
+                    + (
+                        f"; Paper build {fresh.upgrade_paper_build} "
+                        f"(SHA-256 {fresh.upgrade_paper_sha256})"
+                        if fresh.upgrade_paper_build is not None
+                        else (
+                            f"; Fabric loader {fresh.upgrade_loader_version}"
+                            if fresh.upgrade_loader_version is not None
+                            else ""
+                        )
+                    )
                 ),
             )
         )
@@ -8378,6 +8917,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "run_at": payload.run_at,
             "plan_id": fresh.plan_id,
             "change_id": payload.change_id,
+            "minecraft_version": fresh.upgrade_target,
+            "paper_build": fresh.upgrade_paper_build,
+            "paper_sha256": fresh.upgrade_paper_sha256,
+            "loader_version": fresh.upgrade_loader_version,
             "only_when_empty": payload.only_when_empty,
             "backup_before_stop": True,
             "detail": (
