@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
 
 from blockstead.app import create_app
 from blockstead.config import Settings
@@ -184,6 +185,38 @@ def test_reviewed_server_upgrade_preserves_and_restores_the_launch_file(
         assert (folder / "server.jar").read_bytes() == b"new server"
         assert applied.json()["minecraft_version"] == "1.21.6"
         assert "never rolls a world back" in applied.json()["detail"]
+
+        session_class = client.app.state.session_factory.class_
+        original_commit = session_class.commit
+        fail_next_commit = True
+
+        def fail_commit_once(session: object) -> None:
+            nonlocal fail_next_commit
+            if fail_next_commit:
+                fail_next_commit = False
+                raise SQLAlchemyError("forced recovery commit failure")
+            original_commit(session)
+
+        monkeypatch.setattr(session_class, "commit", fail_commit_once)
+        failed_recovery = client.post(
+            f"/api/v1/profiles/{profile_id}/maintenance/upgrades/recovery/"
+            f"{applied.json()['recovery_id']}",
+            headers=headers,
+        )
+        assert failed_recovery.status_code == 500
+        assert "newer launch file was put back" in failed_recovery.json()["error"]["message"]
+        assert (folder / "server.jar").read_bytes() == b"new server"
+        unchanged_profile = next(
+            item for item in client.get("/api/v1/profiles").json() if item["id"] == profile_id
+        )
+        assert unchanged_profile["minecraft_version"] == "1.21.6"
+        still_available = client.get(
+            f"/api/v1/profiles/{profile_id}/maintenance/upgrades/recoveries",
+            headers=headers,
+        )
+        assert still_available.json()["recoveries"][0]["recovery_id"] == applied.json()[
+            "recovery_id"
+        ]
 
         recovered = client.post(
             f"/api/v1/profiles/{profile_id}/maintenance/upgrades/recovery/"
@@ -555,6 +588,12 @@ def test_paper_same_version_build_update_pins_digest_and_recovers(
         item for item in client.get("/api/v1/profiles").json() if item["id"] == profile_id
     )
     assert applied_profile["paper_build"] == 11
+    available = client.get(
+        f"/api/v1/profiles/{profile_id}/maintenance/upgrades/recoveries",
+        headers=headers,
+    )
+    assert available.status_code == 200, available.text
+    assert available.json()["recoveries"][0]["recovery_id"] == applied.json()["recovery_id"]
 
     recovered = client.post(
         f"/api/v1/profiles/{profile_id}/maintenance/upgrades/recovery/"
@@ -569,6 +608,11 @@ def test_paper_same_version_build_update_pins_digest_and_recovers(
         item for item in client.get("/api/v1/profiles").json() if item["id"] == profile_id
     )
     assert recovered_profile["paper_build"] == 10
+    available_after = client.get(
+        f"/api/v1/profiles/{profile_id}/maintenance/upgrades/recoveries",
+        headers=headers,
+    )
+    assert available_after.json()["recoveries"] == []
 
 
 def test_paper_cross_version_preflight_honors_explicit_build_pin(

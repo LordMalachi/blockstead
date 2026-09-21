@@ -570,12 +570,28 @@ export interface ExtensionUpdateResult {
   batch_id: string | null;
   warnings: string[];
 }
+export interface ExtensionUpdateRecovery {
+  recovery_id: string;
+  old_file: string;
+  new_files: string[];
+  created_at: string | null;
+}
 export interface ServerUpgradeResult {
   minecraft_version: string | null;
   loader_version: string | null;
   recovery_id: string;
   restart_required: true;
   detail: string;
+}
+export interface ServerUpgradeRecovery {
+  recovery_id: string;
+  previous_version: string | null;
+  new_version: string | null;
+  previous_loader_version: string | null;
+  new_loader_version: string | null;
+  previous_paper_build: number | null;
+  new_paper_build: number | null;
+  created_at: string | null;
 }
 export interface ExtensionWarning { code: string; message: string; files: string[] }
 export interface ExtensionsView { directory: string | null; present: boolean; entries: ExtensionEntry[]; disabled_entries: ExtensionEntry[]; warnings: ExtensionWarning[]; truncated: boolean }

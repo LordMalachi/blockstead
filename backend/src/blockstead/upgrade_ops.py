@@ -401,6 +401,81 @@ def _read_recovery(
     return directory, payload
 
 
+def list_available_launch_recoveries(
+    *,
+    server_directory: Path,
+    recovery_root: Path,
+    profile_id: str,
+    distribution: str,
+) -> list[dict[str, object]]:
+    """List unused recoveries whose preserved and currently active jars still verify."""
+
+    root = recovery_root / "server-upgrades" / profile_id
+    if root.is_symlink() or not root.is_dir():
+        return []
+    recoveries: list[dict[str, object]] = []
+    try:
+        candidates = list(root.iterdir())
+    except OSError:
+        return []
+    for candidate in candidates:
+        if candidate.is_symlink() or not candidate.is_dir():
+            continue
+        try:
+            directory, manifest = _read_recovery(
+                recovery_root, profile_id, candidate.name
+            )
+            if manifest.get("used") is True or manifest.get("distribution") != distribution:
+                continue
+            launch_name = manifest.get("launch_file")
+            current_digest = manifest.get("new_sha256")
+            previous_digest = manifest.get("previous_sha256")
+            if not all(
+                isinstance(value, str)
+                for value in (launch_name, current_digest, previous_digest)
+            ):
+                continue
+            assert isinstance(launch_name, str)
+            launch_path = Path(launch_name)
+            if (
+                not launch_name
+                or launch_path.name != launch_name
+                or launch_path.parent != Path(".")
+                or launch_path.suffix.casefold() != ".jar"
+            ):
+                continue
+            active = server_directory / launch_name
+            previous = directory / launch_name
+            if (
+                active.is_symlink()
+                or not active.is_file()
+                or previous.is_symlink()
+                or not previous.is_file()
+                or _sha256(active) != current_digest
+                or _sha256(previous) != previous_digest
+            ):
+                continue
+            recoveries.append(
+                {
+                    "recovery_id": candidate.name,
+                    "previous_version": manifest.get("previous_version"),
+                    "new_version": manifest.get("new_version"),
+                    "previous_loader_version": manifest.get("previous_loader_version"),
+                    "new_loader_version": manifest.get("new_loader_version"),
+                    "previous_paper_build": manifest.get("previous_paper_build"),
+                    "new_paper_build": manifest.get("new_paper_build"),
+                    "created_at": manifest.get("created_at"),
+                }
+            )
+        except (OSError, UpgradeOperationError):
+            continue
+    recoveries.sort(
+        key=lambda item: str(item.get("created_at") or ""),
+        reverse=True,
+    )
+    return recoveries[:20]
+
+
 def rollback_launch_upgrade(
     *,
     server_directory: Path,
@@ -540,3 +615,137 @@ def rollback_launch_upgrade(
     except OSError:
         pass
     return manifest
+
+
+def restore_newer_launch_after_failed_recovery(
+    *,
+    server_directory: Path,
+    recovery_root: Path,
+    profile_id: str,
+    recovery_id: str,
+    distribution: str,
+) -> None:
+    """Compensate a completed rollback when its database commit did not persist.
+
+    A successful rollback retains an exact copy of the newer jar. Reinstall it
+    through server-local staging, rebuild the older recovery copy, and mark the
+    recovery unused so the on-disk launch file again matches the unchanged
+    database record.
+    """
+
+    directory, manifest = _read_recovery(recovery_root, profile_id, recovery_id)
+    if manifest.get("used") is not True:
+        raise UpgradeOperationError(
+            "The completed launch-file recovery is not available for compensation."
+        )
+    if manifest.get("distribution") != distribution:
+        raise UpgradeOperationError("That recovery belongs to a different server type.")
+    launch_name = manifest.get("launch_file")
+    newer_digest = manifest.get("new_sha256")
+    older_digest = manifest.get("previous_sha256")
+    if not all(
+        isinstance(value, str) for value in (launch_name, newer_digest, older_digest)
+    ):
+        raise UpgradeOperationError("That upgrade recovery record is incomplete.")
+    assert isinstance(launch_name, str)
+    launch_path = Path(launch_name)
+    if (
+        not launch_name
+        or launch_path.name != launch_name
+        or launch_path.parent != Path(".")
+        or launch_path.suffix.casefold() != ".jar"
+    ):
+        raise UpgradeOperationError("That upgrade recovery record has an unsafe launch file.")
+
+    active = server_directory / launch_name
+    previous = directory / launch_name
+    newer = directory / f"replaced-{launch_name}"
+    if active.is_symlink() or not active.is_file() or _sha256(active) != older_digest:
+        raise UpgradeOperationError(
+            "The restored launch file changed before Blockstead could compensate for "
+            "the database failure."
+        )
+    if newer.is_symlink() or not newer.is_file() or _sha256(newer) != newer_digest:
+        raise UpgradeOperationError(
+            "The preserved newer launch file failed verification during compensation."
+        )
+    if previous.exists() or previous.is_symlink():
+        if previous.is_symlink() or not previous.is_file() or _sha256(previous) != older_digest:
+            raise UpgradeOperationError(
+                "The older recovery copy is not safe to reuse during compensation."
+            )
+    else:
+        copied_digest = _copy_verified(
+            active,
+            previous,
+            description="older launch file rebuilt in recovery storage",
+        )
+        if copied_digest != older_digest:
+            raise UpgradeOperationError(
+                "The restored launch file changed while its recovery copy was rebuilt."
+            )
+
+    replacement_stage = server_directory / f".blockstead-r-{recovery_id}-n"
+    server_displaced = server_directory / f".blockstead-r-{recovery_id}-o"
+    if (
+        replacement_stage.exists()
+        or replacement_stage.is_symlink()
+        or server_displaced.exists()
+        or server_displaced.is_symlink()
+    ):
+        raise UpgradeOperationError(
+            "The server folder contains an unfinished recovery compensation."
+        )
+
+    active_moved = False
+    failure_path = replacement_stage
+    try:
+        copied_digest = _copy_verified(
+            newer,
+            replacement_stage,
+            description="newer launch file for recovery compensation",
+        )
+        if copied_digest != newer_digest:
+            raise UpgradeOperationError(
+                "The preserved newer launch file changed while compensation was prepared."
+            )
+        failure_path = server_displaced
+        os.replace(active, server_displaced)
+        active_moved = True
+        failure_path = active
+        os.replace(replacement_stage, active)
+        failure_path = server_directory
+        launch_arguments(distribution, server_directory)
+        manifest["used"] = False
+        manifest.pop("used_at", None)
+        failure_path = directory / "recovery.json"
+        _write_manifest(directory / "recovery.json", manifest)
+    except (OSError, LaunchPlanError, UpgradeOperationError) as exc:
+        failure_detail = _failure_detail(exc, failure_path)
+        if active_moved:
+            try:
+                os.replace(server_displaced, active)
+            except OSError as restore_exc:
+                raise UpgradeOperationError(
+                    "Recovery compensation failed and the restored launch file could "
+                    "not be put back. Leave the server stopped and inspect the server "
+                    f"and recovery folders. Initial failure: {failure_detail} Restore "
+                    f"failure: {_failure_detail(restore_exc, active)}"
+                ) from exc
+        try:
+            replacement_stage.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise UpgradeOperationError(
+            "The newer launch file could not be restored after the database failure; "
+            f"the older file remains active. Reason: {failure_detail}"
+        ) from exc
+
+    try:
+        server_displaced.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        newer.unlink(missing_ok=True)
+    except OSError:
+        pass

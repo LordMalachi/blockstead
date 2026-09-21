@@ -261,6 +261,91 @@ def _read_recovery(
     return directory, payload
 
 
+def list_available_extension_recoveries(
+    *,
+    recovery_root: Path,
+    profile_id: str,
+    extension_directory: Path,
+) -> list[dict[str, object]]:
+    """List unused update recoveries that still exactly match the live loadout."""
+
+    root = recovery_root / "extension-updates" / profile_id
+    if root.is_symlink() or not root.is_dir():
+        return []
+    try:
+        candidates = list(root.iterdir())
+    except OSError:
+        return []
+    recoveries: list[dict[str, object]] = []
+    for candidate in candidates:
+        if candidate.is_symlink() or not candidate.is_dir():
+            continue
+        try:
+            recovery, payload = _read_recovery(
+                recovery_root, profile_id, candidate.name
+            )
+            if payload.get("used") is True:
+                continue
+            old_name = payload.get("old_file")
+            old_sha512 = payload.get("old_sha512")
+            new_files = payload.get("new_files")
+            if (
+                not isinstance(old_name, str)
+                or not JAR_NAME_PATTERN.match(old_name)
+                or not isinstance(old_sha512, str)
+                or not isinstance(new_files, list)
+            ):
+                continue
+            old = recovery / old_name
+            if (
+                old.is_symlink()
+                or not old.is_file()
+                or hashlib.sha512(old.read_bytes()).hexdigest() != old_sha512
+            ):
+                continue
+            installed_names: list[str] = []
+            valid = True
+            for item in new_files:
+                if (
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("file_name"), str)
+                    or not JAR_NAME_PATTERN.match(item["file_name"])
+                    or item.get("checksum_algorithm") not in {"sha1", "sha256", "sha512"}
+                    or not isinstance(item.get("checksum"), str)
+                ):
+                    valid = False
+                    break
+                target = extension_directory / item["file_name"]
+                if target.is_symlink() or not target.is_file():
+                    valid = False
+                    break
+                digest = hashlib.new(str(item["checksum_algorithm"]))
+                with target.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                if digest.hexdigest().casefold() != str(item["checksum"]).casefold():
+                    valid = False
+                    break
+                installed_names.append(item["file_name"])
+            if not valid:
+                continue
+            recoveries.append(
+                {
+                    "recovery_id": candidate.name,
+                    "old_file": old_name,
+                    "new_files": installed_names,
+                    "created_at": payload.get("created_at"),
+                }
+            )
+        except (OSError, ExtensionOpsError, ExtensionRecoveryError, ValueError):
+            continue
+    recoveries.sort(
+        key=lambda item: str(item.get("created_at") or ""),
+        reverse=True,
+    )
+    return recoveries[:20]
+
+
 def rollback_update(
     *,
     recovery_root: Path,

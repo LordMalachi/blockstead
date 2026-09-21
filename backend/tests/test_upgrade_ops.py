@@ -9,7 +9,9 @@ from blockstead.upgrade_ops import (
     UpgradeOperationError,
     active_launch_file,
     create_upgrade_staging,
+    list_available_launch_recoveries,
     promote_launch_upgrade,
+    restore_newer_launch_after_failed_recovery,
     rollback_launch_upgrade,
 )
 
@@ -35,6 +37,13 @@ def test_direct_upgrade_preserves_and_can_restore_the_launch_file(tmp_path: Path
 
     assert active_launch_file("vanilla", server).read_bytes() == b"new server"
     assert (recovery.recovery_directory / "server.jar").read_bytes() == b"old server"
+    available = list_available_launch_recoveries(
+        server_directory=server,
+        recovery_root=tmp_path / "data",
+        profile_id="profile-1",
+        distribution="vanilla",
+    )
+    assert [item["recovery_id"] for item in available] == [recovery.recovery_id]
 
     manifest = rollback_launch_upgrade(
         server_directory=server,
@@ -46,6 +55,30 @@ def test_direct_upgrade_preserves_and_can_restore_the_launch_file(tmp_path: Path
     assert (server / "server.jar").read_bytes() == b"old server"
     assert manifest["previous_version"] == "1.21.4"
     assert manifest["used"] is True
+    assert list_available_launch_recoveries(
+        server_directory=server,
+        recovery_root=tmp_path / "data",
+        profile_id="profile-1",
+        distribution="vanilla",
+    ) == []
+
+    restore_newer_launch_after_failed_recovery(
+        server_directory=server,
+        recovery_root=tmp_path / "data",
+        profile_id="profile-1",
+        recovery_id=recovery.recovery_id,
+        distribution="vanilla",
+    )
+    assert (server / "server.jar").read_bytes() == b"new server"
+    assert [
+        item["recovery_id"]
+        for item in list_available_launch_recoveries(
+            server_directory=server,
+            recovery_root=tmp_path / "data",
+            profile_id="profile-1",
+            distribution="vanilla",
+        )
+    ] == [recovery.recovery_id]
 
 
 def test_recovery_refuses_to_overwrite_a_launch_file_changed_after_upgrade(

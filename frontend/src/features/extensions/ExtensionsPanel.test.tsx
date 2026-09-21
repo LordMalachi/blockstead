@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { vi } from "vitest";
 import { ExtensionsPanel } from "./ExtensionsPanel";
-import type { ExtensionsView } from "../../api/client";
+import type { ExtensionUpdateRecovery, ExtensionsView } from "../../api/client";
 
 const inventory: ExtensionsView = {
   directory: "mods",
@@ -121,7 +121,14 @@ const manualResult = {
   source_verified: false,
 };
 
-function renderPanel(stopped = true, view: ExtensionsView = inventory, options: { curseforgeSaveResponse?: () => Response } = {}) {
+function renderPanel(
+  stopped = true,
+  view: ExtensionsView = inventory,
+  options: {
+    curseforgeSaveResponse?: () => Response;
+    updateRecoveries?: ExtensionUpdateRecovery[];
+  } = {},
+) {
   const fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
     const target = url;
     if (target.includes("/settings/curseforge") && init?.method === "PUT" && options.curseforgeSaveResponse) {
@@ -132,6 +139,7 @@ function renderPanel(stopped = true, view: ExtensionsView = inventory, options: 
       : target.includes("/catalog/versions") ? versionList
       : target.includes("/catalog/search") ? searchPage
       : target.includes("/extensions/update-review") ? updateReview
+      : target.includes("/extensions/update-recoveries") ? { recoveries: options.updateRecoveries ?? [] }
       : target.endsWith("/extensions/update") ? appliedUpdate
       : target.includes("/extensions/updates") ? updatesResponse
       : target.includes("/manual-import/review") ? manualReview
@@ -276,6 +284,20 @@ test("reviews exact update impact before applying it", async () => {
     }),
   ));
   expect(await screen.findByRole("button", { name: "Undo this update" })).toBeVisible();
+});
+
+test("offers a verified retained extension recovery after the panel is reopened", async () => {
+  renderPanel(true, inventory, {
+    updateRecoveries: [{
+      recovery_id: "abcdef1234567890abcdef12",
+      old_file: "lithium.jar",
+      new_files: ["lithium-2.0.jar", "fabric-api.jar"],
+      created_at: "2026-07-26T13:00:00Z",
+    }],
+  });
+
+  expect(await screen.findByText(/preserved lithium\.jar/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Undo this update" })).toBeVisible();
 });
 
 test("offers Hangar only for plugin servers and passes the source through", async () => {

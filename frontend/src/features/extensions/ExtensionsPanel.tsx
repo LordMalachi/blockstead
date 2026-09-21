@@ -9,6 +9,7 @@ import {
   type ExtensionRecommendation,
   type ExtensionRecommendations,
   type ExtensionUpdate,
+  type ExtensionUpdateRecovery,
   type ExtensionUpdateResult,
   type ExtensionUpdateReviewResponse,
   type ExtensionUpdates,
@@ -357,6 +358,13 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
     queryFn: () => api<ExtensionUpdates>(`/profiles/${profileId}/extensions/updates`),
     enabled: false,
   });
+  const updateRecoveries = useQuery({
+    queryKey: ["extension-update-recoveries", profileId],
+    queryFn: () => api<{ recoveries: ExtensionUpdateRecovery[] }>(
+      `/profiles/${profileId}/extensions/update-recoveries`,
+    ),
+    enabled: inventory.data?.directory != null,
+  });
   const refresh = () => {
     void client.invalidateQueries({ queryKey: ["extensions", profileId] });
     void client.invalidateQueries({ queryKey: ["extension-recommendations", profileId] });
@@ -438,6 +446,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
       if (result.batch_id) setRecentBatchIds([result.batch_id]);
       showNotice("success", `${result.file_name} installed from the reviewed plan. Restart the server to load it.`);
       refresh();
+      void client.invalidateQueries({ queryKey: ["extension-update-recoveries", profileId] });
       void client.invalidateQueries({ queryKey: ["activity"] });
     },
     onError: error => showNotice("error", error.message),
@@ -451,6 +460,7 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
       setAppliedUpdate(null);
       showNotice("success", result.detail);
       refresh();
+      void client.invalidateQueries({ queryKey: ["extension-update-recoveries", profileId] });
       void client.invalidateQueries({ queryKey: ["activity"] });
     },
     onError: error => showNotice("error", error.message),
@@ -639,6 +649,8 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
       || entry.display_name?.toLowerCase() === SHARED_MAP_PROJECT_ID,
   ));
   const recommended = recommendations.data?.recommendations ?? [];
+  const retainedUpdate = updateRecoveries.data?.recoveries?.[0] ?? null;
+  const updateRecoveryId = appliedUpdate?.recovery_id ?? retainedUpdate?.recovery_id ?? null;
 
   return <section className="card extensions-workspace" id="extensions">
     <header className="workspace-hero workspace-hero--extensions">
@@ -913,15 +925,15 @@ export function ExtensionsPanel({ profileId, stopped }: { profileId: string; sto
           </div>
         </div>}
 
-        {appliedUpdate && <div className="extension-update-recovery" role="status">
+        {updateRecoveryId && <div className="extension-update-recovery" role="status">
           <div>
             <strong>Previous extension retained</strong>
-            <span>{appliedUpdate.rollback_detail}</span>
+            <span>{appliedUpdate?.rollback_detail ?? `Blockstead rechecked the live update files and preserved ${retainedUpdate?.old_file ?? "extension"}. This recovery remains available after a reload.`}</span>
           </div>
           <Button
             className="button--secondary button--small"
             disabled={!stopped || rollbackUpdate.isPending}
-            onClick={() => rollbackUpdate.mutate(appliedUpdate.recovery_id)}
+            onClick={() => rollbackUpdate.mutate(updateRecoveryId)}
           >
             {rollbackUpdate.isPending ? "Restoring…" : "Undo this update"}
           </Button>

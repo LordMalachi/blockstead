@@ -8,6 +8,7 @@ from blockstead.extension_updates import (
     ExtensionRecoveryError,
     build_review,
     finalize_recovery,
+    list_available_extension_recoveries,
     prepare_recovery,
     rollback_update,
 )
@@ -101,6 +102,13 @@ def test_extension_recovery_restores_old_and_removes_reviewed_new_files(
             ),
         ],
     )
+    available = list_available_extension_recoveries(
+        recovery_root=tmp_path / "data",
+        profile_id="profile-1",
+        extension_directory=extensions,
+    )
+    assert [item["recovery_id"] for item in available] == [recovery_id]
+    assert available[0]["old_file"] == "root-1.jar"
 
     rollback_update(
         recovery_root=tmp_path / "data",
@@ -112,6 +120,11 @@ def test_extension_recovery_restores_old_and_removes_reviewed_new_files(
     assert old.read_bytes() == b"old"
     assert not new_root.exists()
     assert not new_dependency.exists()
+    assert list_available_extension_recoveries(
+        recovery_root=tmp_path / "data",
+        profile_id="profile-1",
+        extension_directory=extensions,
+    ) == []
 
 
 def test_extension_recovery_refuses_a_changed_new_file(tmp_path: Path) -> None:

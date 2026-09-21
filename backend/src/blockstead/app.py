@@ -140,6 +140,7 @@ from .extension_origins import (
 from .extension_updates import (
     ExtensionRecoveryError,
     ExtensionUpdateReview,
+    list_available_extension_recoveries,
 )
 from .extension_updates import (
     build_review as build_extension_update_review,
@@ -459,7 +460,9 @@ from .upgrade_ops import (
     UpgradeOperationError,
     active_launch_file,
     create_upgrade_staging,
+    list_available_launch_recoveries,
     promote_launch_upgrade,
+    restore_newer_launch_after_failed_recovery,
     rollback_launch_upgrade,
 )
 from .validation import (
@@ -5377,7 +5380,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
             )
         )
-        db.commit()
+        try:
+            db.commit()
+        except SQLAlchemyError as exc:
+            db.rollback()
+            try:
+                rollback_extension_update(
+                    recovery_root=config.data_dir,
+                    profile_id=profile.id,
+                    recovery_id=recovery_id,
+                    extension_directory=extension_dir,
+                )
+            except (ExtensionRecoveryError, ExtensionOpsError) as recovery_exc:
+                raise HTTPException(
+                    500,
+                    "The extension files changed, but Blockstead could not save the "
+                    "update record or fully restore the previous version. Leave the "
+                    "server stopped and inspect its extension recovery folder: "
+                    f"{recovery_exc}",
+                ) from exc
+            if batch_id is not None:
+                try:
+                    delete_reviewed_batch(extension_dir, batch_id)
+                except SafeStartError:
+                    pass
+            try:
+                for item in update_plan:
+                    forget_origin(extension_dir, item.file_name)
+                if previous_origin is not None:
+                    record_existing_origin(
+                        extension_dir,
+                        entry.file_name,
+                        previous_origin.model_dump(mode="json"),
+                    )
+            except OriginRegistryError:
+                pass
+            raise HTTPException(
+                500,
+                "Blockstead could not save the extension update record, so the "
+                "previous extension version was restored.",
+            ) from exc
         return {
             "file_name": planned.file_name,
             "replaced": entry.file_name,
@@ -5392,6 +5434,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "warnings": [
                 warning for warning in (origin_warning, batch_warning) if warning is not None
             ],
+        }
+
+    @app.get("/api/v1/profiles/{profile_id}/extensions/update-recoveries")
+    def extension_update_recoveries(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        require_role(current(request, db)[0])
+        profile, extension_dir = extension_context(profile_id, db)
+        return {
+            "recoveries": list_available_extension_recoveries(
+                recovery_root=config.data_dir,
+                profile_id=profile.id,
+                extension_directory=extension_dir,
+            )
         }
 
     @app.post("/api/v1/profiles/{profile_id}/extensions/update-recovery/{recovery_id}")
@@ -8020,6 +8076,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "That profile was not found.")
         return (await upgrade_review_for(profile, db)).model_dump()
 
+    @app.get("/api/v1/profiles/{profile_id}/maintenance/upgrades/recoveries")
+    def maintenance_upgrade_recoveries(
+        profile_id: str, request: Request, db: Db
+    ) -> dict[str, object]:
+        require_role(current(request, db)[0])
+        profile = db.get(Profile, profile_id)
+        if profile is None:
+            raise HTTPException(404, "That profile was not found.")
+        return {
+            "recoveries": list_available_launch_recoveries(
+                server_directory=profile_directory(profile.id, db),
+                recovery_root=config.data_dir,
+                profile_id=profile.id,
+                distribution=profile.distribution,
+            )
+        }
+
     @app.post("/api/v1/profiles/{profile_id}/maintenance/upgrades/apply")
     async def apply_server_upgrade(
         profile_id: str,
@@ -8431,7 +8504,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     ),
                 )
             )
-            db.commit()
+            try:
+                db.commit()
+            except SQLAlchemyError as exc:
+                db.rollback()
+                try:
+                    restore_newer_launch_after_failed_recovery(
+                        server_directory=profile_directory(profile.id, db),
+                        recovery_root=config.data_dir,
+                        profile_id=profile.id,
+                        recovery_id=recovery_id,
+                        distribution=profile.distribution,
+                    )
+                except UpgradeOperationError as recovery_exc:
+                    raise HTTPException(
+                        500,
+                        "The previous launch file was restored, but Blockstead could "
+                        "not save its version metadata or return to the newer launch "
+                        "file. Leave the server stopped and inspect its recovery record: "
+                        f"{recovery_exc}",
+                    ) from exc
+                raise HTTPException(
+                    500,
+                    "Blockstead could not save the restored version metadata, so the "
+                    "newer launch file was put back. The verified rollback remains "
+                    "available.",
+                ) from exc
         recovered_paper_build = profile.paper_build
         if (
             profile.distribution == "paper"

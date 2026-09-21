@@ -8,6 +8,7 @@ import {
   type MaintenanceCatalog,
   type MaintenanceChangeId,
   type MaintenancePlan,
+  type ServerUpgradeRecovery,
   type ServerUpgradeResult,
   type UpgradeCandidate,
   type UpgradeReview,
@@ -166,6 +167,12 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
     queryKey: ["maintenance-upgrades", profileId],
     queryFn: () => api<UpgradeReview>(`/profiles/${profileId}/maintenance/upgrades`),
     enabled: changeId === "server_upgrade",
+  });
+  const upgradeRecoveries = useQuery({
+    queryKey: ["server-upgrade-recoveries", profileId],
+    queryFn: () => api<{ recoveries: ServerUpgradeRecovery[] }>(
+      `/profiles/${profileId}/maintenance/upgrades/recoveries`,
+    ),
   });
   const selectedCandidate = upgrades.data?.candidates.find(candidate => upgradeCandidateKey(candidate) === selectedTargetKey);
 
@@ -443,6 +450,8 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
     );
   const targetMutationPending = schedule.isPending || applyUpgrade.isPending || rollbackUpgrade.isPending;
   const upgradeCandidatesLoading = change?.id === "server_upgrade" && upgrades.isFetching;
+  const retainedUpgrade = upgradeRecoveries.data?.recoveries?.[0] ?? null;
+  const recoveryId = appliedUpgrade?.recovery_id ?? retainedUpgrade?.recovery_id ?? null;
 
   return <section className="card maintenance-panel" aria-labelledby="maintenance-heading">
     <div className="section-heading">
@@ -716,12 +725,12 @@ export function MaintenancePanel({ profileId }: { profileId: string }) {
       <p className="muted-note">Reviewed {new Date(plan.reviewed_at).toLocaleString()} · plan {plan.plan_id}. This review reflects the evidence at that moment; run it again if the server has been used since.</p>
     </>}
 
-    {appliedUpgrade && <div className="maintenance-recovery" role="status">
-      <p>{appliedUpgrade.detail}</p>
+    {recoveryId && <div className="maintenance-recovery" role="status">
+      <p>{appliedUpgrade?.detail ?? `A verified launch-file recovery remains available${retainedUpgrade?.previous_version ? ` for Minecraft ${retainedUpgrade.previous_version}` : ""}. Blockstead rechecked both the active and preserved jars before offering this restore.`}</p>
       <Button
         className="button--secondary"
         disabled={rollbackUpgrade.isPending}
-        onClick={() => rollbackUpgrade.mutate(appliedUpgrade.recovery_id)}
+        onClick={() => rollbackUpgrade.mutate(recoveryId)}
       >
         {rollbackUpgrade.isPending ? "Restoring launch file…" : "Restore previous launch file"}
       </Button>

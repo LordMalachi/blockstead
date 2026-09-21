@@ -6,6 +6,7 @@ import type {
   MaintenanceBooking,
   MaintenanceCatalog,
   MaintenancePlan,
+  ServerUpgradeRecovery,
   UpgradeReview,
 } from "../../api/client";
 import { MaintenancePanel } from "./MaintenancePanel";
@@ -291,10 +292,12 @@ function respond(body: unknown, status = 200) {
 function renderPanel({
   plan = readyPlan,
   review = upgradeReview,
+  recoveries = [],
   scheduleResponse = () => respond(booking, 201),
 }: {
   plan?: MaintenancePlan;
   review?: UpgradeReview;
+  recoveries?: ServerUpgradeRecovery[];
   scheduleResponse?: () => Response;
 } = {}) {
   vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
@@ -303,6 +306,7 @@ function renderPanel({
     if (url.includes("/maintenance/schedule")) return Promise.resolve(scheduleResponse());
     if (url.includes("/maintenance/upgrades/apply")) return Promise.resolve(respond(appliedUpgrade));
     if (url.includes("/maintenance/upgrades/recovery")) return Promise.resolve(respond({ detail: "The previous launch file was restored. The world was not rolled back." }));
+    if (url.includes("/maintenance/upgrades/recoveries")) return Promise.resolve(respond({ recoveries }));
     if (url.includes("/maintenance/upgrades")) return Promise.resolve(respond(review));
     return Promise.resolve(respond(catalog));
   }));
@@ -417,7 +421,7 @@ test("published releases are only fetched for the upgrade review", async () => {
   fireEvent.click(screen.getByRole("radio", { name: /Edit or replace world files/ }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Run the preflight" })).toBeVisible());
   expect(fetch).not.toHaveBeenCalledWith(
-    expect.stringContaining("/maintenance/upgrades"),
+    "/api/v1/profiles/profile-1/maintenance/upgrades",
     expect.anything(),
   );
 
@@ -475,6 +479,24 @@ test("applies a reviewed upgrade only with fresh verified protection and offers 
     }),
   ));
   expect(await screen.findByText(/previous launch file is preserved/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Restore previous launch file" })).toBeVisible();
+});
+
+test("offers a verified retained launch recovery after the panel is reopened", async () => {
+  renderPanel({
+    recoveries: [{
+      recovery_id: "abcdef1234567890abcdef12",
+      previous_version: "1.21.1",
+      new_version: "1.21.6",
+      previous_loader_version: null,
+      new_loader_version: null,
+      previous_paper_build: null,
+      new_paper_build: null,
+      created_at: "2026-07-26T13:00:00Z",
+    }],
+  });
+
+  expect(await screen.findByText(/verified launch-file recovery remains available for Minecraft 1\.21\.1/)).toBeVisible();
   expect(screen.getByRole("button", { name: "Restore previous launch file" })).toBeVisible();
 });
 

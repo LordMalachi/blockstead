@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
 
 from blockstead.app import create_app
 from blockstead.config import Settings
@@ -755,6 +756,12 @@ def test_update_check_and_apply(
     assert (plugins / "new-core-3.0.jar").is_file()
     assert not (plugins / "old-plugin-1.0.jar").exists()
     recovery_id = applied.json()["recovery_id"]
+    available = client.get(
+        f"/api/v1/profiles/{paper_profile}/extensions/update-recoveries",
+        headers=headers,
+    )
+    assert available.status_code == 200, available.text
+    assert available.json()["recoveries"][0]["recovery_id"] == recovery_id
 
     recovered = client.post(
         f"/api/v1/profiles/{paper_profile}/extensions/update-recovery/{recovery_id}",
@@ -764,9 +771,51 @@ def test_update_check_and_apply(
     assert (plugins / "old-plugin-1.0.jar").read_bytes() == b"old bytes"
     assert not (plugins / "old-plugin-2.0.jar").exists()
     assert not (plugins / "new-core-3.0.jar").exists()
+    available_after = client.get(
+        f"/api/v1/profiles/{paper_profile}/extensions/update-recoveries",
+        headers=headers,
+    )
+    assert available_after.json()["recoveries"] == []
     restored_origin = load_origin_map(plugins)["old-plugin-1.0.jar"]
     assert restored_origin.source == "local"
     assert restored_origin.verified is False
+
+    reviewed_again = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/update-review",
+        headers=headers,
+        json={"file_name": "old-plugin-1.0.jar"},
+    )
+    assert reviewed_again.status_code == 200
+    second_review = reviewed_again.json()
+    session_class = client.app.state.session_factory.class_
+    original_commit = session_class.commit
+    fail_next_commit = True
+
+    def fail_commit_once(session: object) -> None:
+        nonlocal fail_next_commit
+        if fail_next_commit:
+            fail_next_commit = False
+            raise SQLAlchemyError("forced commit failure")
+        original_commit(session)
+
+    monkeypatch.setattr(session_class, "commit", fail_commit_once)
+    failed_apply = client.post(
+        f"/api/v1/profiles/{paper_profile}/extensions/update",
+        headers=headers,
+        json={
+            "file_name": "old-plugin-1.0.jar",
+            "review_id": second_review["review"]["review_id"],
+            "maintenance_plan_id": second_review["maintenance_plan"]["plan_id"],
+        },
+    )
+    assert failed_apply.status_code == 500
+    assert (
+        "previous extension version was restored"
+        in failed_apply.json()["error"]["message"]
+    )
+    assert (plugins / "old-plugin-1.0.jar").read_bytes() == b"old bytes"
+    assert not (plugins / "old-plugin-2.0.jar").exists()
+    assert not (plugins / "new-core-3.0.jar").exists()
 
     missing = client.post(
         f"/api/v1/profiles/{paper_profile}/extensions/update-review",
