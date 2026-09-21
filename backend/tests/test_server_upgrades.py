@@ -165,6 +165,24 @@ def test_paper_lists_a_newer_stable_build_on_the_same_minecraft_version() -> Non
     assert "same-version Paper build update" in same_version[0].detail
 
 
+def test_paper_cross_version_upgrade_explains_what_stays_and_what_changes() -> None:
+    result = review(
+        context(
+            distribution="paper",
+            paper_builds=(_paper_build(10),),
+            current_paper_build=10,
+            current_paper_channel="STABLE",
+        )
+    )
+    candidate = next(
+        item for item in result.candidates if item.minecraft_version == "1.21.6"
+    )
+
+    assert "replaces the Paper jar" in candidate.detail
+    assert "world, settings, and plugins" in candidate.detail
+    assert "preserved for recovery" in candidate.detail
+
+
 def test_paper_unknown_active_jar_is_not_called_current() -> None:
     result = review(
         context(

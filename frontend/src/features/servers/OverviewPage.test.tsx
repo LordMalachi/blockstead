@@ -8,7 +8,7 @@ import { OverviewPage } from "./OverviewPage";
 
 vi.mock("./scope", () => ({
   useServerScope: () => ({
-    profile: { id: "profile-1", name: "Home", distribution: "paper", minecraft_version: "1.21.8" },
+    profile: { id: "profile-1", name: "Home", distribution: "paper", minecraft_version: "1.21.8", loader_version: null, paper_build: 205 },
     state: "RUNNING",
     running: true,
     pid: 4321,
@@ -97,6 +97,9 @@ test("shows owner health, join address, trends, warnings, and diagnostics", asyn
   expect(screen.getByRole("link", { name: "Resolve" })).toHaveAttribute("href", "/servers/profile-1/backups");
   expect(screen.getByText("Process ID")).toBeInTheDocument();
   expect(screen.getByText("4321")).toBeInTheDocument();
+  expect(screen.getByText("Minecraft version").parentElement).toHaveTextContent("1.21.8");
+  expect(screen.getByText("Server software").parentElement).toHaveTextContent("Paper");
+  expect(screen.getByText("Server software version").parentElement).toHaveTextContent("Build 205");
 
   await userEvent.click(screen.getByRole("button", { name: "Copy address" }));
   await waitFor(() => expect(writeText).toHaveBeenCalledWith("192.168.1.24:25570"));

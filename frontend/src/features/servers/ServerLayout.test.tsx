@@ -5,7 +5,7 @@ import { vi } from "vitest";
 import type { Profile } from "../../api/client";
 import { ServerLayout } from "./ServerLayout";
 
-const first: Profile = { id: "server-1", name: "Family", server_directory: "/srv/minecraft/family", distribution: "vanilla", minecraft_version: "1.21.1", loader_version: null, is_fixture: false };
+const first: Profile = { id: "server-1", name: "Family", server_directory: "/srv/minecraft/family", distribution: "paper", minecraft_version: "1.21.1", loader_version: null, paper_build: 205, is_fixture: false };
 const second: Profile = { id: "server-2", name: "Creative", server_directory: "/srv/minecraft/creative", distribution: "paper", minecraft_version: "1.21.1", loader_version: null, is_fixture: false };
 
 test("updates the active-server picker when the shared profile list changes", async () => {
@@ -30,6 +30,7 @@ test("updates the active-server picker when the shared profile list changes", as
   );
 
   const picker = await screen.findByLabelText("Active server");
+  expect(screen.getByText("Paper · build 205 · Minecraft 1.21.1")).toBeVisible();
   expect(screen.getByRole("option", { name: /Creative/ })).toBeVisible();
   client.setQueryData<Profile[]>(["profiles"], [first]);
 

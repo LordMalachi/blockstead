@@ -5,6 +5,7 @@ import { api, type ProcessState, type Profile } from "../../api/client";
 import { Button } from "../../components/Button";
 import { useRole } from "../shell/role";
 import { scopeFor } from "./scope";
+import { serverSoftwareIdentity } from "./server-version";
 
 export function ServerLayout() {
   const { profileId = "" } = useParams();
@@ -32,7 +33,7 @@ export function ServerLayout() {
   return <>
     <section className={`hero hero--${scope.state.toLowerCase()}`}>
       <div className="hero-copy">
-        <p className="eyebrow">{profile.distribution} · {profile.minecraft_version ?? "version unknown"}</p>
+        <p className="eyebrow">{serverSoftwareIdentity(profile)} · Minecraft {profile.minecraft_version ?? "version not recorded"}</p>
         <h1>{profile.name}</h1>
         <p>{scope.reason}</p>
         <div className="hero-status"><span className="hero-state"><i aria-hidden="true" />Server {scope.state.toLowerCase()}</span>{scope.pid != null && <span>PID {scope.pid}</span>}</div>

@@ -1,3 +1,4 @@
+import errno
 import hashlib
 from pathlib import Path
 
@@ -107,6 +108,112 @@ def _promote_inputs(
     }
 
 
+def test_cross_filesystem_roots_are_copied_before_same_filesystem_renames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, staging, recovery_root = _upgrade_inputs(tmp_path)
+    real_replace = upgrade_ops.os.replace
+    cross_root_attempts: list[tuple[Path, Path]] = []
+
+    def under(path: Path, root: Path) -> bool:
+        return path == root or root in path.parents
+
+    def reject_cross_root(source: Path, destination: Path) -> None:
+        if (
+            under(source, server)
+            and under(destination, recovery_root)
+            or under(source, recovery_root)
+            and under(destination, server)
+        ):
+            cross_root_attempts.append((source, destination))
+            raise OSError(errno.EXDEV, "injected cross-filesystem rename")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(upgrade_ops.os, "replace", reject_cross_root)
+
+    recovery = promote_launch_upgrade(**_promote_inputs(server, staging, recovery_root))
+    assert (server / "server.jar").read_bytes() == b"new server"
+    manifest = rollback_launch_upgrade(
+        server_directory=server,
+        recovery_root=recovery_root,
+        profile_id="profile-1",
+        recovery_id=recovery.recovery_id,
+        distribution="vanilla",
+    )
+
+    assert (server / "server.jar").read_bytes() == b"old server"
+    assert (recovery.recovery_directory / "replaced-server.jar").read_bytes() == b"new server"
+    assert manifest["used"] is True
+    assert cross_root_attempts == []
+
+
+def test_recovery_copy_write_failure_leaves_active_file_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, staging, recovery_root = _upgrade_inputs(tmp_path)
+
+    def fail_fsync(descriptor: int) -> None:
+        raise OSError(errno.EIO, "injected copy flush failure")
+
+    monkeypatch.setattr(upgrade_ops.os, "fsync", fail_fsync)
+
+    with pytest.raises(UpgradeOperationError, match="could not create and flush"):
+        promote_launch_upgrade(**_promote_inputs(server, staging, recovery_root))
+
+    assert (server / "server.jar").read_bytes() == b"old server"
+
+
+def test_recovery_copy_staging_failure_leaves_active_file_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, staging, recovery_root = _upgrade_inputs(tmp_path)
+
+    def fail_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        raise OSError(errno.ENOSPC, "injected recovery staging failure")
+
+    monkeypatch.setattr(upgrade_ops.tempfile, "mkstemp", fail_mkstemp)
+
+    with pytest.raises(UpgradeOperationError, match="could not create and flush"):
+        promote_launch_upgrade(**_promote_inputs(server, staging, recovery_root))
+
+    assert (server / "server.jar").read_bytes() == b"old server"
+
+
+def test_recovery_copy_fsync_failure_leaves_active_file_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, staging, recovery_root = _upgrade_inputs(tmp_path)
+
+    def fail_fsync_path(path: Path) -> None:
+        raise OSError(errno.ENOSPC, "injected durable flush failure")
+
+    monkeypatch.setattr(upgrade_ops, "fsync_path", fail_fsync_path)
+
+    with pytest.raises(UpgradeOperationError, match="could not create and flush"):
+        promote_launch_upgrade(**_promote_inputs(server, staging, recovery_root))
+
+    assert (server / "server.jar").read_bytes() == b"old server"
+
+
+def test_recovery_copy_hash_failure_leaves_active_file_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, staging, recovery_root = _upgrade_inputs(tmp_path)
+    real_sha256 = upgrade_ops._sha256
+
+    def fail_recovery_hash(path: Path) -> str:
+        if recovery_root == path or recovery_root in path.parents:
+            return "0" * 64
+        return real_sha256(path)
+
+    monkeypatch.setattr(upgrade_ops, "_sha256", fail_recovery_hash)
+
+    with pytest.raises(UpgradeOperationError, match="could not verify the copied"):
+        promote_launch_upgrade(**_promote_inputs(server, staging, recovery_root))
+
+    assert (server / "server.jar").read_bytes() == b"old server"
+
+
 def test_promotion_failure_restores_the_prior_launch_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -133,11 +240,12 @@ def test_promotion_restore_failure_keeps_recovery_copy_and_reports_its_location(
     real_replace = upgrade_ops.os.replace
 
     def fail_restoring(source: Path, destination: Path) -> None:
-        is_recovery_copy = (
-            source.name == "server.jar"
-            and source.parent.parent.parent.parent == recovery_root
+        is_server_displaced = (
+            source.parent == server
+            and source.name.startswith(".blockstead-r-")
+            and source.name.endswith("-d")
         )
-        if is_recovery_copy and destination == server / "server.jar":
+        if is_server_displaced and destination == server / "server.jar":
             raise OSError("injected restore failure")
         real_replace(source, destination)
 
@@ -156,6 +264,8 @@ def test_promotion_restore_failure_keeps_recovery_copy_and_reports_its_location(
     recovery_directory = next((recovery_root / "server-upgrades" / "profile-1").iterdir())
     assert (recovery_directory / "server.jar").read_bytes() == b"old server"
     assert (server / "server.jar").read_bytes() == b"new server"
+    server_displaced = next(server.glob(".blockstead-r-*-d"))
+    assert server_displaced.read_bytes() == b"old server"
     assert str(recovery_directory) in str(raised.value)
 
 
@@ -256,12 +366,14 @@ def test_recovery_compensation_failure_keeps_old_active_and_new_displaced(
     server, staging, recovery_root = _upgrade_inputs(tmp_path)
     recovery = promote_launch_upgrade(**_promote_inputs(server, staging, recovery_root))
     real_replace = upgrade_ops.os.replace
-    calls = 0
 
     def fail_preserving_old(source: Path, destination: Path) -> None:
-        nonlocal calls
-        calls += 1
-        if calls == 3:
+        is_server_displaced = (
+            source.parent == server
+            and source.name.startswith(".blockstead-r-")
+            and source.name.endswith("-d")
+        )
+        if is_server_displaced and destination == server / "server.jar":
             raise OSError("injected compensation failure")
         real_replace(source, destination)
 
@@ -284,5 +396,7 @@ def test_recovery_compensation_failure_keeps_old_active_and_new_displaced(
         )
 
     assert (server / "server.jar").read_bytes() == b"old server"
+    server_displaced = next(server.glob(".blockstead-r-*-d"))
+    assert server_displaced.read_bytes() == b"new server"
     assert (recovery.recovery_directory / "replaced-server.jar").read_bytes() == b"new server"
     assert str(recovery.recovery_directory) in str(raised.value)

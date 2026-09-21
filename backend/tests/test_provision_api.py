@@ -32,15 +32,21 @@ def headers(api: tuple[TestClient, Path]) -> dict[str, str]:
     return {"Origin": "http://testserver", "X-CSRF-Token": response.json()["csrf_token"]}
 
 
-def make_result(directory: Path) -> ProvisionResult:
+def make_result(
+    directory: Path,
+    *,
+    distribution: str = "vanilla",
+    paper_build: int | None = None,
+) -> ProvisionResult:
     plan = ProvisionPlan(
-        distribution="vanilla",
+        distribution=distribution,
         minecraft_version="1.21.1",
         file_name="server.jar",
         url="https://example.invalid/server.jar",
-        checksum_algorithm="sha1",
-        checksum="a" * 40,
+        checksum_algorithm="sha256" if distribution == "paper" else "sha1",
+        checksum="a" * (64 if distribution == "paper" else 40),
         notes=["test note"],
+        paper_build=paper_build,
     )
     directory.mkdir(parents=True)
     (directory / "server.jar").write_bytes(b"jar")
@@ -83,6 +89,49 @@ def test_provision_creates_profile(
     profiles = client.get("/api/v1/profiles").json()
     assert profiles[0]["distribution"] == "vanilla"
     assert profiles[0]["minecraft_version"] == "1.21.1"
+    assert profiles[0]["paper_build"] is None
+
+
+def test_paper_provision_records_the_exact_build_for_server_info(
+    api: tuple[TestClient, Path],
+    headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, root = api
+
+    async def fake_provision(
+        _client: httpx.AsyncClient,
+        server_root: Path,
+        name: str,
+        dist: str,
+        version: str,
+        loader_version: str | None,
+        java_executable: str | None,
+    ) -> ProvisionResult:
+        assert (dist, version) == ("paper", "1.21.1")
+        return make_result(
+            server_root / name,
+            distribution="paper",
+            paper_build=205,
+        )
+
+    monkeypatch.setattr("blockstead.app.provision_profile", fake_provision)
+    response = client.post(
+        "/api/v1/provision",
+        headers=headers,
+        json={
+            "name": "Paper Family",
+            "directory_name": "paper-family",
+            "distribution": "paper",
+            "minecraft_version": "1.21.1",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["paper_build"] == 205
+    profile = client.get("/api/v1/profiles").json()[0]
+    assert profile["minecraft_version"] == "1.21.1"
+    assert profile["paper_build"] == 205
 
 
 def test_provision_error_is_a_safe_400(

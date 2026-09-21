@@ -2606,6 +2606,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "distribution": p.distribution,
                 "minecraft_version": p.minecraft_version,
                 "loader_version": p.loader_version,
+                "paper_build": p.paper_build,
                 "is_fixture": p.is_fixture,
             }
             for p in db.scalars(select(Profile).order_by(Profile.created_at)).all()
@@ -3277,6 +3278,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "name": profile.name,
             "distribution": profile.distribution,
             "minecraft_version": profile.minecraft_version,
+            "loader_version": profile.loader_version,
+            "paper_build": profile.paper_build,
             "is_fixture": profile.is_fixture,
         }
 
@@ -3342,6 +3345,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             distribution=payload.distribution,
             minecraft_version=payload.minecraft_version,
             loader_version=result.plan.loader_version,
+            paper_build=result.plan.paper_build,
             is_fixture=False,
         )
         db.add(profile)
@@ -3365,6 +3369,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "distribution": profile.distribution,
             "minecraft_version": profile.minecraft_version,
             "loader_version": profile.loader_version,
+            "paper_build": profile.paper_build,
             "directory": result.directory,
             "sha256": result.sha256,
             "notes": result.plan.notes,
@@ -3755,6 +3760,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             distribution=payload.target_distribution,
             minecraft_version=cast(str, fresh["minecraft_version"]),
             loader_version=provisioned.plan.loader_version,
+            paper_build=provisioned.plan.paper_build,
             is_fixture=False,
         )
         try:
@@ -3804,6 +3810,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "distribution": created.distribution,
             "minecraft_version": created.minecraft_version,
             "loader_version": created.loader_version,
+            "paper_build": created.paper_build,
             "worlds_copied": copied,
             "source_directory": str(source),
             "destination_directory": str(target),
@@ -3839,6 +3846,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "distribution": profile.distribution,
             "minecraft_version": profile.minecraft_version,
             "loader_version": profile.loader_version,
+            "paper_build": profile.paper_build,
             "source_profile_id": variant.source_profile_id,
             "protection_backup_id": variant.protection_backup_id,
             "protection_status": "verified" if protection_verified else "missing",
@@ -4062,6 +4070,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             distribution=payload.target_distribution,
             minecraft_version=cast(str, fresh["minecraft_version"]),
             loader_version=provisioned.plan.loader_version,
+            paper_build=provisioned.plan.paper_build,
             is_fixture=False,
         )
         now = datetime.now(timezone.utc)  # noqa: UP017
@@ -4104,6 +4113,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "distribution": profile.distribution,
             "minecraft_version": profile.minecraft_version,
             "loader_version": profile.loader_version,
+            "paper_build": profile.paper_build,
             "source_profile_id": source.id,
             "copied_paths": copied,
             "source_unchanged": True,
@@ -7862,6 +7872,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                 or "The active Paper jar did not match a build in the "
                                 "official catalog by SHA-256."
                             )
+                        # A successful catalog and digest comparison is strong
+                        # enough to refresh the recorded identity. This also
+                        # backfills profiles created before Paper build storage
+                        # was introduced and clears a stale build after a manual
+                        # jar replacement.
+                        if profile.paper_build != current_paper_build:
+                            profile.paper_build = current_paper_build
+                            db.commit()
                 except (HTTPException, OSError, UpgradeOperationError) as exc:
                     paper_build_detail = paper_build_detail or str(exc)
         if not profile.is_fixture and profile.distribution == "fabric":
@@ -8249,11 +8267,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     new_version=plan.minecraft_version,
                     previous_loader_version=profile.loader_version,
                     new_loader_version=plan.loader_version,
+                    previous_paper_build=profile.paper_build,
+                    new_paper_build=plan.paper_build,
                 )
                 recovery_id = recovery.recovery_id
                 profile.minecraft_version = plan.minecraft_version
                 if plan.loader_version is not None:
                     profile.loader_version = plan.loader_version
+                if profile.distribution == "paper":
+                    profile.paper_build = plan.paper_build
                 db.add(
                     AuditEvent(
                         admin_id=admin.id,
@@ -8339,7 +8361,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "minecraft_version": profile.minecraft_version,
             "loader_version": profile.loader_version,
-            "paper_build": plan.paper_build if profile.distribution == "paper" else None,
+            "paper_build": profile.paper_build if profile.distribution == "paper" else None,
             "recovery_id": recovery_id,
             "restart_required": True,
             "detail": (
@@ -8385,10 +8407,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(409, str(exc)) from exc
             previous_version = recovered.get("previous_version")
             previous_loader = recovered.get("previous_loader_version")
+            previous_paper_build = recovered.get("previous_paper_build")
             profile.minecraft_version = (
                 previous_version if isinstance(previous_version, str) else None
             )
             profile.loader_version = previous_loader if isinstance(previous_loader, str) else None
+            profile.paper_build = (
+                previous_paper_build
+                if isinstance(previous_paper_build, int)
+                and not isinstance(previous_paper_build, bool)
+                and previous_paper_build > 0
+                else None
+            )
             db.add(
                 AuditEvent(
                     admin_id=admin.id,
@@ -8402,8 +8432,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
             db.commit()
-        recovered_paper_build: int | None = None
-        if profile.distribution == "paper" and profile.minecraft_version is not None:
+        recovered_paper_build = profile.paper_build
+        if (
+            profile.distribution == "paper"
+            and profile.minecraft_version is not None
+            and recovered_paper_build is None
+        ):
             try:
                 recovered_paper_build = (
                     await upgrade_review_for(profile, db)
@@ -8579,6 +8613,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if upgrade is not None
             else None
         )
+        if payload.change_id == "server_upgrade" and selected is not None:
+            # Compatibility belongs to the reviewed target. Using the
+            # currently installed release here can produce a reassuring Java
+            # result for a target that needs a newer runtime.
+            required = selected.required_java_major
+            compatible_java = selected.java_available
         upgrade_source_available = upgrade is not None and upgrade.source == "available"
         upgrade_source_detail = upgrade.source_detail if upgrade else ""
         upgrade_up_to_date = upgrade.up_to_date if upgrade else None

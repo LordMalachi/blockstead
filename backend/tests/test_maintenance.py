@@ -190,6 +190,62 @@ def test_an_installable_newer_release_makes_the_upgrade_reviewable() -> None:
     assert step(plan, "backup").requirement == "required"
 
 
+def test_a_cross_version_paper_upgrade_warns_about_installed_plugins() -> None:
+    plan = plan_for(
+        "server_upgrade",
+        distribution="paper",
+        distribution_label="Paper",
+        extension_signature=("essentials.jar@2.21.0", "luckperms.jar@5.4.0"),
+        upgrade_source_available=True,
+        upgrade_installable=True,
+        upgrade_distribution_supported=True,
+        upgrade_up_to_date=False,
+        upgrade_target="1.21.6",
+        upgrade_detail="A reviewed Paper upgrade.",
+    )
+
+    compatibility = finding(plan, "compatibility")
+    assert plan.readiness == "ready_with_warnings"
+    assert compatibility.status == "attention"
+    assert "2 installed Paper plugins" in compatibility.detail
+    assert "Minecraft 1.21.6" in compatibility.detail
+    assert "first startup log" in (compatibility.recommendation or "")
+
+
+def test_a_same_version_paper_build_update_does_not_raise_the_plugin_warning() -> None:
+    plan = plan_for(
+        "server_upgrade",
+        distribution="paper",
+        distribution_label="Paper",
+        minecraft_version="1.21.1",
+        upgrade_source_available=True,
+        upgrade_installable=True,
+        upgrade_distribution_supported=True,
+        upgrade_up_to_date=False,
+        upgrade_target="1.21.1",
+        upgrade_detail="A reviewed same-version Paper build update.",
+    )
+
+    assert finding(plan, "compatibility").status == "ready"
+
+
+def test_a_cross_version_paper_upgrade_without_plugins_has_no_plugin_warning() -> None:
+    plan = plan_for(
+        "server_upgrade",
+        distribution="paper",
+        distribution_label="Paper",
+        extension_signature=(),
+        upgrade_source_available=True,
+        upgrade_installable=True,
+        upgrade_distribution_supported=True,
+        upgrade_up_to_date=False,
+        upgrade_target="1.21.6",
+        upgrade_detail="A reviewed Paper upgrade.",
+    )
+
+    assert finding(plan, "compatibility").status == "ready"
+
+
 def test_an_already_current_server_is_not_reported_as_a_safety_problem() -> None:
     plan = plan_for(
         "server_upgrade",

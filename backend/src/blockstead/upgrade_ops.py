@@ -2,9 +2,11 @@
 
 Vanilla, Paper, and Fabric all launch through one top-level jar.  That makes a
 bounded in-place upgrade possible: download the replacement into a private
-same-filesystem staging directory, move the prior launch jar into Blockstead's
-private recovery store, promote the replacement atomically, and validate the
-launch plan before reporting success.
+same-filesystem staging directory, copy and verify the prior launch jar in
+Blockstead's private recovery store, promote the replacement atomically, and
+validate the launch plan before reporting success.  Recovery storage may be on
+a different filesystem, so active launch files are never moved directly into
+or out of it.
 
 World folders are never part of this rollback.  Downgrading a launch artifact
 after a newer server has opened a world can be unsafe, so recovery remains an
@@ -17,6 +19,7 @@ import hashlib
 import json
 import os
 import secrets
+import tempfile
 import zipfile
 import zlib
 from dataclasses import dataclass
@@ -24,7 +27,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .distributions import LaunchPlanError, launch_arguments
-from .host_fs import atomic_write_text, describe_os_error, restrict_to_owner, rmtree
+from .host_fs import (
+    atomic_write_text,
+    describe_os_error,
+    fsync_path,
+    restrict_to_owner,
+    rmtree,
+)
 
 DIRECT_UPGRADE_DISTRIBUTIONS = frozenset({"vanilla", "paper", "fabric"})
 RECOVERY_ID_LENGTH = 24
@@ -43,6 +52,8 @@ class UpgradeRecovery:
     new_version: str
     previous_loader_version: str | None
     new_loader_version: str | None
+    previous_paper_build: int | None = None
+    new_paper_build: int | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -51,6 +62,81 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _failure_detail(exc: BaseException, path: Path) -> str:
+    if isinstance(exc, OSError):
+        return describe_os_error(exc, path)
+    return str(exc)
+
+
+def _copy_verified(
+    source: Path,
+    destination: Path,
+    *,
+    description: str,
+) -> str:
+    """Copy a file through a destination-local temp and verify the installed copy.
+
+    ``os.replace`` is only used between paths in ``destination.parent``.  That
+    keeps the final rename atomic even when ``source`` lives on a different
+    filesystem.  The source digest is calculated while copying and compared
+    with a fresh digest after the destination has been flushed and renamed.
+    """
+
+    if destination.exists() or destination.is_symlink():
+        raise UpgradeOperationError(
+            f"Blockstead found an existing file where it needs to place the {description}."
+        )
+    source_digest = hashlib.sha256()
+    temporary: Path | None = None
+    installed = False
+    verified = False
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=destination.parent,
+            prefix=".blockstead-copy-",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        with os.fdopen(descriptor, "wb") as target:
+            with source.open("rb") as source_handle:
+                for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
+                    source_digest.update(chunk)
+                    target.write(chunk)
+            target.flush()
+            os.fsync(target.fileno())
+        restrict_to_owner(temporary)
+        os.replace(temporary, destination)
+        temporary = None
+        installed = True
+        fsync_path(destination)
+        expected_digest = source_digest.hexdigest()
+        if _sha256(destination) != expected_digest:
+            raise UpgradeOperationError(
+                f"Blockstead could not verify the copied {description}; the launch-file "
+                "change was not activated."
+            )
+        verified = True
+        return expected_digest
+    except UpgradeOperationError:
+        raise
+    except OSError as exc:
+        raise UpgradeOperationError(
+            f"Blockstead could not create and flush the {description} from {source} "
+            f"to {destination}. {_failure_detail(exc, destination)}"
+        ) from exc
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if installed and not verified:
+            try:
+                destination.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def active_launch_file(distribution: str, server_directory: Path) -> Path:
@@ -147,7 +233,8 @@ def _write_manifest(path: Path, payload: dict[str, object]) -> None:
         )
     except OSError as exc:
         raise UpgradeOperationError(
-            "Blockstead could not record the launch-file recovery instructions."
+            "Blockstead could not record the launch-file recovery instructions. "
+            f"{describe_os_error(exc, path)}"
         ) from exc
 
 
@@ -162,8 +249,10 @@ def promote_launch_upgrade(
     new_version: str,
     previous_loader_version: str | None,
     new_loader_version: str | None,
+    previous_paper_build: int | None = None,
+    new_paper_build: int | None = None,
 ) -> UpgradeRecovery:
-    """Atomically replace the active launch jar and retain the prior one."""
+    """Copy the prior jar to recovery, then atomically replace the active jar."""
 
     active = active_launch_file(distribution, server_directory)
     if (
@@ -180,12 +269,19 @@ def promote_launch_upgrade(
     recovery_directory = recovery_root / "server-upgrades" / profile_id / recovery_id
     previous = recovery_directory / active.name
     replacement = staged_file.parent / active.name
+    server_displaced = server_directory / f".blockstead-r-{recovery_id}-d"
+    if server_displaced.exists() or server_displaced.is_symlink():
+        raise UpgradeOperationError(
+            "The server folder contains an unfinished launch-file recovery and cannot "
+            "be reused."
+        )
     if staged_file != replacement:
         try:
             os.replace(staged_file, replacement)
         except OSError as exc:
             raise UpgradeOperationError(
-                "Blockstead could not prepare the replacement launch file."
+                "Blockstead could not prepare the replacement launch file. "
+                f"{describe_os_error(exc, replacement)}"
             ) from exc
 
     try:
@@ -194,12 +290,28 @@ def promote_launch_upgrade(
     except OSError as exc:
         raise UpgradeOperationError(describe_os_error(exc, recovery_directory)) from exc
 
-    previous_moved = False
+    active_displaced = False
+    failure_path = recovery_directory
     try:
-        os.replace(active, previous)
-        previous_moved = True
+        previous_digest = _copy_verified(
+            active,
+            previous,
+            description="prior launch file in recovery storage",
+        )
+        failure_path = active
+        if _sha256(active) != previous_digest:
+            raise UpgradeOperationError(
+                "The active launch file changed while its recovery copy was being "
+                "prepared, so the upgrade was not activated."
+            )
+        failure_path = server_displaced
+        os.replace(active, server_displaced)
+        active_displaced = True
+        failure_path = active
         os.replace(replacement, active)
+        failure_path = server_directory
         launch_arguments(distribution, server_directory)
+        failure_path = recovery_directory / "recovery.json"
         _write_manifest(
             recovery_directory / "recovery.json",
             {
@@ -207,29 +319,35 @@ def promote_launch_upgrade(
                 "profile_id": profile_id,
                 "distribution": distribution,
                 "launch_file": active.name,
-                "previous_sha256": _sha256(previous),
+                "previous_sha256": previous_digest,
                 "new_sha256": _sha256(active),
                 "previous_version": previous_version,
                 "new_version": new_version,
                 "previous_loader_version": previous_loader_version,
                 "new_loader_version": new_loader_version,
+                "previous_paper_build": previous_paper_build,
+                "new_paper_build": new_paper_build,
                 "created_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
                 "used": False,
             },
         )
     except (OSError, LaunchPlanError, UpgradeOperationError) as exc:
+        failure_detail = _failure_detail(exc, failure_path)
         rollback_failed = False
-        if previous_moved:
+        rollback_detail: str | None = None
+        if active_displaced:
             try:
-                os.replace(previous, active)
-            except OSError:
+                os.replace(server_displaced, active)
+            except OSError as rollback_exc:
                 rollback_failed = True
+                rollback_detail = _failure_detail(rollback_exc, active)
         if rollback_failed:
             raise UpgradeOperationError(
                 "The replacement could not be activated and Blockstead could not fully "
                 "restore the prior launch file. The preserved copy remains at "
                 f"{recovery_directory}. Leave the server stopped and inspect that "
-                "folder before starting it."
+                f"folder before starting it. Initial failure: {failure_detail} "
+                f"Restore failure: {rollback_detail}"
             ) from exc
         # An UpgradeOperationError is raised either way below; removing the
         # never-finalized recovery folder here is tidiness, not correctness.
@@ -238,8 +356,14 @@ def promote_launch_upgrade(
         except OSError:
             pass
         raise UpgradeOperationError(
-            "The replacement could not be activated. The prior launch file was restored."
+            "The replacement could not be activated. The prior launch file was restored. "
+            f"Reason: {failure_detail}"
         ) from exc
+
+    try:
+        server_displaced.unlink(missing_ok=True)
+    except OSError:
+        pass
 
     return UpgradeRecovery(
         recovery_id=recovery_id,
@@ -249,6 +373,8 @@ def promote_launch_upgrade(
         new_version=new_version,
         previous_loader_version=previous_loader_version,
         new_loader_version=new_loader_version,
+        previous_paper_build=previous_paper_build,
+        new_paper_build=new_paper_build,
     )
 
 
@@ -283,7 +409,7 @@ def rollback_launch_upgrade(
     recovery_id: str,
     distribution: str,
 ) -> dict[str, object]:
-    """Restore the previous launch jar if the current replacement is unchanged."""
+    """Restore the previous jar through server-local staging if unchanged."""
 
     directory, manifest = _read_recovery(recovery_root, profile_id, recovery_id)
     if manifest.get("used") is True:
@@ -323,47 +449,94 @@ def rollback_launch_upgrade(
             "The preserved launch file failed verification and will not be restored."
         )
 
-    displaced = directory / f"replaced-{launch_name}"
-    if displaced.exists() or displaced.is_symlink():
+    replaced = directory / f"replaced-{launch_name}"
+    rollback_stage = server_directory / f".blockstead-r-{recovery_id}-s"
+    server_displaced = server_directory / f".blockstead-r-{recovery_id}-d"
+    if (
+        rollback_stage.exists()
+        or rollback_stage.is_symlink()
+        or server_displaced.exists()
+        or server_displaced.is_symlink()
+        or replaced.exists()
+        or replaced.is_symlink()
+    ):
         raise UpgradeOperationError(
-            "That recovery folder contains an unfinished restore and cannot be reused."
+            "That recovery contains an unfinished restore and cannot be reused."
         )
     active_moved = False
-    previous_moved = False
+    replacement_snapshot = False
+    failure_path = rollback_stage
     try:
-        os.replace(active, displaced)
+        snapshot_digest = _copy_verified(
+            active,
+            replaced,
+            description="current launch file in recovery storage",
+        )
+        replacement_snapshot = True
+        if snapshot_digest != current_digest:
+            raise UpgradeOperationError(
+                "The current launch file changed while its recovery copy was being "
+                "prepared, so the previous file was not restored."
+            )
+        rollback_digest = _copy_verified(
+            previous,
+            rollback_stage,
+            description="preserved launch file for rollback",
+        )
+        if rollback_digest != previous_digest:
+            raise UpgradeOperationError(
+                "The preserved launch file changed while its rollback copy was being "
+                "prepared, so the newer file was not replaced."
+            )
+        failure_path = server_displaced
+        os.replace(active, server_displaced)
         active_moved = True
-        os.replace(previous, active)
-        previous_moved = True
+        failure_path = active
+        os.replace(rollback_stage, active)
+        failure_path = server_directory
         launch_arguments(distribution, server_directory)
         manifest["used"] = True
         manifest["used_at"] = datetime.now(timezone.utc).isoformat()  # noqa: UP017
+        failure_path = directory / "recovery.json"
         _write_manifest(directory / "recovery.json", manifest)
     except (OSError, LaunchPlanError, UpgradeOperationError) as exc:
+        failure_detail = _failure_detail(exc, failure_path)
         rollback_failed = False
-        previous_preserved = not previous_moved
-        if previous_moved:
+        rollback_detail: str | None = None
+        if active_moved:
             try:
-                # The previous jar is currently active. Move it back into the
-                # recovery folder before restoring the newer jar so neither
-                # copy can be discarded during cleanup.
-                os.replace(active, previous)
-            except OSError:
+                # The recovery source was copied, not moved, so it remains
+                # available while the newer server-side copy is restored.
+                os.replace(server_displaced, active)
+            except OSError as rollback_exc:
                 rollback_failed = True
-            else:
-                previous_preserved = True
-        if active_moved and previous_preserved:
-            try:
-                os.replace(displaced, active)
-            except OSError:
-                rollback_failed = True
+                rollback_detail = _failure_detail(rollback_exc, active)
         if rollback_failed:
             raise UpgradeOperationError(
                 "Recovery failed and Blockstead could not fully restore the newer launch "
                 f"file. The launch files remain in the server folder and recovery folder "
-                f"{directory}. Leave the server stopped and inspect both locations."
+                f"{directory}. Leave the server stopped and inspect both locations. "
+                f"Initial failure: {failure_detail} Restore failure: {rollback_detail}"
             ) from exc
+        try:
+            rollback_stage.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if replacement_snapshot:
+            try:
+                replaced.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise UpgradeOperationError(
-            "The previous launch file could not be restored; the newer file remains active."
+            "The previous launch file could not be restored; the newer file remains active. "
+            f"Reason: {failure_detail}"
         ) from exc
+    try:
+        server_displaced.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        previous.unlink(missing_ok=True)
+    except OSError:
+        pass
     return manifest

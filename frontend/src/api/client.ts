@@ -20,6 +20,7 @@ export interface SavedSetupVariant {
   distribution: string;
   minecraft_version: string | null;
   loader_version: string | null;
+  paper_build?: number | null;
   source_profile_id: string | null;
   protection_backup_id: string | null;
   protection_status: "verified" | "missing";
@@ -116,7 +117,7 @@ export interface DiscordConnection {
   created_at: string | null;
   updated_at: string | null;
 }
-export interface Profile { id: string; name: string; server_directory: string; distribution: string; minecraft_version: string | null; loader_version: string | null; is_fixture: boolean }
+export interface Profile { id: string; name: string; server_directory: string; distribution: string; minecraft_version: string | null; loader_version: string | null; paper_build?: number | null; is_fixture: boolean }
 export interface ProfileRemovalReview {
   id: string;
   name: string;
@@ -605,7 +606,7 @@ export interface CatalogSearch { minecraft_version?: string | null; source?: str
 export interface CatalogVersion { version_id: string; version_number: string | null; version_type: string | null; date_published: string | null; game_versions: string[]; loaders: string[]; external_url?: string | null; required_plugins?: string[] }
 export interface ModpackInstallResult { id: string; name: string; directory: string; distribution: string; minecraft_version: string; loader_version: string | null; installed_files: number; override_files: number; skipped_unsupported: string[]; notes: string[]; eula_accepted: boolean }
 export interface ProvisionVersions { distribution: string; versions: string[] }
-export interface ProvisionResult { id: string; name: string; distribution: string; minecraft_version: string; loader_version: string | null; directory: string; notes: string[]; eula_accepted: boolean }
+export interface ProvisionResult { id: string; name: string; distribution: string; minecraft_version: string; loader_version: string | null; paper_build?: number | null; directory: string; notes: string[]; eula_accepted: boolean }
 export interface ModConfigEntry { path: string; size_bytes: number }
 export interface ModConfigsView { distribution: string; directory: string; files: ModConfigEntry[] }
 export interface ModConfigDocument { path: string; content: string; revision: string; size_bytes: number; restart_required?: boolean }

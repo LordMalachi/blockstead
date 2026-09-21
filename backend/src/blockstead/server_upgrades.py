@@ -354,9 +354,10 @@ def review(context: UpgradeContext) -> UpgradeReview:
         if context.distribution == "paper":
             detail = (
                 f"A {classify_step(version, context.current_version)} step from "
-                f"{context.current_version}. A stable Paper build for this Minecraft "
-                "release is confirmed during preflight; Blockstead preserves the "
-                "current launch file for recovery."
+                f"{context.current_version}. Blockstead replaces the Paper jar while "
+                "keeping this server's world, settings, and plugins in place. A stable "
+                "Paper build for this Minecraft release is confirmed during preflight, "
+                "and the current launch file is preserved for recovery."
             )
         elif context.distribution == "fabric":
             detail = (

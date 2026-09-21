@@ -54,6 +54,13 @@ be read or the jar does not match, the installed build is unknown and the
 review does not claim Paper is up to date. Automatic Paper targets use stable
 builds only.
 
+A Paper upgrade to another Minecraft version replaces the Paper jar while
+keeping the same server folder, world, settings, and installed plugins. Plugin
+jar metadata does not establish support for a newer Minecraft version, so a
+preflight with installed plugins calls that uncertainty out. Review available
+plugin updates before applying the upgrade, then inspect the first startup log
+for plugin errors.
+
 Fabric targets use stable loader versions from Fabric Meta. The displayed
 current loader is the version recorded by the profile; Blockstead cannot
 verify the active Fabric launcher's loader identity against a publisher
@@ -68,3 +75,9 @@ changed since. This only restores the launch file. If the newer server has
 opened a world, that world may no longer work with the older jar. Use the
 verified world backup and the distribution's downgrade guidance when a full
 rollback is needed.
+
+The server folder and Blockstead data folder may be on different disks or
+container mounts. Blockstead copies and verifies the recovery jar across that
+boundary, then performs each live rename within one filesystem. The same rule
+applies when restoring a preserved jar, so separate storage locations do not
+prevent Paper, Fabric, or Vanilla launch-file upgrades.

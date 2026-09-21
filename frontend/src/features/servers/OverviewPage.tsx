@@ -8,6 +8,7 @@ import { formatBytes } from "../../lib/format";
 import { PrerequisitesPanel } from "../extensions/PrerequisitesPanel";
 import { useServerScope } from "./scope";
 import { useRole } from "../shell/role";
+import { serverSoftwareLabel, serverSoftwareVersion } from "./server-version";
 
 function sampledTime(value: string | null): string {
   return value ? new Date(value).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "not yet sampled";
@@ -198,7 +199,7 @@ export function OverviewPage() {
     <details className="card diagnostics">
       <summary>Diagnostics</summary>
       <p>Technical details for troubleshooting. Normal server care should not require these values.</p>
-      <dl><div><dt>Process ID</dt><dd>{scope.pid ?? "—"}</dd></div><div><dt>Last exit code</dt><dd>{scope.exitCode ?? "—"}</dd></div><div><dt>Configured bind</dt><dd>{data.join.bind_address ?? "All interfaces"}</dd></div><div><dt>Process memory</dt><dd>{current.process_memory_bytes != null ? formatBytes(current.process_memory_bytes) : "—"}</dd></div><div><dt>Distribution</dt><dd>{data.capabilities.distribution_label}</dd></div></dl>
+      <dl><div><dt>Process ID</dt><dd>{scope.pid ?? "—"}</dd></div><div><dt>Last exit code</dt><dd>{scope.exitCode ?? "—"}</dd></div><div><dt>Configured bind</dt><dd>{data.join.bind_address ?? "All interfaces"}</dd></div><div><dt>Process memory</dt><dd>{current.process_memory_bytes != null ? formatBytes(current.process_memory_bytes) : "—"}</dd></div><div><dt>Minecraft version</dt><dd>{scope.profile.minecraft_version ?? "Not recorded"}</dd></div><div><dt>Server software</dt><dd>{serverSoftwareLabel(scope.profile)}</dd></div><div><dt>Server software version</dt><dd>{serverSoftwareVersion(scope.profile)}</dd></div></dl>
     </details>
   </>;
 }

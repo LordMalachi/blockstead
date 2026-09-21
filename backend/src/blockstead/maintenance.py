@@ -679,6 +679,24 @@ def _compatibility_finding(
             " ".join(context.extension_warnings),
             "Review the flagged extensions before applying the change.",
         )
+    if (
+        change.id == "server_upgrade"
+        and context.distribution == "paper"
+        and context.upgrade_target is not None
+        and context.upgrade_target != context.minecraft_version
+        and context.extension_signature
+    ):
+        count = len(context.extension_signature)
+        noun = "plugin" if count == 1 else "plugins"
+        return _finding(
+            "compatibility",
+            label,
+            "attention",
+            f"{count} installed Paper {noun} will stay in place, but their jar "
+            f"metadata cannot prove they support Minecraft {context.upgrade_target}.",
+            "Check each plugin for a release that supports the target Minecraft "
+            "version, then inspect the first startup log for plugin errors.",
+        )
     return _finding(
         "compatibility",
         label,

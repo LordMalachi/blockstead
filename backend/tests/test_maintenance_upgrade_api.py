@@ -221,6 +221,34 @@ def test_preflight_can_select_an_older_published_upgrade_target(upgrade_environm
     assert newest.json()["plan_id"] != older_plan["plan_id"]
 
 
+def test_upgrade_preflight_checks_java_for_the_selected_target(
+    upgrade_environment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, headers, profile_id, _folder = upgrade_environment
+
+    async def future_versions(
+        _client: httpx.AsyncClient, distribution: str
+    ) -> list[str]:
+        assert distribution == "vanilla"
+        return ["26.1", "1.21.4"]
+
+    monkeypatch.setattr("blockstead.app.list_versions", future_versions)
+    reviewed = client.post(
+        f"/api/v1/profiles/{profile_id}/maintenance/preflight",
+        headers=headers,
+        json={"change_id": "server_upgrade", "minecraft_version": "26.1"},
+    )
+
+    assert reviewed.status_code == 200, reviewed.text
+    plan = reviewed.json()
+    compatibility = next(
+        item for item in plan["findings"] if item["id"] == "compatibility"
+    )
+    assert plan["readiness"] == "blocked"
+    assert compatibility["status"] == "blocked"
+    assert "Java 25" in compatibility["detail"]
+
+
 def test_apply_refuses_a_plan_reviewed_for_a_different_target(upgrade_environment) -> None:
     client, headers, profile_id, folder = upgrade_environment
     reviewed = client.post(
@@ -505,6 +533,10 @@ def test_paper_same_version_build_update_pins_digest_and_recovers(
     assert plan["upgrade_target"] == "1.21.4"
     assert plan["upgrade_paper_build"] == 11
     assert plan["upgrade_paper_sha256"] == hashlib.sha256(b"paper build 11").hexdigest()
+    reviewed_profile = next(
+        item for item in client.get("/api/v1/profiles").json() if item["id"] == profile_id
+    )
+    assert reviewed_profile["paper_build"] == 10
 
     applied = client.post(
         f"/api/v1/profiles/{profile_id}/maintenance/upgrades/apply",
@@ -519,6 +551,10 @@ def test_paper_same_version_build_update_pins_digest_and_recovers(
     assert applied.json()["minecraft_version"] == "1.21.4"
     assert applied.json()["paper_build"] == 11
     assert (folder / "server.jar").read_bytes() == b"paper build 11"
+    applied_profile = next(
+        item for item in client.get("/api/v1/profiles").json() if item["id"] == profile_id
+    )
+    assert applied_profile["paper_build"] == 11
 
     recovered = client.post(
         f"/api/v1/profiles/{profile_id}/maintenance/upgrades/recovery/"
@@ -529,6 +565,10 @@ def test_paper_same_version_build_update_pins_digest_and_recovers(
     assert recovered.json()["minecraft_version"] == "1.21.4"
     assert recovered.json()["paper_build"] == 10
     assert (folder / "server.jar").read_bytes() == b"paper build 10"
+    recovered_profile = next(
+        item for item in client.get("/api/v1/profiles").json() if item["id"] == profile_id
+    )
+    assert recovered_profile["paper_build"] == 10
 
 
 def test_paper_cross_version_preflight_honors_explicit_build_pin(
