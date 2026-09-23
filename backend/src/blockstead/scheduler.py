@@ -269,7 +269,8 @@ class Scheduler:
         started = time.monotonic()
         status, detail = "success", f"Started {profile.name}."
         try:
-            if self.manager.snapshot()["state"] != "STOPPED":
+            # A crashed server is exactly the one a scheduled start should bring back.
+            if self.manager.snapshot()["state"] not in {"STOPPED", "CRASHED"}:
                 status = "skipped"
                 detail = "Another server is already running on this host."
             else:
@@ -350,7 +351,7 @@ class Scheduler:
             if backup:
                 await self.manager.command("save-off")
                 saving_suspended = True
-            await self.manager.command("save-all flush")
+            await self._save_world(profile)
             if backup:
                 await self.backup(db, profile, now)
         finally:
@@ -378,11 +379,18 @@ class Scheduler:
         try:
             await self.manager.command("save-off")
             saving_suspended = True
-            await self.manager.command("save-all flush")
+            await self._save_world(profile)
             return await self.backup(db, profile, now, trigger="manual")
         finally:
             if saving_suspended:
                 await self.manager.command("save-on")
+
+    async def _save_world(self, profile: Profile) -> None:
+        if not await self.manager.save_world():
+            logger.warning(
+                "Minecraft did not confirm the save for profile %s; continuing anyway",
+                profile.id,
+            )
 
     async def online_players(self, profile: Profile) -> int | None:
         try:

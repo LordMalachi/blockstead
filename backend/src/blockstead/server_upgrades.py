@@ -399,7 +399,11 @@ def review(context: UpgradeContext) -> UpgradeReview:
             # current. Keep cross-Minecraft candidates, but make the build
             # uncertainty visible and fail closed when no newer MC release exists.
             warnings.append(paper_detail)
-        elif stable is not None and stable.id > context.current_paper_build:
+        elif (
+            stable is not None
+            and context.current_paper_build is not None
+            and stable.id > context.current_paper_build
+        ):
             paper_candidate = _candidate(
                 context.current_version,
                 context.current_version,

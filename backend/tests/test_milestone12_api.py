@@ -166,7 +166,7 @@ def test_discord_pairing_requires_confirmation_and_masks_code(
     client: TestClient, auth: dict[str, str]
 ) -> None:
     client.app.state.settings.discord_application_id = "1535816544951476324"
-    client.app.state.settings.discord_bot_token = "test-token"  # noqa: S105
+    client.app.state.settings.discord_relay_url = "https://relay.test"
     fixture = Path(__file__).parents[2] / "fixtures" / "servers" / "vanilla-fixture"
     created = client.post(
         "/api/v1/profiles",
@@ -175,6 +175,38 @@ def test_discord_pairing_requires_confirmation_and_masks_code(
     )
     assert created.status_code == 201, created.text
     profile_id = created.json()["id"]
+
+    class RelayStub:
+        def register_pairing(
+            self, requested_profile_id: str, profile_name: str, code: str
+        ) -> dict[str, object]:
+            assert requested_profile_id == profile_id
+            return {"id": "relay-pairing-1"}
+
+        def confirm_pairing(self, pairing_id: str) -> dict[str, object]:
+            assert pairing_id == "relay-pairing-1"
+            return {
+                "protocol_version": 1,
+                "id": "relay-connection-1",
+                "connection_id": "relay-connection-1",
+                "installation_id": (
+                    client.app.state.settings.discord_relay_installation_id
+                ),
+                "profile_id": profile_id,
+                "application_id": "1535816544951476324",
+                "guild_id": "900000000000000002",
+                "channel_id": "900000000000000003",
+                "share_address": False,
+                "publish_address": False,
+            }
+
+        def update_connection(
+            self, connection_id: str, **changes: object
+        ) -> dict[str, object]:
+            assert connection_id == "relay-connection-1"
+            return changes
+
+    client.app.state.relay_client = RelayStub()
 
     pairing = client.post(
         "/api/v1/discord/pairings",
@@ -205,19 +237,54 @@ def test_discord_pairing_requires_confirmation_and_masks_code(
     assert confirmed.status_code == 200, confirmed.text
     assert confirmed.json()["profile_id"] == profile_id
     assert confirmed.json()["publish_address"] is False
+    assert confirmed.json()["authorized_user_ids"] == ["900000000000000004"]
+    assert confirmed.json()["authorized_role_ids"] == []
 
     status = client.get("/api/v1/discord/status", headers=auth)
     assert status.status_code == 200, status.text
-    assert status.json()["bot_token_configured"] is True
+    assert status.json()["legacy_token_present"] is False
+    assert status.json()["relay_configured"] is True
+    assert status.json()["relay_url"] == "https://relay.test"
+    assert status.json()["relay_online"] is False
+    assert status.json()["discord_online"] is False
+    assert status.json()["bot_ready"] is False
     assert status.json()["connections"][0]["guild_id"] == "900000000000000002"
 
     changed = client.post(
         f"/api/v1/discord/connections/{confirmed.json()['id']}/status",
         headers=auth,
-        json={"publish_address": True},
+        json={"share_address": True, "publish_address": True},
     )
     assert changed.status_code == 200, changed.text
     assert changed.json()["publish_address"] is True
+    assert changed.json()["share_address"] is True
+
+    principals = client.post(
+        f"/api/v1/discord/connections/{confirmed.json()['id']}/status",
+        headers=auth,
+        json={
+            "authorized_user_ids": [
+                "900000000000000004",
+                "900000000000000006",
+                "900000000000000006",
+            ],
+            "authorized_role_ids": ["900000000000000007"],
+        },
+    )
+    assert principals.status_code == 200, principals.text
+    assert principals.json()["authorized_user_ids"] == [
+        "900000000000000004",
+        "900000000000000006",
+    ]
+    assert principals.json()["authorized_role_ids"] == ["900000000000000007"]
+
+    owner_removal = client.post(
+        f"/api/v1/discord/connections/{confirmed.json()['id']}/status",
+        headers=auth,
+        json={"authorized_user_ids": ["900000000000000006"]},
+    )
+    assert owner_removal.status_code == 422
+    client.app.state.relay_client = None
 
 
 def test_saved_setup_variant_uses_isolated_copy_and_preserves_source(

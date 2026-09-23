@@ -20,6 +20,37 @@ class ProcessState(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+#: Longest console line kept whole. Modded servers can print mod lists or registry
+#: dumps far beyond asyncio's 64 KiB default; anything longer arrives in pieces.
+CONSOLE_LINE_LIMIT = 1024 * 1024
+
+#: Console text Minecraft prints once ``save-all`` has written the world (1.13+, older).
+SAVE_CONFIRMATIONS = frozenset({"Saved the game", "Saved the world"})
+#: How long a flush may run before a backup proceeds without the confirmation.
+SAVE_CONFIRM_TIMEOUT = 30.0
+#: How long an owner-requested stop waits. Large modded worlds take well over the
+#: five-second default to save, and a timeout offers Force stop mid-save.
+GRACEFUL_STOP_TIMEOUT = 60.0
+#: Shutdown budget when Blockstead itself exits, inside systemd's 30s TimeoutStopSec.
+SHUTDOWN_STOP_TIMEOUT = 20.0
+
+
+async def read_console_line(stream: asyncio.StreamReader) -> bytes:
+    """Read one console line, splitting any line longer than the stream limit.
+
+    ``StreamReader.readline`` raises on an over-limit line. That would end the
+    reader: the console goes silent, nothing drains the pipe, the server blocks
+    on its next write, and ``wait()`` never returns even after a kill.
+    """
+
+    try:
+        return await stream.readuntil(b"\n")
+    except asyncio.IncompleteReadError as exc:
+        return exc.partial
+    except asyncio.LimitOverrunError as exc:
+        return await stream.readexactly(exc.consumed)
+
+
 def signal_process_group(pid: int, signal_name: str) -> None:
     """Signal a POSIX process group without exposing POSIX-only names to Windows typing."""
 
@@ -136,6 +167,7 @@ class ProcessManager:
                         stderr=asyncio.subprocess.STDOUT,
                         start_new_session=True,
                         cwd=cwd,
+                        limit=CONSOLE_LINE_LIMIT,
                     )
                 else:
                     self._process = await asyncio.create_subprocess_exec(
@@ -144,6 +176,7 @@ class ProcessManager:
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.STDOUT,
                         cwd=cwd,
+                        limit=CONSOLE_LINE_LIMIT,
                     )
             except (OSError, ValueError) as exc:
                 self.transition(
@@ -157,7 +190,7 @@ class ProcessManager:
         process = self._process
         if process is None or process.stdout is None:
             return
-        while line := await process.stdout.readline():
+        while line := await read_console_line(process.stdout):
             clean = line.decode("utf-8", errors="replace").rstrip("\r\n")
             self._publish(clean)
             if "Done (" in clean and self.state == ProcessState.STARTING:
@@ -200,19 +233,61 @@ class ProcessManager:
             or len(command) > 32767
         ):
             raise ValueError("Command must be one non-empty line of at most 32,767 characters.")
-        self._process.stdin.write((command + "\n").encode())
-        await self._process.stdin.drain()
+        try:
+            self._process.stdin.write((command + "\n").encode())
+            await self._process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            raise InvalidTransition("The server stopped before the command was sent.") from exc
+
+    async def save_world(self, timeout: float = SAVE_CONFIRM_TIMEOUT) -> bool:  # noqa: ASYNC109
+        """Run ``save-all flush`` and wait until Minecraft reports the world is on disk.
+
+        ``command`` returns once the line reaches stdin, before the server thread has
+        started saving, so archiving straight after can copy region files mid-write.
+        Returns False when no confirmation arrived in time or the server went away.
+        """
+
+        queue: asyncio.Queue[LogEvent] = asyncio.Queue(maxsize=1000)
+        self._subscribers.add(queue)
+        try:
+            await self.command("save-all flush")
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            while self.state == ProcessState.RUNNING:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return False
+                try:
+                    event = await asyncio.wait_for(queue.get(), min(remaining, 0.5))
+                except TimeoutError:
+                    continue
+                # Compare the message after the log prefix so chat cannot fake it.
+                if event.line.rsplit("]: ", 1)[-1].strip() in SAVE_CONFIRMATIONS:
+                    return True
+            return False
+        finally:
+            self._subscribers.discard(queue)
 
     async def stop(self, timeout: float = 5.0) -> bool:  # noqa: ASYNC109
-        if self.state not in {ProcessState.RUNNING, ProcessState.STARTING, ProcessState.DEGRADED}:
-            raise InvalidTransition("The server is not running.")
-        self.transition(ProcessState.STOPPING, "Waiting for graceful shutdown")
-        process = self._process
-        if process is None or process.stdin is None:
-            self.transition(ProcessState.CRASHED, "Process handle was unavailable")
-            return False
-        process.stdin.write(b"stop\n")
-        await process.stdin.drain()
+        # The lock keeps a stop from landing while start() is still spawning, which
+        # would signal the previous run's handle and leave the new server unowned.
+        async with self._lock:
+            if self.state not in {
+                ProcessState.RUNNING,
+                ProcessState.STARTING,
+                ProcessState.DEGRADED,
+            }:
+                raise InvalidTransition("The server is not running.")
+            self.transition(ProcessState.STOPPING, "Waiting for graceful shutdown")
+            process = self._process
+            if process is None or process.stdin is None:
+                self.transition(ProcessState.CRASHED, "Process handle was unavailable")
+                return False
+            try:
+                process.stdin.write(b"stop\n")
+                await process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # Already exiting; the reader records how it ended.
         try:
             await asyncio.wait_for(process.wait(), timeout)
             if self._reader:
@@ -255,10 +330,17 @@ class ProcessManager:
             if self.state == ProcessState.STOPPING:
                 self.transition(ProcessState.STOPPED, "Force stopped after graceful timeout")
 
-    async def subscribe(self, callback: Callable[[LogEvent], Awaitable[None]]) -> None:
+    async def subscribe(
+        self, callback: Callable[[LogEvent], Awaitable[None]], *, replay: bool = False
+    ) -> None:
         queue: asyncio.Queue[LogEvent] = asyncio.Queue(maxsize=100)
         self._subscribers.add(queue)
+        # Snapshotting in the same step as registering means every line lands in
+        # exactly one of the backlog or the queue, however long the replay takes.
+        backlog = list(self._logs) if replay else []
         try:
+            for event in backlog:
+                await callback(event)
             while True:
                 await callback(await queue.get())
         finally:

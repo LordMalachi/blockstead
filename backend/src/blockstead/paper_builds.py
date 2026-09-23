@@ -61,7 +61,8 @@ def _parse_build(entry: object) -> PaperBuild:
     checksum = checksums.get("sha256") if isinstance(checksums, dict) else None
     parsed_url = urlparse(url) if isinstance(url, str) else None
     if (
-        parsed_url is None
+        not isinstance(url, str)
+        or parsed_url is None
         or parsed_url.scheme != "https"
         or not parsed_url.netloc
         or not isinstance(file_name, str)
@@ -121,7 +122,7 @@ async def list_paper_builds(
 def latest_stable_build(builds: tuple[PaperBuild, ...]) -> PaperBuild | None:
     """Return the highest-ID stable build, or ``None`` when none is listed."""
     stable = [build for build in builds if build.channel == "STABLE"]
-    return max(stable, key=lambda build: build.id, default=None)
+    return max(stable, key=lambda build: build.id) if stable else None
 
 
 def match_paper_build(path: Path, builds: tuple[PaperBuild, ...]) -> PaperBuild | None:

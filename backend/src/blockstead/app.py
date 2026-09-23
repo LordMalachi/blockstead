@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import re
@@ -96,7 +97,9 @@ from .discord_relay import (
     RelayClient,
     RelayConnector,
     RelayError,
+    RelayIdentity,
     ensure_relay_identity,
+    persist_relay_identity,
     relay_configuration,
 )
 from .distributions import (
@@ -325,7 +328,13 @@ from .player_sessions import (
     record_log_line,
     summarize_sessions,
 )
-from .process import InvalidTransition, LogEvent, ProcessManager
+from .process import (
+    GRACEFUL_STOP_TIMEOUT,
+    SHUTDOWN_STOP_TIMEOUT,
+    InvalidTransition,
+    LogEvent,
+    ProcessManager,
+)
 from .provisioning import (
     USER_AGENT,
     ProvisionError,
@@ -605,8 +614,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     player_session_task: asyncio.Task[None] | None = None
     notification_task: asyncio.Task[None] | None = None
     discord_status_task: asyncio.Task[None] | None = None
+    discord_heartbeat_task: asyncio.Task[None] | None = None
     relay_connector: RelayConnector | None = None
     relay_client: RelayClient | None = None
+    relay_environment_managed = bool(
+        config.discord_relay_installation_id and config.discord_relay_connector_secret
+    )
     relay_identity = ensure_relay_identity(
         config.data_dir,
         config.discord_relay_installation_id,
@@ -620,6 +633,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     discord_pairing_lock = asyncio.Lock()
     discord_refresh_times: dict[str, float] = {}
     relay_wakeup = asyncio.Event()
+    relay_pending_status: set[tuple[str, str]] = set()
 
     def record_player_session_line(profile_id: str, line: str) -> None:
         with factory() as db:
@@ -633,7 +647,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return
         if not (JOIN_PATTERN.search(event.line) or LEAVE_PATTERN.search(event.line)):
             return
-        await asyncio.to_thread(record_player_session_line, event.profile_id, event.line)
+        # An exception here would end the log subscription, silently stopping all
+        # session tracking until Blockstead restarts; one missed line is far cheaper.
+        try:
+            await asyncio.to_thread(record_player_session_line, event.profile_id, event.line)
+        except Exception:
+            log.exception("Could not record a player session for profile %s", event.profile_id)
 
     def queue_background_alerts(db: Session) -> None:
         """Materialize persisted local alert categories even when no browser is open."""
@@ -820,14 +839,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             value = value.replace(tzinfo=timezone.utc)  # noqa: UP017
         return value.astimezone(timezone.utc).isoformat()  # noqa: UP017
 
+    def discord_event_time(value: object) -> datetime | None:
+        """Parse a relay timestamp without inventing evidence time."""
+
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(UTC)
+
+    def discord_snowflake(value: object) -> str | None:
+        if isinstance(value, str) and re.fullmatch(r"[0-9]{17,20}", value):
+            return value
+        return None
+
     def discord_json_list(value: str) -> list[str]:
         try:
             decoded = json.loads(value or "[]")
         except json.JSONDecodeError:
             return []
-        return (
-            [item for item in decoded if isinstance(item, str)] if isinstance(decoded, list) else []
-        )
+        if not isinstance(decoded, list):
+            return []
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in decoded:
+            if (
+                isinstance(item, str)
+                and re.fullmatch(r"[0-9]{17,20}", item)
+                and item not in seen
+            ):
+                result.append(item)
+                seen.add(item)
+        return result
 
     def discord_pairing_payload(
         pairing: DiscordPairing, profile: Profile | None
@@ -846,9 +893,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "status": status,
             "expires_at": expires_at.astimezone(UTC).isoformat(),  # noqa: UP017
             "claimed": pairing.claimed_at is not None,
+            "claimed_application_id": pairing.claimed_application_id,
             "claimed_guild_id": pairing.claimed_guild_id,
             "claimed_channel_id": pairing.claimed_channel_id,
             "claimed_user_id": pairing.claimed_user_id,
+            "claimed_role_ids": discord_json_list(pairing.claimed_role_ids),
             "claimed_at": utc_timestamp(pairing.claimed_at),
             "confirmed_at": utc_timestamp(pairing.confirmed_at),
         }
@@ -864,9 +913,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "guild_id": connection.guild_id,
             "channel_id": connection.channel_id,
             "owner_user_id": connection.owner_user_id,
+            "authorized_user_ids": discord_json_list(connection.authorized_user_ids)
+            or [connection.owner_user_id],
+            "authorized_role_ids": discord_json_list(connection.authorized_role_ids),
             "enabled": connection.enabled,
+            "share_address": connection.share_address,
             "publish_address": connection.publish_address,
             "status_message_configured": connection.status_message_id is not None,
+            "last_delivery_result": connection.last_delivery_result,
+            "last_delivery_at": utc_timestamp(connection.last_delivery_at),
+            "last_delivery_detail": connection.last_delivery_detail,
             "last_heartbeat_at": utc_timestamp(connection.last_heartbeat_at),
             "relay_connection_id": connection.relay_connection_id,
             "relay_connected": relay_connector.connected if relay_connector is not None else False,
@@ -882,7 +938,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return state.removeprefix("ProcessState.").lower()
 
     async def discord_profile_status(
-        profile: Profile, *, include_address: bool = False
+        profile: Profile,
+        *,
+        include_address: bool = False,
+        force_public_probe: bool = False,
     ) -> dict[str, object]:
         try:
             directory = canonical_child(Path(profile.server_directory), config.server_root)
@@ -898,7 +957,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         properties = read_properties(directory)
         active = app.state.active_profile_id == profile.id
         state = discord_state(manager.snapshot(), active)
-        public_ip = await public_ip_discovery.discover()
+        active_public_ip_discovery = getattr(
+            app.state, "public_ip_discovery", public_ip_discovery
+        )
+        public_ip = (
+            await active_public_ip_discovery.discover(force=force_public_probe)
+            if include_address
+            else {
+                "available": False,
+                "ip": None,
+                "detail": "Address sharing is disabled for this connection.",
+            }
+        )
         join = join_details(properties, public_ip)
         probe = await minecraft_status_probe(properties) if active and state == "running" else None
         status = probe.get("status") if probe else None
@@ -925,10 +995,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             public = join["public"]
             detected = public["detected_ip"]
             port = public["server_port"]
+            address: str | None = None
+            if isinstance(detected, str):
+                try:
+                    normalized_ip = ipaddress.ip_address(detected)
+                    host = (
+                        f"[{normalized_ip}]"
+                        if normalized_ip.version == 6
+                        else str(normalized_ip)
+                    )
+                    address = f"{host}:{port}"
+                except ValueError:
+                    address = None
             result["public"] = {
                 "state": public["state"],
                 "detail": public["detail"],
-                "address": f"{detected}:{port}" if detected else None,
+                "address": address,
                 "port": port,
             }
         return result
@@ -956,96 +1038,529 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return "\n".join(lines)
 
     async def relay_event(message: Mapping[str, object]) -> None:
-        """Apply relay events to the local owner-facing pairing records."""
+        """Apply only installation-scoped, binding-validated relay events."""
+
+        active_connector = getattr(app.state, "relay_connector", None) or relay_connector
 
         kind = message.get("type")
-        if kind == "refresh":
+        if (
+            message.get("protocol_version") != 1
+            or message.get("installation_id") != relay_identity.installation_id
+        ):
+            return
+        if kind == "relay_readiness":
+            app.state.discord_online = (
+                message.get("discord_ready") is True
+                and message.get("heartbeat_healthy") is True
+            )
+            return
+        if kind == "relay_disconnected":
+            app.state.relay_online = False
+            app.state.discord_online = False
+            return
+        if kind == "relay_connected":
+            app.state.relay_online = True
+            app.state.discord_online = (
+                message.get("discord_ready") is True
+                and message.get("heartbeat_healthy") is True
+            )
+            if active_connector is None:
+                return
+            with factory() as db:
+                connections = db.scalars(select(DiscordConnection)).all()
+                for local_connection in connections:
+                    profile = db.get(Profile, local_connection.profile_id)
+                    if local_connection.relay_connection_id is None:
+                        continue
+                    if profile is None:
+                        await active_connector.send_profile_binding_unavailable(
+                            local_connection.relay_connection_id,
+                            local_connection.profile_id,
+                            application_id=local_connection.application_id,
+                            guild_id=local_connection.guild_id,
+                            channel_id=local_connection.channel_id,
+                            reason="profile_unavailable",
+                        )
+                    else:
+                        await active_connector.send_profile_binding(
+                            local_connection.relay_connection_id,
+                            local_connection.profile_id,
+                            application_id=local_connection.application_id,
+                            guild_id=local_connection.guild_id,
+                            channel_id=local_connection.channel_id,
+                            enabled=local_connection.enabled,
+                        )
+                        if local_connection.enabled:
+                            relay_pending_status.add(
+                                (local_connection.id, local_connection.profile_id)
+                            )
             relay_wakeup.set()
             return
         if kind not in {
+            "refresh",
             "pairing_claimed",
             "connection_activated",
             "connection_changed",
             "connection_revoked",
+            "connection_heartbeat",
+            "command_audit",
+            "connection_delivery",
         }:
             return
-        relay_id = message.get("id")
-        if not isinstance(relay_id, str):
-            return
+
+        def evidence_time(value: object) -> datetime | None:
+            if not isinstance(value, str) or not value.strip():
+                return None
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                return None
+            return parsed.astimezone(UTC)
+
+        def safe_ids(value: object) -> list[str] | None:
+            if not isinstance(value, list) or len(value) > 64:
+                return None
+            result: list[str] = []
+            seen: set[str] = set()
+            for item in value:
+                if not isinstance(item, str) or not re.fullmatch(r"[0-9]{17,20}", item):
+                    return None
+                if item not in seen:
+                    result.append(item)
+                    seen.add(item)
+            return result
+
+        def binding_matches(connection: DiscordConnection) -> bool:
+            for key, expected in (
+                ("installation_id", relay_identity.installation_id),
+                ("connection_id", connection.relay_connection_id),
+                ("profile_id", connection.profile_id),
+                ("application_id", connection.application_id),
+                ("guild_id", connection.guild_id),
+                ("channel_id", connection.channel_id),
+            ):
+                if message.get(key) != expected:
+                    return False
+            return True
+
+        unavailable: tuple[str, str, str, str, str] | None = None
         with factory() as db:
+            connection: DiscordConnection | None = None
+            if kind == "refresh":
+                connection_id = message.get("connection_id")
+                if not isinstance(connection_id, str):
+                    return
+                connection = db.scalar(
+                    select(DiscordConnection).where(
+                        DiscordConnection.relay_connection_id == connection_id
+                    )
+                )
+                if connection is None or not binding_matches(connection) or not connection.enabled:
+                    return
+                relay_pending_status.add((connection.id, connection.profile_id))
+                relay_wakeup.set()
+                return
             if kind == "pairing_claimed":
+                relay_id = message.get("id")
+                if not isinstance(relay_id, str) or len(relay_id) > 128:
+                    return
                 pairing = db.scalar(
                     select(DiscordPairing).where(DiscordPairing.relay_pairing_id == relay_id)
                 )
                 if pairing is not None:
-                    pairing.claimed_application_id = cast(
-                        str | None, message.get("claimed_application_id")
+                    expires_at = pairing.expires_at
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=UTC)
+                    claimed_roles = safe_ids(message.get("claimed_role_ids"))
+                    claimed_at = evidence_time(message.get("claimed_at"))
+                    remote_expiry = evidence_time(message.get("expires_at"))
+                    claimed_values = tuple(
+                        message.get(key)
+                        for key in (
+                            "claimed_application_id",
+                            "claimed_guild_id",
+                            "claimed_channel_id",
+                            "claimed_user_id",
+                        )
                     )
-                    pairing.claimed_guild_id = cast(str | None, message.get("claimed_guild_id"))
-                    pairing.claimed_channel_id = cast(str | None, message.get("claimed_channel_id"))
-                    pairing.claimed_user_id = cast(str | None, message.get("claimed_user_id"))
-                    claimed_at = message.get("claimed_at")
-                    pairing.claimed_at = (
-                        datetime.fromisoformat(claimed_at)
-                        if isinstance(claimed_at, str)
-                        else datetime.now(UTC)
+                    if (
+                        pairing.status != "pending"
+                        or expires_at <= datetime.now(UTC)
+                        or remote_expiry is None
+                        or remote_expiry <= datetime.now(UTC)
+                        or message.get("profile_id") != pairing.profile_id
+                        or message.get("status") != "pending"
+                        or claimed_roles is None
+                        or claimed_at is None
+                        or any(discord_snowflake(value) is None for value in claimed_values)
+                        or (
+                            config.discord_application_id
+                            and claimed_values[0] != config.discord_application_id
+                        )
+                    ):
+                        return
+                    pairing.claimed_application_id = cast(str, claimed_values[0])
+                    pairing.claimed_guild_id = cast(str, claimed_values[1])
+                    pairing.claimed_channel_id = cast(str, claimed_values[2])
+                    pairing.claimed_user_id = cast(str, claimed_values[3])
+                    pairing.claimed_role_ids = json.dumps(
+                        claimed_roles, separators=(",", ":")
                     )
+                    pairing.claimed_at = claimed_at
+            elif kind == "command_audit":
+                relay_id = message.get("id")
+                connection_id = message.get("connection_id")
+                if (
+                    not isinstance(relay_id, str)
+                    or not relay_id
+                    or len(relay_id) > 36
+                    or not isinstance(connection_id, str)
+                ):
+                    return
+                connection = db.scalar(
+                    select(DiscordConnection).where(
+                        DiscordConnection.relay_connection_id == connection_id
+                    )
+                )
+                if connection is None:
+                    return
+                if not binding_matches(connection):
+                    return
+                created_at = evidence_time(message.get("created_at"))
+                timestamp_value = message.get("timestamp")
+                if created_at is None or (
+                    timestamp_value is not None and evidence_time(timestamp_value) is None
+                ):
+                    return
+                if db.get(DiscordCommandAudit, relay_id) is None:
+                    command = message.get("command")
+                    raw_result = message.get("result")
+                    raw_outcome = message.get("outcome")
+                    user_id = message.get("user_id")
+                    safe_details = {
+                        "accepted": "Command accepted.",
+                        "denied": "Command denied.",
+                        "failed": "Command failed safely.",
+                        "rate_limited": "Command rate limited.",
+                    }
+                    safe_commands = {
+                        "status",
+                        "players",
+                        "address",
+                        "refresh",
+                        "unpair",
+                        "help",
+                        "setup",
+                        "pair",
+                    }
+                    if (
+                        isinstance(command, str)
+                        and command in safe_commands
+                        and isinstance(raw_result, str)
+                        and raw_result == raw_outcome
+                        and raw_result in safe_details
+                        and isinstance(user_id, str)
+                        and re.fullmatch(r"[0-9]{17,20}", user_id)
+                        and message.get("safe_detail") == safe_details[raw_result]
+                    ):
+                        db.add(
+                            DiscordCommandAudit(
+                                id=relay_id,
+                                connection_id=connection.id,
+                                profile_id=connection.profile_id,
+                                guild_id=connection.guild_id,
+                                channel_id=connection.channel_id,
+                                user_id=user_id,
+                                command=command[:64],
+                                result=raw_result[:24],
+                                safe_detail=safe_details[raw_result],
+                                created_at=created_at,
+                            )
+                        )
+            elif kind == "connection_heartbeat":
+                connection_id = message.get("connection_id")
+                if not isinstance(connection_id, str):
+                    return
+                connection = db.scalar(
+                    select(DiscordConnection).where(
+                        DiscordConnection.relay_connection_id == connection_id
+                    )
+                )
+                if connection is None or not binding_matches(connection):
+                    return
+                received_at = evidence_time(message.get("received_at"))
+                if received_at is None:
+                    return
+                connection.last_relay_heartbeat_at = received_at
+                connection.updated_at = datetime.now(UTC)
+            elif kind == "connection_delivery":
+                connection_id = message.get("connection_id")
+                if not isinstance(connection_id, str):
+                    return
+                connection = db.scalar(
+                    select(DiscordConnection).where(
+                        DiscordConnection.relay_connection_id == connection_id
+                    )
+                )
+                if connection is None:
+                    return
+                if not binding_matches(connection):
+                    return
+                raw_result = message.get("result")
+                raw_outcome = message.get("outcome")
+                if (
+                    not isinstance(raw_result, str)
+                    or raw_result not in {"retrying", "delivered", "failed"}
+                    or raw_result != raw_outcome
+                ):
+                    return
+                expected_detail = {
+                    "retrying": "Status message delivery is retrying.",
+                    "delivered": "Status message delivered.",
+                    "failed": "Status message delivery failed.",
+                }[raw_result]
+                if message.get("detail") != expected_detail:
+                    return
+                delivered_at = evidence_time(message.get("delivered_at"))
+                timestamp = evidence_time(message.get("timestamp"))
+                if delivered_at is None or timestamp is None:
+                    return
+                result = raw_result
+                connection.last_delivery_result = result
+                connection.last_delivery_at = delivered_at
+                connection.last_delivery_detail = expected_detail
+                status_id = message.get("status_message_id")
+                if (
+                    raw_result == "delivered"
+                    and isinstance(status_id, str)
+                    and re.fullmatch(r"[0-9]{17,20}", status_id)
+                ):
+                    connection.status_message_id = status_id
+                connection.updated_at = datetime.now(UTC)
             else:
+                relay_id = message.get("connection_id")
+                if not isinstance(relay_id, str) or len(relay_id) > 36:
+                    return
                 connection = db.scalar(
                     select(DiscordConnection).where(
                         DiscordConnection.relay_connection_id == relay_id
                     )
                 )
+                if connection is None:
+                    if kind == "connection_activated":
+                        profile_id = message.get("profile_id")
+                        application_id = discord_snowflake(message.get("application_id"))
+                        guild_id = discord_snowflake(message.get("guild_id"))
+                        channel_id = discord_snowflake(message.get("channel_id"))
+                        pairing_in_flight = (
+                            isinstance(profile_id, str)
+                            and db.scalar(
+                                select(DiscordPairing).where(
+                                    DiscordPairing.profile_id == profile_id,
+                                    DiscordPairing.relay_pairing_id.is_not(None),
+                                    DiscordPairing.status == "pending",
+                                )
+                            )
+                            is not None
+                        )
+                        if (
+                            isinstance(profile_id, str)
+                            and application_id is not None
+                            and guild_id is not None
+                            and channel_id is not None
+                            and not pairing_in_flight
+                        ):
+                            unavailable = (
+                                relay_id,
+                                profile_id,
+                                application_id,
+                                guild_id,
+                                channel_id,
+                            )
+                elif not binding_matches(connection):
+                    unavailable = (
+                        relay_id,
+                        connection.profile_id,
+                        connection.application_id,
+                        connection.guild_id,
+                        connection.channel_id,
+                    )
+                elif kind == "connection_changed" or kind == "connection_activated":
+                    enabled = message.get("enabled")
+                    share_address = message.get("share_address")
+                    publish_address = message.get("publish_address")
+                    if (
+                        not isinstance(enabled, bool)
+                        or not isinstance(share_address, bool)
+                        or not isinstance(publish_address, bool)
+                        or (publish_address and not share_address)
+                    ):
+                        return
+                    connection.enabled = enabled
+                    connection.share_address = share_address
+                    connection.publish_address = publish_address
+                    if not connection.share_address:
+                        connection.publish_address = False
+                        connection.last_status_payload = "{}"
+                    users = safe_ids(message.get("authorized_user_ids"))
+                    roles = safe_ids(message.get("authorized_role_ids"))
+                    if users is not None and connection.owner_user_id in users:
+                        connection.authorized_user_ids = json.dumps(users, separators=(",", ":"))
+                    if roles is not None:
+                        connection.authorized_role_ids = json.dumps(roles, separators=(",", ":"))
+                    status_id = message.get("status_message_id")
+                    if isinstance(status_id, str) and re.fullmatch(r"[0-9]{17,20}", status_id):
+                        connection.status_message_id = status_id
+                    delivery_result = message.get("last_delivery_result")
+                    if isinstance(delivery_result, str) and delivery_result in {
+                        "delivered",
+                        "failed",
+                    }:
+                        delivery_at = discord_event_time(message.get("last_delivery_at"))
+                        if delivery_at is not None:
+                            connection.last_delivery_result = delivery_result
+                            connection.last_delivery_at = delivery_at
+                            connection.last_delivery_detail = (
+                                "Status message delivered."
+                                if delivery_result == "delivered"
+                                else "Status message delivery failed."
+                            )
+                    if connection.enabled:
+                        relay_pending_status.add((connection.id, connection.profile_id))
+                        relay_wakeup.set()
+                elif kind == "connection_revoked":
+                    db.delete(connection)
+                    connection = None
                 if connection is not None:
-                    if kind == "connection_changed":
-                        enabled = message.get("enabled")
-                        publish_address = message.get("publish_address")
-                        if isinstance(enabled, bool):
-                            connection.enabled = enabled
-                        if isinstance(publish_address, bool):
-                            connection.publish_address = publish_address
-                    elif kind == "connection_revoked":
-                        connection.enabled = False
                     connection.last_relay_heartbeat_at = datetime.now(UTC)
+                    connection.updated_at = datetime.now(UTC)
+            db.commit()
+        if unavailable is not None and active_connector is not None:
+            await active_connector.send_profile_binding_unavailable(
+                unavailable[0],
+                unavailable[1],
+                application_id=unavailable[2],
+                guild_id=unavailable[3],
+                channel_id=unavailable[4],
+                reason="profile_unavailable",
+            )
+
+    async def relay_heartbeat_pass() -> None:
+        """Heartbeat every enabled binding without running status or address probes."""
+
+        active_connector = getattr(app.state, "relay_connector", None) or relay_connector
+        if active_connector is None or not active_connector.connected:
+            return
+        with factory() as db:
+            connections = db.scalars(
+                select(DiscordConnection).where(DiscordConnection.enabled.is_(True))
+            ).all()
+            for connection in connections:
+                if connection.relay_connection_id is None:
+                    continue
+                await active_connector.send_heartbeat(
+                    connection.relay_connection_id,
+                    profile_id=connection.profile_id,
+                    application_id=connection.application_id,
+                    guild_id=connection.guild_id,
+                    channel_id=connection.channel_id,
+                )
+                now = datetime.now(UTC)
+                connection.last_heartbeat_at = now
+                connection.updated_at = now
+            db.commit()
+
+    async def relay_status_pass(*, scoped_wakeup: bool) -> None:
+        """Run one publisher pass, optionally limited to explicitly pending bindings."""
+
+        active_connector = getattr(app.state, "relay_connector", None) or relay_connector
+        if active_connector is None or not active_connector.connected:
+            return
+        with factory() as db:
+            connections = db.scalars(
+                select(DiscordConnection).where(DiscordConnection.enabled.is_(True))
+            ).all()
+            if scoped_wakeup:
+                connections = [
+                    connection
+                    for connection in connections
+                    if (connection.id, connection.profile_id) in relay_pending_status
+                ]
+            for connection in connections:
+                profile = db.get(Profile, connection.profile_id)
+                if profile is None or connection.relay_connection_id is None:
+                    continue
+                pending_key = (connection.id, connection.profile_id)
+                explicit_refresh = pending_key in relay_pending_status
+                binding = {
+                    "profile_id": connection.profile_id,
+                    "application_id": connection.application_id,
+                    "guild_id": connection.guild_id,
+                    "channel_id": connection.channel_id,
+                }
+                status = await discord_profile_status(
+                    profile,
+                    include_address=connection.share_address,
+                    force_public_probe=explicit_refresh,
+                )
+                raw_players = status.get("players")
+                players = raw_players if isinstance(raw_players, dict) else {}
+                online = players.get("online")
+                maximum = players.get("max")
+                if (
+                    not isinstance(online, int)
+                    or isinstance(online, bool)
+                    or not isinstance(maximum, int)
+                    or isinstance(maximum, bool)
+                    or online < 0
+                    or maximum < online
+                ):
+                    online = None
+                    maximum = None
+                raw_public = status.get("public")
+                public = raw_public if isinstance(raw_public, dict) else {}
+                public_state = public.get("state")
+                if public_state not in {"unavailable", "local_only", "port_unverified"}:
+                    public_state = "unavailable"
+                public_snapshot: dict[str, object] = {"state": public_state}
+                address = public.get("address")
+                if connection.share_address and isinstance(address, str):
+                    public_snapshot["address"] = address
+                snapshot: dict[str, object] = {
+                    "protocol_version": 1,
+                    "state": status.get("state", "unavailable"),
+                    "players": {"online": online, "max": maximum},
+                    "public": public_snapshot,
+                    "host_observed_at": datetime.now(UTC).isoformat(),
+                }
+                evidence = {
+                    key: value
+                    for key, value in snapshot.items()
+                    if key != "host_observed_at"
+                }
+                evidence_json = json.dumps(evidence, separators=(",", ":"), sort_keys=True)
+                if explicit_refresh or evidence_json != connection.last_status_payload:
+                    connection.last_sequence += 1
+                    await active_connector.send_status(
+                        connection.relay_connection_id,
+                        connection.last_sequence,
+                        snapshot,
+                        **binding,
+                    )
+                    connection.last_status_payload = evidence_json
+                    relay_pending_status.discard(pending_key)
+                connection.updated_at = datetime.now(UTC)
             db.commit()
 
     async def relay_status_loop() -> None:
-        """Publish scoped snapshots to the relay; Discord is relay-owned."""
+        """Publish only changed or explicitly requested status evidence."""
 
+        scoped_wakeup = False
         while True:
             try:
-                if relay_connector is not None and relay_connector.connected:
-                    with factory() as db:
-                        connections = db.scalars(
-                            select(DiscordConnection).where(DiscordConnection.enabled.is_(True))
-                        ).all()
-                        for connection in connections:
-                            profile = db.get(Profile, connection.profile_id)
-                            if profile is None:
-                                continue
-                            status = await discord_profile_status(
-                                profile, include_address=connection.publish_address
-                            )
-                            snapshot: dict[str, object] = {
-                                "state": status.get("state", "unknown"),
-                                "players": status.get("players", {}),
-                                "public": status.get("public", {}),
-                            }
-                            connection.last_sequence += 1
-                            relay_connection_id = connection.relay_connection_id or connection.id
-                            await relay_connector.send_heartbeat(relay_connection_id)
-                            await relay_connector.send_status(
-                                relay_connection_id,
-                                connection.last_sequence,
-                                snapshot,
-                            )
-                            connection.last_heartbeat_at = datetime.now(UTC)
-                            connection.last_relay_heartbeat_at = datetime.now(UTC)
-                            connection.last_status_payload = json.dumps(
-                                status, separators=(",", ":")
-                            )
-                            connection.updated_at = datetime.now(UTC)
-                        db.commit()
+                await relay_status_pass(scoped_wakeup=scoped_wakeup)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1053,8 +1568,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 await asyncio.wait_for(relay_wakeup.wait(), timeout=60)
                 relay_wakeup.clear()
+                scoped_wakeup = True
             except TimeoutError:
-                pass
+                scoped_wakeup = False
+
+    async def relay_heartbeat_loop() -> None:
+        """Maintain host liveness independently from status and public-address probes."""
+
+        while True:
+            try:
+                await relay_heartbeat_pass()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Could not send Discord relay heartbeats")
+            await asyncio.sleep(30)
 
     async def handle_discord_interaction(interaction: DiscordInteraction) -> DiscordReply:
         """Authenticate every command against a confirmed profile connection."""
@@ -1195,7 +1723,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
             else:
                 status = await discord_profile_status(
-                    profile, include_address=command == "address" and connection.publish_address
+                    profile, include_address=command == "address" and connection.share_address
                 )
                 if command == "status":
                     players = status["players"]
@@ -1217,7 +1745,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         else f"**{profile.name}** player count is currently unavailable."
                     )
                 elif command == "address":
-                    if not connection.publish_address:
+                    if not connection.share_address:
                         reply = DiscordReply("Address sharing is disabled for this connection.")
                     else:
                         raw_public = status["public"]
@@ -1251,7 +1779,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         nonlocal metrics_task, update_task, player_session_task, notification_task
-        nonlocal discord_status_task, relay_connector, relay_client
+        nonlocal discord_heartbeat_task, discord_status_task, relay_connector, relay_client
         engine = factory.kw["bind"]
         Base.metadata.create_all(engine)
         with factory() as db:
@@ -1302,6 +1830,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if configuration["configured"]:
             try:
                 relay_client = RelayClient(config, relay_identity)
+                app.state.relay_client = relay_client
                 try:
                     relay_client.register_installation()
                 except RelayError:
@@ -1311,8 +1840,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     relay_identity,
                     relay_event,
                 )
+                app.state.relay_connector = relay_connector
                 relay_connector.start()
                 discord_status_task = asyncio.create_task(relay_status_loop())
+                discord_heartbeat_task = asyncio.create_task(relay_heartbeat_loop())
                 log.info("Discord host connector started in central relay mode.")
             except RelayError:
                 log.warning("Discord relay is configured but could not start safely.")
@@ -1347,6 +1878,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             update_task,
             player_session_task,
             notification_task,
+            discord_heartbeat_task,
             discord_status_task,
         ):
             if task is None:
@@ -1360,15 +1892,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         update_task = None
         player_session_task = None
         notification_task = None
+        discord_heartbeat_task = None
         discord_status_task = None
         if relay_connector is not None:
             await relay_connector.stop()
         relay_connector = None
+        app.state.relay_connector = None
         if relay_client is not None:
             relay_client.close()
         relay_client = None
+        app.state.relay_client = None
         await scheduler.close()
-        await manager.close()
+        await manager.close(SHUTDOWN_STOP_TIMEOUT)
         await http_client.aclose()
 
     app = FastAPI(title="Blockstead API", version=__version__, lifespan=lifespan)
@@ -1383,6 +1918,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.websocket_auth_recheck_seconds = 5.0
     app.state.public_ip_discovery = public_ip_discovery
     app.state.minecraft_status_probes = {}
+    # Expose the installation-scoped event handler for lifecycle tests and
+    # diagnostics without widening the public HTTP API.
+    app.state.relay_event = relay_event
+    app.state.relay_heartbeat_pass = relay_heartbeat_pass
+    app.state.relay_status_pass = relay_status_pass
+    app.state.relay_pending_status = relay_pending_status
+    app.state.relay_connector = None
+    app.state.relay_client = None
+    app.state.relay_online = False
+    app.state.discord_online = False
     # Profiles with a restore in flight; starting or backing up one is refused.
     restoring_profiles: set[str] = set()
     # Profiles with an archive extraction in flight; a second concurrent
@@ -1868,7 +2413,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 updates.write_state(config.data_dir, state)
                 app.state.update_handoff_active = True
                 try:
-                    stopped = await manager.stop(timeout=60.0)
+                    stopped = await manager.stop(timeout=GRACEFUL_STOP_TIMEOUT)
                 except (InvalidTransition, OSError):
                     stopped = False
                 except Exception:
@@ -2683,7 +3228,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return profile_removal_payload(profile, db)
 
     @app.delete("/api/v1/profiles/{profile_id}")
-    def remove_profile(
+    async def remove_profile(
         profile_id: str, payload: ProfileDeleteRequest, request: Request, db: Db
     ) -> dict[str, object]:
         """Remove one stopped profile, optionally including its local data.
@@ -2703,6 +3248,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         blockers = cast(list[str], removal["blockers"])
         if blockers:
             raise HTTPException(409, blockers[0])
+
+        # Revoke the remote binding before deleting the local profile. Relay
+        # unavailability must not turn a safe local profile removal into a
+        # destructive failure, so this is deliberately best effort.
+        discord_connection = db.scalar(
+            select(DiscordConnection).where(DiscordConnection.profile_id == profile.id)
+        )
+        if discord_connection is not None:
+            try:
+                active_connector = getattr(app.state, "relay_connector", None) or relay_connector
+                if (
+                    active_connector is not None
+                    and active_connector.connected
+                    and discord_connection.relay_connection_id
+                ):
+                    await active_connector.send_profile_binding_unavailable(
+                        discord_connection.relay_connection_id,
+                        profile.id,
+                        application_id=discord_connection.application_id,
+                        guild_id=discord_connection.guild_id,
+                        channel_id=discord_connection.channel_id,
+                        reason="profile_deleted",
+                    )
+                else:
+                    active_client = getattr(app.state, "relay_client", None) or relay_client
+                    if active_client is not None and discord_connection.relay_connection_id:
+                        active_client.revoke_connection(discord_connection.relay_connection_id)
+            except Exception:
+                log.warning("Could not revoke the Discord binding before profile removal")
 
         if payload.delete_files:
             delete_blockers = cast(list[str], removal["delete_files_blockers"])
@@ -2869,7 +3443,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if running:
                 await manager.command("save-off")
                 saving_suspended = True
-                await manager.command("save-all flush")
+                if not await manager.save_world():
+                    log.warning(
+                        "Minecraft did not confirm the save for profile %s; archiving anyway",
+                        profile.id,
+                    )
             archive = await asyncio.to_thread(
                 create_backup_archive,
                 profile.id,
@@ -4249,7 +4827,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "That saved setup variant was not found.")
         async with update_lock:
             if manager.snapshot()["state"] in {"RUNNING", "STARTING", "DEGRADED"}:
-                if not await manager.stop():
+                if not await manager.stop(GRACEFUL_STOP_TIMEOUT):
                     raise HTTPException(
                         409,
                         "The current server did not stop before the timeout; "
@@ -9514,11 +10092,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Expose safe Discord app readiness without returning the bot token."""
 
         owner = require_role(current(request, db)[0])
+        discord_config = discord_configuration(config)
+        active_connector = getattr(app.state, "relay_connector", None) or relay_connector
+        relay_online = bool(active_connector is not None and active_connector.connected)
+        discord_online = bool(app.state.discord_online)
+        valid_application = bool(
+            discord_config.get("application_id")
+            and discord_config.get("application_error") is None
+        )
+        relay_config = relay_configuration(config)
+        relay_configured = bool(relay_config.get("configured"))
         configuration = {
-            **discord_configuration(config),
-            **relay_configuration(config),
-            "relay_online": relay_connector.connected if relay_connector is not None else False,
+            **discord_config,
+            **relay_config,
+            # Keep the generic relay helper keys for existing callers while
+            # exposing unambiguous names in the public dashboard contract.
+            "relay_configured": relay_configured,
+            "relay_url": relay_config.get("url"),
+            "relay_online": relay_online,
+            "discord_online": discord_online,
+            "bot_ready": (
+                valid_application and relay_configured and relay_online and discord_online
+            ),
             "legacy_token_present": bool(config.discord_bot_token),
+            "connector_environment_managed": relay_environment_managed,
         }
         pairings = db.scalars(
             select(DiscordPairing)
@@ -9547,17 +10144,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: DiscordPairingCreateRequest, request: Request, db: Db
     ) -> dict[str, object]:
         owner = mutation(request, db)
-        configuration = {
-            **discord_configuration(config),
-            **relay_configuration(config),
-        }
-        if not configuration["configured"] and not config.discord_bot_token:
+        active_client = getattr(app.state, "relay_client", None) or relay_client
+        configuration = relay_configuration(config)
+        if not configuration["configured"]:
             raise HTTPException(
                 409,
                 "Configure the Discord relay URL and start the host connector before "
                 "creating a pairing.",
             )
-        if configuration["configured"] and relay_client is None:
+        if active_client is None:
             raise HTTPException(
                 503, "The Blockstead host is not connected to the Discord relay yet."
             )
@@ -9568,11 +10163,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             select(DiscordConnection).where(
                 DiscordConnection.admin_id == owner.id,
                 DiscordConnection.profile_id == profile.id,
-                DiscordConnection.enabled.is_(True),
             )
         )
         if existing is not None:
-            raise HTTPException(409, "That profile already has an active Discord connection.")
+            raise HTTPException(
+                409,
+                "That profile already has a Discord connection; re-enable or revoke it first.",
+            )
         now = datetime.now(UTC)
         for previous in db.scalars(
             select(DiscordPairing).where(
@@ -9589,9 +10186,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             code_hash=digest(code),
             expires_at=now + timedelta(minutes=10),
         )
-        if relay_client is not None:
+        if active_client is not None:
             try:
-                remote = relay_client.register_pairing(profile.id, profile.name, code)
+                remote = active_client.register_pairing(profile.id, profile.name, code)
             except RelayError as exc:
                 raise HTTPException(
                     503, "The Discord relay is unavailable; try again shortly."
@@ -9622,6 +10219,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/v1/discord/pairings/{pairing_id}/confirm")
     def confirm_discord_pairing(pairing_id: str, request: Request, db: Db) -> dict[str, object]:
         owner = mutation(request, db)
+        active_client = getattr(app.state, "relay_client", None) or relay_client
         pairing = db.get(DiscordPairing, pairing_id)
         if pairing is None or pairing.admin_id != owner.id:
             raise HTTPException(404, "That Discord pairing was not found.")
@@ -9633,8 +10231,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 pairing.status = "expired"
                 db.commit()
             raise HTTPException(409, "That pairing is no longer awaiting confirmation.")
-        legacy_pairing = relay_client is None and bool(config.discord_bot_token)
-        if not legacy_pairing and (relay_client is None or not pairing.relay_pairing_id):
+        if active_client is None or not pairing.relay_pairing_id:
             raise HTTPException(
                 503, "The Blockstead host is not connected to the Discord relay yet."
             )
@@ -9668,28 +10265,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 409,
                 "That Discord channel is already assigned to another Blockstead profile. "
                 "Use a separate channel for each Minecraft server.",
-            )
+        )
         relay_connection_id: str | None = None
-        if not legacy_pairing:
-            # Guaranteed by the guard above (raises unless legacy_pairing or
-            # both of these hold); re-checked here so the types the guard
-            # already promises are visible at the point of use too.
-            if relay_client is None or not pairing.relay_pairing_id:
-                raise HTTPException(
-                    503, "The Blockstead host is not connected to the Discord relay yet."
-                )
-            try:
-                remote = relay_client.confirm_pairing(pairing.relay_pairing_id)
-            except RelayError as exc:
-                raise HTTPException(
-                    503, "The Discord relay could not confirm this pairing."
-                ) from exc
-            raw_relay_connection_id = remote.get("id")
-            if not isinstance(raw_relay_connection_id, str):
-                raise HTTPException(
-                    503, "The Discord relay returned an invalid connection response."
-                )
-            relay_connection_id = raw_relay_connection_id
+        remote_payload: Mapping[str, object] = {}
+        try:
+            remote = active_client.confirm_pairing(pairing.relay_pairing_id)
+        except RelayError as exc:
+            raise HTTPException(
+                503, "The Discord relay could not confirm this pairing."
+            ) from exc
+        remote_payload = remote
+        raw_relay_connection_id = remote.get("id")
+        if not isinstance(raw_relay_connection_id, str):
+            raise HTTPException(
+                503, "The Discord relay returned an invalid connection response."
+            )
+        relay_connection_id = raw_relay_connection_id
         claimed_application_id = pairing.claimed_application_id
         claimed_guild_id = pairing.claimed_guild_id
         claimed_channel_id = pairing.claimed_channel_id
@@ -9702,6 +10293,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(
                 409, "Use /blockstead pair in Discord before confirming this pairing."
             )
+        if any(
+            remote_payload.get(key) != expected
+            for key, expected in (
+                ("protocol_version", 1),
+                ("installation_id", relay_identity.installation_id),
+                ("connection_id", relay_connection_id),
+                ("profile_id", profile.id),
+                ("application_id", claimed_application_id),
+                ("guild_id", claimed_guild_id),
+                ("channel_id", claimed_channel_id),
+            )
+        ):
+            raise HTTPException(503, "The Discord relay returned an invalid connection binding.")
+        remote_users = remote_payload.get("authorized_user_ids")
+        authorized_user_ids = (
+            [item for item in remote_users if discord_snowflake(item) is not None]
+            if isinstance(remote_users, list)
+            and len(remote_users) <= 64
+            and all(discord_snowflake(item) is not None for item in remote_users)
+            else []
+        )
+        authorized_user_ids = list(dict.fromkeys(authorized_user_ids))
+        authorized_user_ids = [
+            claimed_user_id,
+            *(item for item in authorized_user_ids if item != claimed_user_id),
+        ]
+        remote_roles = remote_payload.get("authorized_role_ids")
+        authorized_role_ids = (
+            [item for item in remote_roles if discord_snowflake(item) is not None]
+            if isinstance(remote_roles, list)
+            and len(remote_roles) <= 64
+            and all(discord_snowflake(item) is not None for item in remote_roles)
+            else []
+        )
+        authorized_role_ids = list(dict.fromkeys(authorized_role_ids))
+        status_message_id = discord_snowflake(remote_payload.get("status_message_id"))
+        last_delivery_result = remote_payload.get("last_delivery_result")
+        last_delivery_at = discord_event_time(remote_payload.get("last_delivery_at"))
+        if last_delivery_result not in {"delivered", "failed"} or last_delivery_at is None:
+            last_delivery_result = None
+            last_delivery_at = None
+        last_delivery_detail = (
+            "Status message delivered."
+            if last_delivery_result == "delivered"
+            else "Status message delivery failed."
+            if last_delivery_result == "failed"
+            else None
+        )
+        remote_share = remote_payload.get("share_address") is True
+        remote_publish = remote_payload.get("publish_address") is True
+        if remote_publish and not remote_share:
+            raise HTTPException(503, "The Discord relay returned invalid address settings.")
         if connection is None:
             connection = DiscordConnection(
                 admin_id=owner.id,
@@ -9710,8 +10353,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 guild_id=claimed_guild_id,
                 channel_id=claimed_channel_id,
                 owner_user_id=claimed_user_id,
-                authorized_user_ids=json.dumps([claimed_user_id]),
-                authorized_role_ids=pairing.claimed_role_ids or "[]",
+                authorized_user_ids=json.dumps(authorized_user_ids, separators=(",", ":")),
+                # Roles observed during pairing are retained on the pairing for
+                # owner review only; they never become authorized implicitly.
+                authorized_role_ids=json.dumps(authorized_role_ids, separators=(",", ":")),
+                share_address=remote_share,
+                publish_address=remote_publish,
+                status_message_id=status_message_id,
+                last_delivery_result=cast(str | None, last_delivery_result),
+                last_delivery_at=last_delivery_at,
+                last_delivery_detail=last_delivery_detail,
                 relay_connection_id=relay_connection_id,
             )
             db.add(connection)
@@ -9722,8 +10373,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             connection.guild_id = claimed_guild_id
             connection.channel_id = claimed_channel_id
             connection.owner_user_id = claimed_user_id
-            connection.authorized_user_ids = json.dumps([claimed_user_id])
-            connection.authorized_role_ids = pairing.claimed_role_ids or "[]"
+            connection.authorized_user_ids = json.dumps(
+                authorized_user_ids, separators=(",", ":")
+            )
+            connection.authorized_role_ids = json.dumps(
+                authorized_role_ids, separators=(",", ":")
+            )
+            connection.share_address = remote_share
+            connection.publish_address = remote_publish
+            connection.status_message_id = status_message_id
+            connection.last_delivery_result = cast(str | None, last_delivery_result)
+            connection.last_delivery_at = last_delivery_at
+            connection.last_delivery_detail = last_delivery_detail
             connection.enabled = True
             connection.relay_connection_id = relay_connection_id
             connection.updated_at = datetime.now(UTC)
@@ -9749,35 +10410,83 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Db,
     ) -> dict[str, object]:
         owner = mutation(request, db)
+        active_client = getattr(app.state, "relay_client", None) or relay_client
         connection = db.get(DiscordConnection, connection_id)
         if connection is None or connection.admin_id != owner.id:
             raise HTTPException(404, "That Discord connection was not found.")
-        if payload.enabled is None and payload.publish_address is None:
-            raise HTTPException(422, "Provide an enabled or publish_address change.")
-        if relay_client is None and not config.discord_bot_token:
+        if (
+            payload.enabled is None
+            and payload.share_address is None
+            and payload.publish_address is None
+            and payload.authorized_user_ids is None
+            and payload.authorized_role_ids is None
+        ):
+            raise HTTPException(422, "Provide a Discord connection change.")
+        if (
+            payload.authorized_user_ids is not None
+            and connection.owner_user_id not in payload.authorized_user_ids
+        ):
+            raise HTTPException(422, "The pairing owner must remain an approved Discord user.")
+        if active_client is None or connection.relay_connection_id is None:
             raise HTTPException(
                 503, "The Blockstead host is not connected to the Discord relay yet."
+            )
+        resulting_share = (
+            payload.share_address
+            if payload.share_address is not None
+            else connection.share_address
+        )
+        resulting_publish = (
+            payload.publish_address
+            if payload.publish_address is not None
+            else connection.publish_address
+        )
+        if payload.share_address is False:
+            resulting_publish = False
+        if resulting_publish and not resulting_share:
+            raise HTTPException(
+                422, "Persistent address publication requires address sharing."
             )
         changes = {
             key: value
             for key, value in {
                 "enabled": payload.enabled,
-                "publish_address": payload.publish_address,
+                "share_address": payload.share_address,
+                "publish_address": (
+                    False if payload.share_address is False else payload.publish_address
+                ),
+                "authorized_user_ids": payload.authorized_user_ids,
+                "authorized_role_ids": payload.authorized_role_ids,
             }.items()
             if value is not None
         }
-        if relay_client is not None and connection.relay_connection_id:
-            try:
-                relay_client.update_connection(connection.relay_connection_id, **changes)
-            except RelayError as exc:
-                raise HTTPException(
-                    503, "The Discord relay could not update this connection."
-                ) from exc
+        try:
+            active_client.update_connection(connection.relay_connection_id, **changes)
+        except RelayError as exc:
+            raise HTTPException(
+                503, "The Discord relay could not update this connection."
+            ) from exc
         if payload.enabled is not None:
             connection.enabled = payload.enabled
         if payload.publish_address is not None:
             connection.publish_address = payload.publish_address
+        if payload.share_address is not None:
+            connection.share_address = payload.share_address
+        if not connection.share_address:
+            connection.publish_address = False
+            connection.last_status_payload = "{}"
+        if payload.authorized_user_ids is not None:
+            connection.authorized_user_ids = json.dumps(
+                payload.authorized_user_ids, separators=(",", ":")
+            )
+        if payload.authorized_role_ids is not None:
+            connection.authorized_role_ids = json.dumps(
+                payload.authorized_role_ids, separators=(",", ":")
+            )
         connection.updated_at = datetime.now(UTC)
+        if connection.enabled:
+            relay_pending_status.add((connection.id, connection.profile_id))
+            relay_wakeup.set()
         profile = db.get(Profile, connection.profile_id)
         db.add(
             AuditEvent(
@@ -9794,26 +10503,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.delete("/api/v1/discord/connections/{connection_id}")
     def revoke_discord_connection(connection_id: str, request: Request, db: Db) -> Response:
         owner = mutation(request, db)
+        active_client = getattr(app.state, "relay_client", None) or relay_client
         connection = db.get(DiscordConnection, connection_id)
         if connection is None or connection.admin_id != owner.id:
             raise HTTPException(404, "That Discord connection was not found.")
-        if relay_client is None and not config.discord_bot_token:
+        if active_client is None or connection.relay_connection_id is None:
             raise HTTPException(
                 503, "The Blockstead host is not connected to the Discord relay yet."
             )
-        if relay_client is not None and connection.relay_connection_id:
-            try:
-                relay_client.revoke_connection(connection.relay_connection_id)
-            except RelayError as exc:
-                raise HTTPException(
-                    503, "The Discord relay could not revoke this connection."
-                ) from exc
-        connection.enabled = False
-        connection.updated_at = datetime.now(UTC)
+        try:
+            active_client.revoke_connection(connection.relay_connection_id)
+        except RelayError as exc:
+            raise HTTPException(
+                503, "The Discord relay could not revoke this connection."
+            ) from exc
+        profile_id = connection.profile_id
+        db.delete(connection)
         db.add(
             AuditEvent(
                 admin_id=owner.id,
-                profile_id=connection.profile_id,
+                profile_id=profile_id,
                 category="discord_connection",
                 result="revoked",
                 safe_detail="Revoked a Discord status connection.",
@@ -9821,6 +10530,88 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         db.commit()
         return Response(status_code=204)
+
+    @app.post("/api/v1/discord/connector/rotate")
+    async def rotate_discord_connector(request: Request, db: Db) -> dict[str, object]:
+        """Safely rotate a generated connector identity without returning its secret."""
+
+        nonlocal relay_identity
+        owner = mutation(request, db)
+        active_client = getattr(app.state, "relay_client", None) or relay_client
+        active_connector = getattr(app.state, "relay_connector", None) or relay_connector
+        if relay_environment_managed:
+            raise HTTPException(
+                409,
+                "This Discord connector is managed by deployment settings; rotate it there.",
+            )
+        if active_client is None:
+            raise HTTPException(
+                503, "The Blockstead host is not connected to the Discord relay yet."
+            )
+        if active_connector is None or not active_connector.connected:
+            raise HTTPException(
+                503,
+                "The Discord connector must complete its current relay handshake before rotation.",
+            )
+        old_identity = relay_identity
+        replacement = RelayIdentity(old_identity.installation_id, secrets.token_urlsafe(48))
+        try:
+            active_client.prepare_rotation(replacement.connector_secret, ttl_seconds=600)
+        except RelayError as exc:
+            raise HTTPException(
+                503, "The Discord relay could not prepare connector rotation."
+            ) from exc
+        staged_replacement = False
+        try:
+            persist_relay_identity(config.data_dir, replacement)
+            staged_replacement = True
+            if active_connector is not None:
+                await active_connector.replace_identity(replacement)
+            active_client.replace_identity(replacement)
+            relay_identity = replacement
+            config.discord_relay_installation_id = replacement.installation_id
+            config.discord_relay_connector_secret = replacement.connector_secret
+        except Exception as exc:
+            restored_old = not staged_replacement
+            if staged_replacement and active_connector is not None:
+                try:
+                    await active_connector.replace_identity(old_identity)
+                    restored_old = True
+                except Exception:
+                    log.warning("Could not restore the previous Discord connector session safely")
+            if restored_old:
+                try:
+                    persist_relay_identity(config.data_dir, old_identity)
+                except OSError:
+                    log.warning("Could not restore the previous Discord connector identity safely")
+                try:
+                    active_client.cancel_rotation()
+                except Exception:
+                    log.warning("Could not cancel pending Discord connector rotation safely")
+            detail = (
+                "The connector could not be rotated safely; the previous identity remains active."
+                if restored_old
+                else "The connector could not be verified or rolled back; the staged replacement "
+                "will be reconciled before further rotation."
+            )
+            raise HTTPException(
+                503,
+                detail,
+            ) from exc
+        db.add(
+            AuditEvent(
+                admin_id=owner.id,
+                category="discord_connector_rotation",
+                result="success",
+                safe_detail="Rotated the generated Discord connector identity safely.",
+            )
+        )
+        db.commit()
+        return {
+            "installation_id": replacement.installation_id,
+            "rotation_state": "reconnecting",
+            "detail": "The Discord connector identity was replaced and is reconnecting safely.",
+        }
 
     @app.post("/api/v1/notification-integrations", status_code=201)
     def create_notification_integration(
@@ -10644,7 +11435,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 if app.state.active_profile_id != payload.profile_id:
                     raise InvalidTransition("Restart the profile that is currently running.")
-                if not await manager.stop():
+                if not await manager.stop(GRACEFUL_STOP_TIMEOUT):
                     raise InvalidTransition(
                         "The server did not stop before the timeout. "
                         "Force stop it, then start it again."
@@ -10694,7 +11485,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin = mutation(request, db)
         backup_record: BackupRecord | None = None
         active_profile_id = app.state.active_profile_id
-        if active_profile_id:
+        # Save commands only work once the world is up. Requiring the backup while
+        # STARTING would leave a server hung during startup with no way to stop it.
+        if active_profile_id and manager.snapshot()["state"] == "RUNNING":
             profile = db.get(Profile, active_profile_id)
             if profile is not None:
                 try:
@@ -10709,7 +11502,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         f"The pre-stop backup failed, so Blockstead left the server running: {exc}",
                     ) from exc
         try:
-            graceful = await manager.stop()
+            graceful = await manager.stop(GRACEFUL_STOP_TIMEOUT)
         except InvalidTransition as exc:
             raise HTTPException(409, str(exc)) from exc
         if graceful:
@@ -10797,10 +11590,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     return
 
         try:
-            for event in manager.logs():
-                await websocket.send_json(event.__dict__)
             subscription = asyncio.create_task(
-                manager.subscribe(lambda event: websocket.send_json(event.__dict__))
+                manager.subscribe(lambda event: websocket.send_json(event.__dict__), replay=True)
             )
             auth_watch = asyncio.create_task(close_when_session_ends())
             while (await websocket.receive())["type"] != "websocket.disconnect":

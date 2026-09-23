@@ -65,3 +65,36 @@ def test_logs_endpoint_names_the_profile_that_produced_each_line(
     events = client.get("/api/v1/server/logs", headers=auth).json()
     assert events
     assert {event["profile_id"] for event in events} == {profile_id}
+
+
+def test_log_socket_replays_then_streams_without_gaps_or_repeats(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    fixture = Path(__file__).parents[2] / "fixtures" / "servers" / "vanilla-fixture"
+    profile_id = client.post(
+        "/api/v1/profiles", headers=auth, json={"name": "Fixture", "path": str(fixture)}
+    ).json()["id"]
+    assert (
+        client.post(
+            "/api/v1/server/start", headers=auth, json={"profile_id": profile_id}
+        ).status_code
+        == 202
+    )
+    wait_for_state(client, "RUNNING")
+    try:
+        backlog = client.get("/api/v1/server/logs", headers=auth).json()
+        with client.websocket_connect(
+            "/api/v1/server/logs/ws", headers={"Origin": auth["Origin"]}
+        ) as socket:
+            received = [socket.receive_json() for _ in backlog]
+            assert [event["sequence"] for event in received] == [
+                event["sequence"] for event in backlog
+            ]
+            client.post("/api/v1/server/command", headers=auth, json={"command": "say live"})
+            while not received[-1]["line"].endswith("[Server] live"):
+                received.append(socket.receive_json())
+        sequences = [event["sequence"] for event in received]
+        assert sequences == list(range(sequences[0], sequences[0] + len(sequences)))
+    finally:
+        client.post("/api/v1/server/stop", headers=auth)
+        wait_for_state(client, "STOPPED")

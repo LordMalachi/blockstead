@@ -3,10 +3,11 @@
 **Priority:** Next development priority after the current notification/webhook
 foundation is complete.
 
-**Status:** Central relay implementation underway. The relay service, outbound
-host connector, migration, dashboard wiring, Docker packaging, and isolation
-tests are in the working tree. Live Oracle provisioning and the production
-token rotation remain deployment steps.
+**Status:** Milestone 14 is In Progress. The relay service, outbound host
+connector, migration, dashboard wiring, Docker packaging, and local isolation
+tests are in the working tree. A finalized SHA, Oracle deployment, production
+token reset, and live disposable-guild acceptance are still required. Local or
+CI evidence must not be presented as that live acceptance.
 
 **Target:** Give an owner a paired Discord app that reports the selected
 Blockstead server's latest trustworthy status, current player count, and
@@ -47,16 +48,24 @@ command channel.
   `BLOCKSTEAD_DISCORD_BOT_TOKEN` setting is migration-only and ignored.
 - `relay/` contains the central FastAPI/WebSocket service. It owns the Discord
   Gateway, guild-scoped command registration, REST status messages, and a
-  SQLite metadata store. Latest snapshots stay in memory and are never
-  retained as a status history.
+  SQLite metadata store. SQLite holds exactly one validated latest snapshot per
+  active connection, replacing it in place rather than creating status history.
+  Terminal revocation deletes that snapshot; turning address sharing off
+  scrubs its address first.
 - Blockstead hosts use an outbound reconnecting WebSocket. The relay accepts
-  only the installation's credential and only routes that installation's
-  profiles. Status packets are bounded, versioned, and sequence-checked.
+  only protocol version 1, the installation's current credential, and complete
+  installation/connection/profile/application/guild/channel bindings. Status
+  packets are bounded, exact-field validated, and sequence-checked.
 - One-time hashed pairing codes, exact application/guild/channel/user claims,
-  owner confirmation, one-profile/one-channel enforcement, revocation, stale
-  marking, and address-sharing opt-in are implemented.
-- The dashboard distinguishes central bot/Gateway availability from the host
-  connector and last host heartbeat. The relay bot remains online with zero
+  owner confirmation, one-profile/one-channel enforcement, reversible disable,
+  terminal revocation tombstones, stale marking, and two-level address consent
+  are implemented.
+- A per-connection latest-value queue coalesces superseded status content,
+  records only safe delivery evidence, and applies bounded Discord retry and
+  rate-limit behavior without blocking Minecraft lifecycle work.
+- The dashboard distinguishes host-to-relay connectivity, Discord Gateway
+  readiness/heartbeat health, operational bot readiness, host heartbeat, relay
+  heartbeat, and delivery state. The relay bot can remain online with zero
   connected hosts.
 
 ### Host setup
@@ -76,6 +85,11 @@ command channel.
 The bot does not need an interactions endpoint URL because the relay uses the
 outbound Gateway. The public key remains application metadata; it is not a
 substitute for the relay-only bot token.
+
+Production closeout uses the reusable
+[Milestone 14 operator checklist](acceptance/milestone-14-operator-checklist.md).
+It intentionally remains **Not run** until a finalized SHA has complete live
+Oracle and disposable-Discord evidence.
 
 ### Avatar asset
 
@@ -122,11 +136,12 @@ Discord user IDs and optionally approved role IDs
    guidance](https://docs.discord.com/developers/platform/oauth2-and-permissions)
    explicitly recommends requesting only the permissions the app needs.
 4. In the intended channel, the owner runs `/blockstead pair <code>`.
-5. The bridge records the guild, channel, Discord user, and bot application
-   details as a **pending claim**. It does not activate the connection yet.
-6. The owner confirms that claim in Blockstead after seeing the exact guild,
-   channel, and user. This second confirmation protects against a copied or
-   accidentally exposed pairing code.
+5. The bridge records the application, guild, channel, claiming Discord user,
+   claim time, and observed role IDs as a **pending claim**. It does not activate
+   the connection yet, and observed roles are not approved automatically.
+6. The owner confirms that claim in Blockstead only after reviewing every exact
+   identifier and the claim time in a confirmation dialog. This second
+   confirmation protects against a copied or accidentally exposed pairing code.
 7. Blockstead creates a connection credential, sends one initial status update,
    and records the pairing in Activity. The code is then unusable.
 
@@ -172,26 +187,44 @@ sequence number, and heartbeat. It accepts only refresh, pairing, connection,
 and revocation events for its own installation. The dashboard and browser never
 receive the bot token or connector secret.
 
-The relay control API requires the same installation credential for pairing,
-confirmation, sharing-toggle, and revocation changes. The Discord side never
-uses a host credential; every lookup is keyed by application, guild, channel,
-and active connection.
+Every connection event in either direction uses protocol version 1 and the
+complete installation, connection, profile, application, guild, and channel
+binding. Missing or mismatched fields are rejected before any state change. The
+relay control API requires the installation's **current** connector secret for
+pairing, confirmation, sharing, disable, and revocation changes. A prepared
+replacement secret is pending-only: it cannot authenticate REST mutations and
+only an authenticated WebSocket `hello` may promote it.
+
+Generated connector rotation writes a versioned identity file with the
+replacement active and the prior identity as a fallback before reconnecting. A
+bounded `hello_ok` is required before the REST client switches. Pre-handshake
+failure restores the old file/session and cancels the pending relay credential;
+startup tries the stored replacement first after a post-promotion interruption
+and removes the fallback after recovery. No identity or secret is returned to
+the browser or written to safe audit text.
+
+Disable is reversible and continues to reserve the profile/channel binding.
+Revoke is terminal: the relay keeps a tombstone and safe audit, deletes the
+latest snapshot, replays that revocation to a reconnecting host, and permits a
+fresh pairing after the host removes its local binding. The Discord side never
+uses a host credential; Discord-origin revocation requires the exact
+application, guild, channel, and pairing owner.
 
 ## Status contract
 
-The host should publish a small, versioned status snapshot rather than logs or
+The host publishes an exact-field protocol-v1 snapshot rather than logs or
 arbitrary server data:
 
 | Field | Meaning | Privacy/safety treatment |
 | --- | --- | --- |
-| `server_label` | Owner-chosen display name | Never use the filesystem path |
-| `state` | `online`, `starting`, `offline`, `crashed`, or `unknown` | Use managed-process and Minecraft status evidence separately |
-| `players_online` / `players_max` | Current count and capacity | Count only in the default status; do not publish player names |
-| `address` | Public IP plus Minecraft port when enabled | Separate owner consent from status publishing |
-| `address_state` | `detected`, `port_unverified`, `local_only`, `unavailable`, or `stale` | Never present IP detection as proof that the router port is reachable |
-| `observed_at` | When the host measured the values | Show a stale state after a bounded heartbeat timeout |
-| `minecraft_version` | Optional server version | Include only if the owner wants it in the status card |
-| `sequence` | Monotonic host update number | Reject old snapshots and make duplicate delivery harmless |
+| `protocol_version` | Must equal `1` | Missing, extra, or unsupported protocol fields are rejected |
+| `state` | `starting`, `running`, `stopping`, `stopped`, `crashed`, `degraded`, `unavailable`, or `unknown` | Never arbitrary status text |
+| `players.online` / `players.max` | Current count and capacity, or both `null` | Bounded non-negative counts only; never player names |
+| `public.state` | `port_unverified`, `local_only`, or `unavailable` | Never present IP detection as proof that the router port is reachable |
+| `public.address` | Canonical public IPv4/IPv6 plus Minecraft port | Present only when `/address` sharing is enabled; scrubbed when disabled |
+| `host_observed_at` | A timezone-aware host measurement time | Evidence only; it does not control staleness |
+| envelope `sequence` | Monotonic host update number | Reject duplicate or older snapshots |
+| relay receipt time | When the relay accepted the snapshot | The authoritative staleness clock, unaffected by host clock skew |
 
 Blockstead already distinguishes public-IP detection from verified external
 reachability. The bot must preserve that distinction. If the host detects a
@@ -202,31 +235,60 @@ player-ready endpoint.
 
 ### Update behavior
 
-- Publish on server start, stop, crash, profile change, player-count change,
-  public-IP change, and explicit refresh.
-- Send a bounded heartbeat, such as every five minutes, so Discord can mark a
-  connection stale after the host disappears.
+- Publish on server start, stop, crash, settings/profile change, player-count
+  change, shared public-IP change, reconnect, and explicit refresh. An explicit
+  `/refresh` probes and republishes only its exact profile and forces a fresh
+  public-IP probe when address sharing is enabled.
+- Send heartbeats independently of status changes and acknowledge their relay
+  receipt so the dashboard can distinguish host sends from relay receipts.
+  Heartbeats never extend snapshot freshness: the relay receipt time of the
+  latest status snapshot alone controls staleness. The relay scans at
+  `min(30 seconds, max(1 second, stale timeout / 4))` and uses desired-content
+  hashes so fresh → stale → fresh edits the same message once per transition,
+  including across relay restart.
 - Debounce noisy changes and edit one bot-authored status message in place.
   Do not create a new Discord message for every heartbeat or player join.
-- Keep the last known snapshot local and label it stale rather than erasing it
-  or claiming the server is offline solely because Discord was unavailable.
-- Queue and retry Discord updates with bounded backoff and rate-limit handling;
-  a Discord outage must never block Minecraft lifecycle actions.
+- Persist exactly one last known validated snapshot per active connection and
+  label its message stale rather than claiming the server is offline solely
+  because the host disappeared. This is not a status history.
+- Use a per-connection latest-value delivery queue. Coalesce superseded updates,
+  attempt at most five times, use 1/2/4/8-second backoff for network/5xx
+  failures, honor a 1–300-second Discord `Retry-After`, recreate once after an
+  edit returns 404, and treat other 4xx responses as terminal.
+- Record only `retrying`, `delivered`, or `failed` evidence without payloads or
+  secrets, and send every Discord response/message with empty
+  `allowed_mentions`. A Discord outage must never block lifecycle actions.
 
 ### Address visibility
 
 The public IP is sensitive household network information even when the owner
-intends to share it with friends. The default should be:
+intends to share it with friends. Two independent controls default off:
 
 - status channel: online/offline, player count, and freshness;
-- `/blockstead address`: current address and verification state for authorized
-  users, preferably as an ephemeral response; and
-- optional **Publish address in status message** setting: explicit owner opt-in
-  for a persistent channel message.
+- **Allow `/blockstead address`** (`share_address`): permits the relay to retain
+  the canonical address in the one latest snapshot and return it ephemerally to
+  authorized users; and
+- **Publish address in status message** (`publish_address`): additionally puts
+  the address in the persistent channel message.
 
-The owner can choose to publish the address more broadly, but Blockstead should
-not assume that every member of a Discord channel is trusted merely because the
-bot is present there.
+Persistent publication is rejected unless sharing is already enabled. Turning
+sharing off also turns publication off and scrubs the stored address. The owner
+can choose to publish more broadly, but Blockstead does not assume that every
+channel member is trusted merely because the bot is present there.
+
+### Readiness semantics
+
+- `relay_online` means this Blockstead installation currently has its
+  authenticated outbound WebSocket to the relay.
+- `discord_online` means the relay has received Discord Gateway `READY` and its
+  heartbeat acknowledgements remain healthy. A missed ACK or disconnect clears
+  it.
+- `bot_ready` is operational readiness for this host: valid application
+  configuration, relay configured, `relay_online`, and `discord_online` must all
+  be true.
+
+These states are not interchangeable. Discord can stay online with no hosts,
+and a host can reach the relay while the Discord Gateway is not ready.
 
 ## Initial slash commands
 

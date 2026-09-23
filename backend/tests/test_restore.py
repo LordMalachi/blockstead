@@ -125,6 +125,33 @@ def test_restore_replaces_worlds_and_preserves_originals(tmp_path: Path) -> None
     assert not (server / ".blockstead-restore.partial").exists()
 
 
+def test_backup_after_restore_leaves_out_preserved_world_copies(tmp_path: Path) -> None:
+    server = make_server(tmp_path, {"world": b"original", "world_nether": b"nether"})
+    data = tmp_path / "data"
+    file_name, manifest_name = make_backup(server, data)
+    result = perform_restore(data, "profile-1", file_name, manifest_name, server, NOW)
+    assert result.preserved_paths
+
+    archive = create_backup_archive(
+        "profile-1",
+        server,
+        data,
+        "87654321-dcba",
+        NOW + timedelta(hours=1),
+        profile_name="Fixture",
+        distribution="vanilla",
+        minecraft_version="1.21.9",
+        application_version="0.1.0",
+        trigger="manual",
+    )
+
+    assert archive.included_paths == ("world", "world_nether")
+    # Restoring it again must not nest one preserved copy inside another.
+    later = NOW + timedelta(hours=2)
+    perform_restore(data, "profile-1", archive.file_name, archive.manifest_name, server, later)
+    assert not list(server.glob("*.pre-restore-*.pre-restore-*"))
+
+
 def test_restore_reports_a_clear_error_when_leftover_staging_cannot_be_cleared(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

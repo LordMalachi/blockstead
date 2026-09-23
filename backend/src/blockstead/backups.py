@@ -123,6 +123,8 @@ def _sha256_of(path: Path) -> str:
 #: metacharacters.
 _LEVEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _PROPERTIES_LIMIT = 1_000_000
+#: The name perform_restore gives a replaced world it keeps, e.g. world.pre-restore-...
+_PRESERVED_WORLD = re.compile(r"\.pre-restore-\d{8}-\d{6}")
 
 
 def _configured_level_name(server_directory: Path) -> str | None:
@@ -197,7 +199,11 @@ def create_backup_archive(
     application_version: str,
     trigger: str,
 ) -> BackupArchive:
-    roots = world_roots(server_directory)
+    # Pre-restore copies look like worlds, but archiving them would double every
+    # backup after a restore and nest another copy inside the next restore.
+    roots = [
+        root for root in world_roots(server_directory) if not _PRESERVED_WORLD.search(root.name)
+    ]
     if not roots:
         raise BackupError("No world directory was found for this server.")
 

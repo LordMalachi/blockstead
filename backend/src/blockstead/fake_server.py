@@ -39,6 +39,9 @@ def main() -> None:
                 f"There are {len(online)} of a max of {PLAYER_LIMIT} players online: "
                 + ", ".join(sorted(online))
             )
+        elif words[:1] == ["save-all"]:
+            info("Saving the game (this may take a moment!)")
+            info("Saved the game")
         elif command == "tps":
             info("TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0")
         elif command == "mspt":

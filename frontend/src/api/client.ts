@@ -70,19 +70,20 @@ export interface NotificationDelivery { id: string; alert_id: string; status: "p
 export interface DiscordBotStatus {
   application_id: string | null;
   public_key_configured: boolean;
-  bot_token_configured: boolean;
   bot_ready: boolean;
   relay_configured: boolean;
   relay_url: string | null;
+  relay_error?: string | null;
   relay_online: boolean;
-  connected_hosts?: number;
+  discord_online: boolean;
   installation_id: string | null;
   connector_configured: boolean;
+  connector_environment_managed?: boolean;
   legacy_token_present: boolean;
   install_url: string | null;
   application_error: string | null;
   public_key_error: string | null;
-  mode: "central_relay" | "legacy_host_gateway_disabled" | "not_configured";
+  mode: "central_relay" | "not_configured";
   pairings: DiscordPairing[];
   connections: DiscordConnection[];
 }
@@ -93,9 +94,11 @@ export interface DiscordPairing {
   status: "pending" | "claimed" | "confirmed" | "expired" | "replaced";
   expires_at: string;
   claimed: boolean;
+  claimed_application_id: string | null;
   claimed_guild_id: string | null;
   claimed_channel_id: string | null;
   claimed_user_id: string | null;
+  claimed_role_ids: string[];
   claimed_at: string | null;
   confirmed_at: string | null;
 }
@@ -107,13 +110,19 @@ export interface DiscordConnection {
   guild_id: string;
   channel_id: string;
   owner_user_id: string;
+  authorized_user_ids: string[];
+  authorized_role_ids: string[];
   enabled: boolean;
+  share_address: boolean;
   publish_address: boolean;
   status_message_configured: boolean;
   last_heartbeat_at: string | null;
   relay_connection_id?: string | null;
   relay_connected?: boolean;
   last_relay_heartbeat_at?: string | null;
+  last_delivery_result?: "retrying" | "delivered" | "failed" | null;
+  last_delivery_at?: string | null;
+  last_delivery_detail?: string | null;
   created_at: string | null;
   updated_at: string | null;
 }

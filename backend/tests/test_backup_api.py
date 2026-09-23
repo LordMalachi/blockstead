@@ -187,6 +187,24 @@ def test_running_backup_flushes_and_reenables_saves(
     wait_for_state(client, "STOPPED")
 
 
+def test_server_still_starting_can_be_stopped_without_a_backup(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    profile_id = import_fixture(client, auth)
+    started = client.post(
+        "/api/v1/server/start", headers=auth, json={"profile_id": profile_id, "mode": "slow"}
+    )
+    assert started.status_code == 202
+    assert started.json()["state"] == "STARTING"
+
+    # Save commands are refused until the world is up; the stop must not depend on them.
+    stopped = client.post("/api/v1/server/stop", headers=auth)
+
+    assert stopped.status_code == 202, stopped.text
+    assert stopped.json()["backup"] is None
+    wait_for_state(client, "STOPPED")
+
+
 def test_failed_running_backup_reenables_saves(
     client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

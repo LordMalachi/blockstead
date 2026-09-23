@@ -1,14 +1,15 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type LogEvent } from "../../api/client";
+import { api } from "../../api/client";
 import { Button } from "../../components/Button";
 import { useServerScope } from "../servers/scope";
 import { CommandCenter } from "./CommandCenter";
+import { useLiveLogs } from "./useLiveLogs";
 
 export function ConsolePage() {
   const scope = useServerScope();
   const client = useQueryClient();
-  const [logs, setLogs] = useState<LogEvent[]>([]);
+  const logs = useLiveLogs();
   const [command, setCommand] = useState("");
   const [notice, setNotice] = useState("");
   const send = useMutation({
@@ -16,24 +17,6 @@ export function ConsolePage() {
     onSuccess: () => { setNotice(""); void client.invalidateQueries({ queryKey: ["state"] }); },
     onError: error => setNotice(error.message),
   });
-
-  useEffect(() => { api<LogEvent[]>("/server/logs").then(setLogs).catch(() => undefined); }, []);
-  useEffect(() => {
-    const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://${location.host}/api/v1/server/logs/ws`);
-    socket.onmessage = event => {
-      const payload: unknown = event.data;
-      if (typeof payload === "string") {
-        try {
-          const parsed = JSON.parse(payload) as LogEvent;
-          setLogs(current => [...current.slice(-399), parsed]);
-        } catch {
-          // Ignore invalid frames safely
-        }
-      }
-    };
-    return () => socket.close();
-  }, []);
 
   function submit(event: FormEvent) {
     event.preventDefault();

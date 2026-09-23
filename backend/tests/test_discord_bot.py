@@ -19,7 +19,8 @@ def test_discord_configuration_never_returns_the_bot_token() -> None:
             discord_bot_token=token,
         )
     )
-    assert payload["bot_ready"] is True
+    assert payload["bot_ready"] is False
+    assert payload["mode"] == "not_configured"
     assert token not in repr(payload)
     assert discord_install_url("1535816544951476324").endswith("permissions=19456")
 

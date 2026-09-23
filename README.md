@@ -67,6 +67,12 @@ Blockstead manages the process around them.
   local alerts, and deep-linkable incident stories that keep recorded facts,
   observed timing, unconfirmed explanations, nearby redacted logs, focused
   support reports, and safe recovery actions clearly separate
+- can send durable, bounded, redacted operational alerts to one owner-managed
+  Discord webhook, without exposing the webhook value in the dashboard
+- can pair a selected profile with Blockstead's shared, always-online Discord
+  status bot through an outbound-only host connector; read-only commands are
+  scoped to approved Discord users or roles, and address sharing stays off
+  until the owner enables it explicitly
 - includes a searchable Help workspace, keyboard-friendly contextual tooltips,
   recovery shortcuts, and an optional guided tour that can be replayed anytime
 - limits file work to approved categories; edits and file deletes create private
@@ -481,6 +487,9 @@ exactly where it left them.
   of input rather than a command to run.
 - Destructive actions require confirmation, and risky operations create
   recovery copies first.
+- The shared Discord status bot keeps its bot token on the central relay. A
+  Blockstead host connects outbound with an installation-scoped credential and
+  sends only the paired profile's bounded status facts.
 
 Details live in the [threat model](docs/threat-model.md) and the
 [product specification](docs/product-spec.md).
@@ -517,6 +526,8 @@ screenshots with `npm --prefix frontend run screenshots`. Read
 | [docs/architecture.md](docs/architecture.md) | How the backend and frontend fit together |
 | [docs/threat-model.md](docs/threat-model.md) | Security boundaries and assumptions |
 | [docs/docker.md](docs/docker.md) | Docker Compose setup, storage, networking, and upgrades |
+| [docs/discord-status-bot-project.md](docs/discord-status-bot-project.md) | Discord status-bot scope, pairing, authorization, and status contract |
+| [docs/discord-relay-deployment.md](docs/discord-relay-deployment.md) | Relay deployment, TLS, Discord application setup, monitoring, and recovery |
 | [docs/mods-plugins-backups.md](docs/mods-plugins-backups.md) | Friendly guide to extensions, backups, restores, and extra copies |
 | [docs/server-troubleshooting.md](docs/server-troubleshooting.md) | Deterministic troubleshooting playbooks, evidence rules, repairs, and safety boundaries |
 | [docs/linux-mint-release-checklist.md](docs/linux-mint-release-checklist.md) | Manual acceptance testing before a release |

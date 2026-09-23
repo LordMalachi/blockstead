@@ -59,6 +59,7 @@ def test_scheduled_stop_records_backup_and_restores_saving(tmp_path: Path) -> No
     manager = Mock()
     manager.snapshot.return_value = {"state": "RUNNING"}
     manager.command = AsyncMock()
+    manager.save_world = AsyncMock(return_value=True)
     manager.stop = AsyncMock(return_value=True)
     scheduler = Scheduler(factory, manager, AsyncMock(), tmp_path / "data", tmp_path)
 
@@ -66,14 +67,13 @@ def test_scheduled_stop_records_backup_and_restores_saving(tmp_path: Path) -> No
         scheduler.tick(datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc))  # noqa: UP017
     )
 
-    manager.command.assert_has_awaits(
-        [
-            call("say Server maintenance is starting now."),
-            call("save-off"),
-            call("save-all flush"),
-            call("save-on"),
-        ]
-    )
+    # The flush must be confirmed after saves are suspended and before they resume.
+    assert [entry for entry in manager.mock_calls if entry[0] in {"command", "save_world"}] == [
+        call.command("say Server maintenance is starting now."),
+        call.command("save-off"),
+        call.save_world(),
+        call.command("save-on"),
+    ]
     manager.stop.assert_awaited_once_with(timeout=60.0)
     with factory() as db:
         record = db.scalar(select(BackupRecord))
@@ -185,3 +185,40 @@ async def test_power_helper_failure_keeps_bounded_actionable_stderr(
 
     with pytest.raises(RuntimeError, match=r"exit code 7: rtcwake.*unavailable"):
         await scheduler._power_off(datetime.now(UTC), None, None)
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [("STOPPED", "success"), ("CRASHED", "success"), ("RUNNING", "skipped")],
+)
+def test_scheduled_start_recovers_a_crashed_server(
+    tmp_path: Path, state: str, expected: str
+) -> None:
+    factory = create_session_factory(tmp_path / "blockstead.db")
+    Base.metadata.create_all(factory.kw["bind"])
+    with factory() as db:
+        profile = Profile(
+            name="Home",
+            server_directory=str(tmp_path),
+            distribution="vanilla",
+            minecraft_version="1.21.8",
+        )
+        db.add(profile)
+        db.flush()
+        db.add(Schedule(profile_id=profile.id, start_time="09:00", backup_before_stop=False))
+        db.commit()
+
+    manager = Mock()
+    manager.snapshot.return_value = {"state": state}
+    start = AsyncMock()
+    scheduler = Scheduler(factory, manager, start, tmp_path / "data", tmp_path)
+
+    asyncio.run(
+        scheduler.tick(datetime(2026, 7, 20, 9, 0, tzinfo=timezone.utc))  # noqa: UP017
+    )
+
+    assert start.await_count == (1 if expected == "success" else 0)
+    with factory() as db:
+        run = db.scalar(select(AutomationRun))
+        assert run is not None
+        assert run.status == expected

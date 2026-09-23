@@ -1,7 +1,12 @@
 import time
 from pathlib import Path
+from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
+
+import blockstead.app as app_module
 
 
 def wait_for_state(client: TestClient, state: str) -> dict[str, object]:
@@ -122,3 +127,32 @@ def test_roster_requires_authentication(client: TestClient, auth: dict[str, str]
     client.cookies.clear()
     response = client.get(f"/api/v1/profiles/{profile_id}/players/roster")
     assert response.status_code == 401
+
+
+def test_session_tracking_survives_a_failed_database_write(
+    client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_record = app_module.record_log_line
+    calls = 0
+
+    def locked_once(*args: Any, **kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OperationalError("INSERT", {}, Exception("database is locked"))
+        real_record(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "record_log_line", locked_once)
+    profile_id = import_and_start(client, auth)
+    try:
+        for player in ("Alex_Fixture", "Steve_Fixture"):
+            sent = client.post(
+                "/api/v1/server/command", headers=auth, json={"command": f"simulate-join {player}"}
+            )
+            assert sent.status_code == 202
+        # The first write failed; tracking must still record the next join.
+        wait_for_roster(client, profile_id, "Steve_Fixture", tracked_online=True)
+        assert calls >= 2
+    finally:
+        client.post("/api/v1/server/stop", headers=auth)
+        wait_for_state(client, "STOPPED")
